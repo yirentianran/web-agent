@@ -1,18 +1,17 @@
 """User platform memory — L1 cross-session context + L2 agent memory.
 
-L1: `memory.json` per user with deep-merge updates.
+L1: `memory.json` per user with deep-merge updates (file fallback) or SQLite (primary).
 L2: `memory/` directory with Markdown files auto-loaded into system prompt.
 
 Usage:
     from src.memory import MemoryManager
+    from src.database import Database
 
-    mgr = MemoryManager(user_id="alice")
-    # L1 platform memory
+    db = Database(db_path=Path("data/web-agent.db"))
+    await db.init()
+    mgr = MemoryManager(user_id="alice", data_root=Path("data"), db=db)
     mgr.read()
     mgr.update({"preferences": {"theme": "dark"}})
-    # L2 agent memory (Markdown files)
-    mgr.write_agent_note("findings.md", "Critical finding: ...")
-    notes = mgr.load_agent_memory_for_prompt()
 """
 
 from __future__ import annotations
@@ -21,7 +20,10 @@ import json
 import os
 import time
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from src.database import Database
 
 DATA_ROOT = Path(os.getenv("DATA_ROOT", "/data"))
 
@@ -53,10 +55,16 @@ def _deep_merge(base: dict[str, Any], patch: dict[str, Any]) -> dict[str, Any]:
 class MemoryManager:
     """Per-user memory management (L1 + L2)."""
 
-    def __init__(self, user_id: str, data_root: Path = DATA_ROOT) -> None:
+    def __init__(
+        self,
+        user_id: str,
+        data_root: Path = DATA_ROOT,
+        db: "Database | None" = None,
+    ) -> None:
         self.user_id = user_id
         self.user_dir = data_root / "users" / user_id
         self.user_dir.mkdir(parents=True, exist_ok=True)
+        self.db: Database | None = db
 
     # ── L1 Platform Memory (memory.json) ──────────────────────────
 
@@ -65,7 +73,32 @@ class MemoryManager:
         return self.user_dir / "memory.json"
 
     def read(self) -> dict[str, Any]:
-        """Read the full memory.json, returning an empty structure if absent."""
+        """Read the full memory, returning an empty structure if absent.
+
+        Uses SQLite if db is attached, falls back to memory.json.
+        """
+        if self.db is not None and self.db._pool is not None:
+            import sqlite3
+            conn = sqlite3.connect(str(self.db.db_path))
+            try:
+                cursor = conn.execute(
+                    "SELECT preferences, entity_memory, audit_context, file_memory FROM user_memory WHERE user_id = ?",
+                    (self.user_id,),
+                )
+                row = cursor.fetchone()
+                if row:
+                    return {
+                        "user_id": self.user_id,
+                        "preferences": json.loads(row[0]),
+                        "entity_memory": json.loads(row[1]),
+                        "audit_context": json.loads(row[2]),
+                        "file_memory": json.loads(row[3]),
+                    }
+            except (sqlite3.OperationalError, json.JSONDecodeError):
+                pass
+            finally:
+                conn.close()
+        # File fallback
         if not self._memory_file.exists():
             return {"user_id": self.user_id}
         try:
@@ -75,21 +108,81 @@ class MemoryManager:
         return data
 
     def update(self, patch: dict[str, Any]) -> dict[str, Any]:
-        """Deep-merge a patch into memory.json and return the updated document."""
+        """Deep-merge a patch into memory and return the updated document.
+
+        Uses SQLite if db is attached (with row-level transaction),
+        falls back to memory.json file.
+        """
         current = self.read()
         updated = _deep_merge(current, patch)
         updated["updated_at"] = time.time()
-        self._memory_file.write_text(
-            json.dumps(updated, ensure_ascii=False, indent=2)
-        )
+
+        if self.db is not None and self.db._pool is not None:
+            import sqlite3
+            conn = sqlite3.connect(str(self.db.db_path))
+            try:
+                conn.execute(
+                    """INSERT OR REPLACE INTO user_memory
+                       (user_id, preferences, entity_memory, audit_context, file_memory, updated_at)
+                       VALUES (?, ?, ?, ?, ?, ?)""",
+                    (
+                        self.user_id,
+                        json.dumps(updated.get("preferences", {})),
+                        json.dumps(updated.get("entity_memory", {})),
+                        json.dumps(updated.get("audit_context", {})),
+                        json.dumps(updated.get("file_memory", [])),
+                        updated["updated_at"],
+                    ),
+                )
+                conn.commit()
+            except sqlite3.OperationalError:
+                # DB write failed — fall back to file
+                self._write_file(updated)
+            finally:
+                conn.close()
+        else:
+            self._write_file(updated)
+
         return updated
 
-    def replace(self, data: dict[str, Any]) -> None:
-        """Replace the entire memory.json content."""
-        data["updated_at"] = time.time()
+    def _write_file(self, data: dict[str, Any]) -> None:
+        """Write memory data to JSON file."""
         self._memory_file.write_text(
             json.dumps(data, ensure_ascii=False, indent=2)
         )
+
+    def replace(self, data: dict[str, Any]) -> None:
+        """Replace the entire memory content.
+
+        Uses SQLite if db is attached, falls back to memory.json file.
+        """
+        data = dict(data)
+        data["updated_at"] = time.time()
+
+        if self.db is not None and self.db._pool is not None:
+            import sqlite3
+            conn = sqlite3.connect(str(self.db.db_path))
+            try:
+                conn.execute(
+                    """INSERT OR REPLACE INTO user_memory
+                       (user_id, preferences, entity_memory, audit_context, file_memory, updated_at)
+                       VALUES (?, ?, ?, ?, ?, ?)""",
+                    (
+                        self.user_id,
+                        json.dumps(data.get("preferences", {})),
+                        json.dumps(data.get("entity_memory", {})),
+                        json.dumps(data.get("audit_context", {})),
+                        json.dumps(data.get("file_memory", [])),
+                        data["updated_at"],
+                    ),
+                )
+                conn.commit()
+            except sqlite3.OperationalError:
+                self._write_file(data)
+            finally:
+                conn.close()
+        else:
+            self._write_file(data)
 
     # ── L2 Agent Memory (Markdown files in memory/) ───────────────
 
