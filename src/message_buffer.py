@@ -6,11 +6,15 @@ and container restart resilience.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 from collections import deque
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from src.database import Database
 
 BASE_DIR = Path("/workspace/.msg-buffer")
 MAX_HISTORY = 500  # max messages kept in memory per session
@@ -30,11 +34,18 @@ def make_heartbeat() -> dict[str, Any]:
 class MessageBuffer:
     """Per-session message cache with disk persistence."""
 
-    def __init__(self, base_dir: Path | None = None):
+    def __init__(
+        self,
+        base_dir: Path | None = None,
+        db: "Database | None" = None,
+    ) -> None:
         self.base_dir = base_dir or BASE_DIR
         self.base_dir.mkdir(parents=True, exist_ok=True)
+        self.db: Database | None = db
         # session_id -> state dict
         self.sessions: dict[str, dict[str, Any]] = {}
+        # Track per-session sequence numbers for DB writes
+        self._seq: dict[str, int] = {}
 
     # ── internal helpers ─────────────────────────────────────────
 
@@ -60,6 +71,47 @@ class MessageBuffer:
         with open(path, "a", encoding="utf-8") as f:
             f.write(json.dumps(message, ensure_ascii=False) + "\n")
 
+    def _write_db_sync(self, session_id: str, message: dict) -> None:
+        """Synchronously append one message to the SQLite database.
+
+        Uses the sync sqlite3 connection to avoid async/sync boundary issues
+        when called from the synchronous add_message() method.
+        """
+        if self.db is None or self.db._pool is None:
+            return
+
+        seq = self._seq.get(session_id, 0)
+        self._seq[session_id] = seq + 1
+
+        usage_json = None
+        if message.get("usage"):
+            usage_json = json.dumps(message["usage"], ensure_ascii=False)
+
+        # Use the underlying sync connection via aiosqlite's connection
+        import sqlite3
+
+        conn = sqlite3.connect(str(self.db.db_path))
+        try:
+            conn.execute(
+                """INSERT INTO messages
+                   (session_id, seq, type, subtype, name, content, payload, usage, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    session_id,
+                    seq,
+                    message.get("type", ""),
+                    message.get("subtype"),
+                    message.get("name"),
+                    message.get("content"),
+                    json.dumps(message, ensure_ascii=False),
+                    usage_json,
+                    time.time(),
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
     def _read_disk(self, session_id: str, after_index: int = 0) -> list[dict]:
         """Read messages from disk starting at *after_index*."""
         path = self._disk_path(session_id)
@@ -72,7 +124,7 @@ class MessageBuffer:
     # ── public API ───────────────────────────────────────────────
 
     def add_message(self, session_id: str, message: dict) -> None:
-        """SDK produces a message → write to memory + disk."""
+        """SDK produces a message → write to memory + disk (and DB if attached)."""
         buf = self._ensure_buf(session_id)
         buf["messages"].append(message)
         buf["last_active"] = time.time()
@@ -84,6 +136,9 @@ class MessageBuffer:
         if state not in ("completed", "error", "cancelled"):
             buf["done"] = False
         self._write_disk(session_id, message)
+
+        # Dual-write to SQLite if database is attached
+        self._write_db_sync(session_id, message)
 
         # Update session state based on message type
         msg_type = message.get("type", "")
