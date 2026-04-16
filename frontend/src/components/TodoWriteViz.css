@@ -1,0 +1,105 @@
+.todoviz {
+  padding: 12px 16px;
+  margin: 6px 0;
+  border-radius: 8px;
+  background: rgba(100, 116, 139, 0.06);
+}
+
+/* ── Header ─────────────────────────────────── */
+
+.todoviz-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.todoviz-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary, #1e293b);
+}
+
+.todoviz-count {
+  font-size: 12px;
+  font-family: var(--font-mono, monospace);
+  color: var(--text-secondary, #64748b);
+}
+
+/* ── Progress bar ───────────────────────────── */
+
+.todoviz-progress-track {
+  width: 100%;
+  height: 4px;
+  border-radius: 2px;
+  background: rgba(100, 116, 139, 0.15);
+  margin-bottom: 10px;
+  overflow: hidden;
+}
+
+.todoviz-progress-fill {
+  height: 100%;
+  border-radius: 2px;
+  background: #22c55e;
+  transition: width 0.4s ease;
+}
+
+/* ── List ───────────────────────────────────── */
+
+.todoviz-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.todoviz-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 4px 0;
+  font-size: 13px;
+  color: var(--text-primary, #1e293b);
+}
+
+.todoviz-item.pending .todoviz-text {
+  color: var(--text-secondary, #64748b);
+}
+
+.todoviz-item.completed .todoviz-text {
+  text-decoration: line-through;
+  color: var(--text-secondary, #64748b);
+}
+
+.todoviz-item.deleted .todoviz-text {
+  text-decoration: line-through;
+  opacity: 0.5;
+}
+
+.todoviz-icon {
+  flex-shrink: 0;
+  width: 18px;
+  height: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  margin-top: 1px;
+}
+
+.todoviz-text {
+  flex: 1;
+  line-height: 1.4;
+  min-width: 0;
+}
+
+.todoviz-text.completed {
+  text-decoration: line-through;
+}
+
+/* ── Active form text ───────────────────────── */
+
+.todoviz-active-form {
+  font-size: 12px;
+  color: #3b82f6;
+  white-space: nowrap;
+}

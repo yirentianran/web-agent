@@ -1,0 +1,36 @@
+# Secrets
+.env
+
+# User data (sessions, uploads, outputs, logs)
+data/
+
+# Frontend build output (served by FastAPI in production)
+src/static/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.ruff_cache/
+.venv/
+*.egg-info/
+dist/
+
+# Node
+frontend/node_modules/
+frontend/.vite/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# Logs
+*.log
+
+# Local Claude Code
+.claude/

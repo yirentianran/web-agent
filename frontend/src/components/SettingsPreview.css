@@ -1,0 +1,1562 @@
+/* ===========================================================
+   Settings Preview - Settings Panel Styles
+   =========================================================== */
+
+/* ── Base ───────────────────────────────────────────────────── */
+.settings-preview {
+  min-height: 100vh;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+}
+
+.settings-preview--light {
+  background: #fafafa;
+  color: #1a1a1a;
+}
+
+.settings-preview--dark {
+  background: #0f1117;
+  color: #e4e4e7;
+}
+
+/* ===========================================================
+   Header
+   =========================================================== */
+
+.sp-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 20px;
+  border-bottom: 1px solid;
+}
+
+.settings-preview--light .sp-header {
+  background: #ffffff;
+  border-color: #e5e5e5;
+}
+
+.settings-preview--dark .sp-header {
+  background: #16181d;
+  border-color: #27272a;
+}
+
+.sp-brand {
+  font-weight: 600;
+  font-size: 1.1rem;
+}
+
+.settings-preview--light .sp-brand {
+  color: #475569;
+}
+
+.settings-preview--dark .sp-brand {
+  color: #64748b;
+}
+
+.sp-header-actions {
+  display: flex;
+  gap: 10px;
+}
+
+.sp-theme-btn,
+.sp-settings-btn,
+.sp-user-btn {
+  padding: 6px 12px;
+  border: 1px solid;
+  border-radius: 6px;
+  font-size: 13px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.settings-preview--light .sp-theme-btn,
+.settings-preview--light .sp-settings-btn,
+.settings-preview--light .sp-user-btn {
+  background: #f5f5f5;
+  border-color: #d4d4d4;
+  color: #52525b;
+}
+
+.settings-preview--light .sp-theme-btn:hover,
+.settings-preview--light .sp-settings-btn:hover,
+.settings-preview--light .sp-user-btn:hover {
+  background: #e4e4e7;
+  color: #1a1a1a;
+}
+
+.settings-preview--dark .sp-theme-btn,
+.settings-preview--dark .sp-settings-btn,
+.settings-preview--dark .sp-user-btn {
+  background: transparent;
+  border-color: #3f3f46;
+  color: #a1a1aa;
+}
+
+.settings-preview--dark .sp-theme-btn:hover,
+.settings-preview--dark .sp-settings-btn:hover,
+.settings-preview--dark .sp-user-btn:hover {
+  background: #27272a;
+  color: #e4e4e7;
+}
+
+/* ===========================================================
+   Layout
+   =========================================================== */
+
+.sp-layout {
+  display: flex;
+  height: calc(100vh - 48px);
+}
+
+.sp-sidebar {
+  width: 260px;
+  display: flex;
+  flex-direction: column;
+  border-right: 1px solid;
+  padding: 12px;
+}
+
+.settings-preview--light .sp-sidebar {
+  background: #ffffff;
+  border-color: #e5e5e5;
+}
+
+.settings-preview--dark .sp-sidebar {
+  background: #16181d;
+  border-color: #27272a;
+}
+
+.sp-main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.sp-new-session {
+  width: 100%;
+  padding: 10px 16px;
+  border: none;
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.settings-preview--light .sp-new-session {
+  background: linear-gradient(135deg, #3b82f6 0%, #60a5fa 100%);
+  color: #ffffff;
+  box-shadow: 0 2px 8px rgba(59, 130, 246, 0.3);
+}
+
+.settings-preview--light .sp-new-session:hover {
+  box-shadow: 0 4px 12px rgba(59, 130, 246, 0.4);
+  transform: translateY(-1px);
+}
+
+.settings-preview--dark .sp-new-session {
+  background: #475569;
+  color: #ffffff;
+}
+
+.settings-preview--dark .sp-new-session:hover {
+  background: #334155;
+}
+
+.sp-session-list {
+  flex: 1;
+  overflow-y: auto;
+  padding-top: 12px;
+}
+
+.sp-session {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  margin-bottom: 4px;
+  font-size: 13px;
+}
+
+.settings-preview--light .sp-session:hover {
+  background: #f5f5f5;
+}
+
+.settings-preview--light .sp-session.active {
+  background: #e2e8f0;
+  border-radius: 8px;
+}
+
+.settings-preview--dark .sp-session:hover {
+  background: #27272a;
+}
+
+.settings-preview--dark .sp-session.active {
+  background: #334155;
+  border-left: 2px solid #475569;
+}
+
+/* ===========================================================
+   Sidebar Footer - Files Button
+   =========================================================== */
+
+.sp-sidebar-footer {
+  padding-top: 12px;
+  border-top: 1px solid;
+  margin-top: auto;
+}
+
+.settings-preview--light .sp-sidebar-footer {
+  border-color: #e5e5e5;
+}
+
+.settings-preview--dark .sp-sidebar-footer {
+  border-color: #27272a;
+}
+
+.sp-files-btn {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid;
+  border-radius: 8px;
+  font-size: 14px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.sp-files-icon {
+  font-size: 18px;
+}
+
+.sp-files-label {
+  font-weight: 500;
+  flex: 1;
+}
+
+.sp-files-count {
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.settings-preview--light .sp-files-btn {
+  background: #ffffff;
+  border-color: #e5e5e5;
+  color: #52525b;
+}
+
+.settings-preview--light .sp-files-btn:hover {
+  background: #f5f5f5;
+  border-color: #3b82f6;
+  color: #3b82f6;
+}
+
+.settings-preview--light .sp-files-count {
+  background: #dbeafe;
+  color: #475569;
+}
+
+.settings-preview--dark .sp-files-btn {
+  background: transparent;
+  border-color: #3f3f46;
+  color: #a1a1aa;
+}
+
+.settings-preview--dark .sp-files-btn:hover {
+  background: #27272a;
+  border-color: #475569;
+  color: #64748b;
+}
+
+.settings-preview--dark .sp-files-count {
+  background: #334155;
+  color: #64748b;
+}
+
+/* ===========================================================
+   Welcome Screen (Main Content Default)
+   =========================================================== */
+
+.sp-main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.sp-welcome {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 40px;
+}
+
+.sp-welcome-logo {
+  font-size: 3rem;
+  margin-bottom: 16px;
+}
+
+.settings-preview--light .sp-welcome-logo {
+  color: #475569;
+}
+
+.settings-preview--dark .sp-welcome-logo {
+  color: #64748b;
+}
+
+.sp-welcome-title {
+  font-size: 1.75rem;
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+
+.sp-welcome-desc {
+  font-size: 1rem;
+}
+
+.settings-preview--light .sp-welcome-desc {
+  color: #71717a;
+}
+
+.settings-preview--dark .sp-welcome-desc {
+  color: #a1a1aa;
+}
+
+/* ===========================================================
+   Settings Panel Overlay
+   =========================================================== */
+
+.sp-settings-overlay {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 40px;
+  z-index: 1000;
+}
+
+.settings-preview--light .sp-settings-overlay {
+  background: rgba(0, 0, 0, 0.1);
+}
+
+.settings-preview--dark .sp-settings-overlay {
+  background: rgba(0, 0, 0, 0.3);
+}
+
+.sp-settings-panel {
+  width: 100%;
+  max-width: 700px;
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+  border-radius: 12px;
+  position: relative;
+}
+
+.settings-preview--light .sp-settings-panel {
+  background: #ffffff;
+  border: 1px solid #e5e5e5;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
+}
+
+.settings-preview--dark .sp-settings-panel {
+  background: #16181d;
+  border: 1px solid #27272a;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+}
+
+.sp-close-btn {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 6px;
+  font-size: 16px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.settings-preview--light .sp-close-btn {
+  background: #f5f5f5;
+  color: #52525b;
+}
+
+.settings-preview--light .sp-close-btn:hover {
+  background: #e4e4e7;
+  color: #1a1a1a;
+}
+
+.settings-preview--dark .sp-close-btn {
+  background: #27272a;
+  color: #a1a1aa;
+}
+
+.settings-preview--dark .sp-close-btn:hover {
+  background: #3f3f46;
+  color: #e4e4e7;
+}
+
+/* ===========================================================
+   Panel Title
+   =========================================================== */
+
+.sp-panel-title {
+  padding: 16px 20px;
+  font-size: 1.25rem;
+  font-weight: 600;
+}
+
+.settings-preview--light .sp-panel-title {
+  color: #1a1a1a;
+}
+
+.settings-preview--dark .sp-panel-title {
+  color: #e4e4e7;
+}
+
+/* ===========================================================
+   Tabs
+   =========================================================== */
+
+.sp-tabs {
+  display: flex;
+  gap: 4px;
+  padding: 16px 20px 0;
+  border-bottom: 1px solid;
+}
+
+.settings-preview--light .sp-tabs {
+  border-color: #e5e5e5;
+}
+
+.settings-preview--dark .sp-tabs {
+  border-color: #27272a;
+}
+
+.sp-tab {
+  padding: 10px 16px;
+  border: none;
+  border-radius: 8px 8px 0 0;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.settings-preview--light .sp-tab {
+  background: transparent;
+  color: #71717a;
+}
+
+.settings-preview--light .sp-tab:hover {
+  background: #f5f5f5;
+  color: #52525b;
+}
+
+.settings-preview--light .sp-tab.active {
+  background: #ffffff;
+  color: #3b82f6;
+  border-bottom: 2px solid #3b82f6;
+}
+
+.settings-preview--dark .sp-tab {
+  background: transparent;
+  color: #71717a;
+}
+
+.settings-preview--dark .sp-tab:hover {
+  background: #27272a;
+  color: #a1a1aa;
+}
+
+.settings-preview--dark .sp-tab.active {
+  background: #16181d;
+  color: #60a5fa;
+  border-bottom: 2px solid #475569;
+}
+
+/* ===========================================================
+   Tab Content
+   =========================================================== */
+
+.sp-tab-content {
+  flex: 1;
+  overflow-y: auto;
+  padding: 20px;
+}
+
+/* ── General Tab ─────────────────────────────────────────────── */
+
+.sp-general-tab h3,
+.sp-appearance-tab h3,
+.sp-files-tab h3,
+.sp-skills-tab h3 {
+  font-size: 1rem;
+  font-weight: 600;
+  margin-bottom: 16px;
+}
+
+.sp-settings-group {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.sp-setting-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  font-size: 14px;
+}
+
+.settings-preview--light .sp-setting-item:hover {
+  background: #f5f5f5;
+}
+
+.settings-preview--dark .sp-setting-item:hover {
+  background: #27272a;
+}
+
+.sp-setting-item input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+  cursor: pointer;
+}
+
+/* ── Appearance Tab ───────────────────────────────────────────── */
+
+.sp-setting-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px;
+  border-radius: 8px;
+}
+
+.settings-preview--light .sp-setting-row {
+  background: #f5f5f5;
+}
+
+.settings-preview--dark .sp-setting-row {
+  background: #1f1f26;
+}
+
+.sp-setting-label {
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.sp-theme-options,
+.sp-size-options {
+  display: flex;
+  gap: 6px;
+}
+
+.sp-theme-opt,
+.sp-size-opt {
+  padding: 6px 12px;
+  border: 1px solid;
+  border-radius: 6px;
+  font-size: 13px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.settings-preview--light .sp-theme-opt,
+.settings-preview--light .sp-size-opt {
+  background: #ffffff;
+  border-color: #d4d4d4;
+  color: #52525b;
+}
+
+.settings-preview--light .sp-theme-opt:hover,
+.settings-preview--light .sp-size-opt:hover {
+  border-color: #60a5fa;
+  color: #3b82f6;
+}
+
+.settings-preview--light .sp-theme-opt.active,
+.settings-preview--light .sp-size-opt.active {
+  background: #dbeafe;
+  border-color: #3b82f6;
+  color: #3b82f6;
+}
+
+.settings-preview--dark .sp-theme-opt,
+.settings-preview--dark .sp-size-opt {
+  background: transparent;
+  border-color: #3f3f46;
+  color: #a1a1aa;
+}
+
+.settings-preview--dark .sp-theme-opt:hover,
+.settings-preview--dark .sp-size-opt:hover {
+  border-color: #475569;
+  color: #60a5fa;
+}
+
+.settings-preview--dark .sp-theme-opt.active,
+.settings-preview--dark .sp-size-opt.active {
+  background: #27272a;
+  border-color: #475569;
+  color: #60a5fa;
+}
+
+/* ── Files Tab ────────────────────────────────────────────────── */
+
+.sp-file-search {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 16px;
+}
+
+.sp-search-input {
+  flex: 1;
+  padding: 8px 12px;
+  border: 1px solid;
+  border-radius: 6px;
+  font-size: 13px;
+  outline: none;
+}
+
+.settings-preview--light .sp-search-input {
+  background: #ffffff;
+  border-color: #e5e5e5;
+  color: #1a1a1a;
+}
+
+.settings-preview--light .sp-search-input:focus {
+  border-color: #60a5fa;
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.15);
+}
+
+.settings-preview--dark .sp-search-input {
+  background: #1f1f26;
+  border-color: #27272a;
+  color: #e4e4e7;
+}
+
+.settings-preview--dark .sp-search-input:focus {
+  border-color: #475569;
+  box-shadow: 0 0 0 3px rgba(71, 85, 105, 0.2);
+}
+
+.sp-filter-select,
+.sp-sort-select {
+  padding: 8px 12px;
+  border: 1px solid;
+  border-radius: 6px;
+  font-size: 13px;
+  cursor: pointer;
+  outline: none;
+}
+
+.settings-preview--light .sp-filter-select,
+.settings-preview--light .sp-sort-select {
+  background: #ffffff;
+  border-color: #e5e5e5;
+  color: #52525b;
+}
+
+.settings-preview--dark .sp-filter-select,
+.settings-preview--dark .sp-sort-select {
+  background: #1f1f26;
+  border-color: #27272a;
+  color: #a1a1aa;
+}
+
+/* File List - Flat Layout */
+.sp-file-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.sp-file-row {
+  padding: 12px 14px;
+  border: 1px solid;
+  border-radius: 8px;
+  transition: all 0.15s ease;
+}
+
+.settings-preview--light .sp-file-row {
+  background: #ffffff;
+  border-color: #e5e5e5;
+}
+
+.settings-preview--light .sp-file-row:hover {
+  border-color: #60a5fa;
+  box-shadow: 0 2px 8px rgba(59, 130, 246, 0.1);
+}
+
+.settings-preview--dark .sp-file-row {
+  background: #1f1f26;
+  border-color: #27272a;
+}
+
+.settings-preview--dark .sp-file-row:hover {
+  border-color: #475569;
+}
+
+.sp-file-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.sp-file-checkbox {
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
+}
+
+.sp-file-icon {
+  font-size: 18px;
+}
+
+.sp-file-name {
+  font-size: 14px;
+  font-weight: 500;
+  flex: 1;
+}
+
+.sp-download-btn {
+  padding: 4px 10px;
+  border: 1px solid;
+  border-radius: 4px;
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.settings-preview--light .sp-download-btn {
+  background: transparent;
+  border-color: #d4d4d4;
+  color: #52525b;
+}
+
+.settings-preview--light .sp-download-btn:hover {
+  background: #dbeafe;
+  border-color: #3b82f6;
+  color: #3b82f6;
+}
+
+.settings-preview--dark .sp-download-btn {
+  background: transparent;
+  border-color: #3f3f46;
+  color: #a1a1aa;
+}
+
+.settings-preview--dark .sp-download-btn:hover {
+  background: #27272a;
+  border-color: #475569;
+  color: #60a5fa;
+}
+
+.sp-file-meta {
+  margin-top: 6px;
+  font-size: 12px;
+  color: #71717a;
+  padding-left: 26px; /* Align with filename (checkbox + icon) */
+}
+
+.sp-download-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid;
+}
+
+.settings-preview--light .sp-download-actions {
+  border-color: #e5e5e5;
+}
+
+.settings-preview--dark .sp-download-actions {
+  border-color: #27272a;
+}
+
+.sp-action-btn {
+  padding: 8px 16px;
+  border: 1px solid;
+  border-radius: 6px;
+  font-size: 13px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.settings-preview--light .sp-action-btn {
+  background: #ffffff;
+  border-color: #d4d4d4;
+  color: #52525b;
+}
+
+.settings-preview--light .sp-action-btn:hover {
+  background: #f5f5f5;
+  border-color: #60a5fa;
+  color: #3b82f6;
+}
+
+.settings-preview--light .sp-action-btn.primary {
+  background: linear-gradient(135deg, #3b82f6 0%, #60a5fa 100%);
+  border-color: transparent;
+  color: #ffffff;
+  box-shadow: 0 2px 8px rgba(59, 130, 246, 0.3);
+}
+
+.settings-preview--light .sp-action-btn.primary:hover {
+  box-shadow: 0 4px 12px rgba(59, 130, 246, 0.4);
+  transform: translateY(-1px);
+}
+
+.settings-preview--dark .sp-action-btn {
+  background: transparent;
+  border-color: #3f3f46;
+  color: #a1a1aa;
+}
+
+.settings-preview--dark .sp-action-btn:hover {
+  background: #27272a;
+  border-color: #475569;
+  color: #60a5fa;
+}
+
+.settings-preview--dark .sp-action-btn.primary {
+  background: #475569;
+  border-color: #475569;
+  color: #ffffff;
+}
+
+.settings-preview--dark .sp-action-btn.primary:hover {
+  background: #334155;
+}
+
+/* ── Skills Tab ───────────────────────────────────────────────── */
+
+.sp-upload-area {
+  margin-bottom: 16px;
+}
+
+.sp-upload-btn {
+  width: 100%;
+  padding: 14px;
+  border: 1px dashed;
+  border-radius: 8px;
+  font-size: 14px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.settings-preview--light .sp-upload-btn {
+  background: #f5f5f5;
+  border-color: #d4d4d4;
+  color: #52525b;
+}
+
+.settings-preview--light .sp-upload-btn:hover {
+  border-color: #3b82f6;
+  color: #3b82f6;
+  background: #dbeafe;
+}
+
+.settings-preview--dark .sp-upload-btn {
+  background: #1f1f26;
+  border-color: #3f3f46;
+  color: #a1a1aa;
+}
+
+.settings-preview--dark .sp-upload-btn:hover {
+  border-color: #475569;
+  color: #60a5fa;
+}
+
+.sp-skill-tabs {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.sp-skill-tab {
+  padding: 8px 16px;
+  border: none;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.settings-preview--light .sp-skill-tab {
+  background: #f5f5f5;
+  color: #71717a;
+}
+
+.settings-preview--light .sp-skill-tab:hover {
+  background: #e4e4e7;
+  color: #52525b;
+}
+
+.settings-preview--light .sp-skill-tab.active {
+  background: #dbeafe;
+  color: #3b82f6;
+}
+
+.settings-preview--dark .sp-skill-tab {
+  background: #27272a;
+  color: #71717a;
+}
+
+.settings-preview--dark .sp-skill-tab:hover {
+  background: #3f3f46;
+  color: #a1a1aa;
+}
+
+.settings-preview--dark .sp-skill-tab.active {
+  background: #334155;
+  color: #60a5fa;
+}
+
+.sp-skill-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.sp-skill-row {
+  padding: 12px 14px;
+  border: 1px solid;
+  border-radius: 8px;
+}
+
+.settings-preview--light .sp-skill-row {
+  background: #ffffff;
+  border-color: #e5e5e5;
+}
+
+.settings-preview--dark .sp-skill-row {
+  background: #1f1f26;
+  border-color: #27272a;
+}
+
+.sp-skill-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 6px;
+}
+
+.sp-skill-icon {
+  font-size: 18px;
+}
+
+.sp-skill-name {
+  font-size: 14px;
+  font-weight: 500;
+  flex: 1;
+}
+
+.sp-skill-badge {
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.settings-preview--light .sp-skill-badge.personal {
+  background: #dbeafe;
+  color: #3b82f6;
+}
+
+.settings-preview--light .sp-skill-badge.shared {
+  background: #dcfce7;
+  color: #15803d;
+}
+
+.settings-preview--dark .sp-skill-badge.personal {
+  background: #334155;
+  color: #60a5fa;
+}
+
+.settings-preview--dark .sp-skill-badge.shared {
+  background: #1f3b2f;
+  color: #22c55e;
+}
+
+.sp-skill-meta {
+  font-size: 12px;
+  color: #71717a;
+  margin-bottom: 8px;
+}
+
+.sp-skill-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.sp-skill-view,
+.sp-skill-delete {
+  padding: 4px 10px;
+  border: 1px solid;
+  border-radius: 4px;
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.settings-preview--light .sp-skill-view {
+  background: transparent;
+  border-color: #d4d4d4;
+  color: #52525b;
+}
+
+.settings-preview--light .sp-skill-view:hover {
+  border-color: #60a5fa;
+  color: #3b82f6;
+}
+
+.settings-preview--light .sp-skill-delete {
+  background: transparent;
+  border-color: #d4d4d4;
+  color: #52525b;
+}
+
+.settings-preview--light .sp-skill-delete:hover {
+  border-color: #ef4444;
+  color: #ef4444;
+}
+
+.settings-preview--dark .sp-skill-view {
+  background: transparent;
+  border-color: #3f3f46;
+  color: #a1a1aa;
+}
+
+.settings-preview--dark .sp-skill-view:hover {
+  border-color: #475569;
+  color: #60a5fa;
+}
+
+.settings-preview--dark .sp-skill-delete {
+  background: transparent;
+  border-color: #3f3f46;
+  color: #a1a1aa;
+}
+
+.settings-preview--dark .sp-skill-delete:hover {
+  border-color: #ef4444;
+  color: #ef4444;
+}
+
+/* ===========================================================
+   Files Panel Overlay
+   =========================================================== */
+
+.sp-files-overlay {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 40px;
+  z-index: 1000;
+}
+
+.settings-preview--light .sp-files-overlay {
+  background: rgba(0, 0, 0, 0.3);
+}
+
+.settings-preview--dark .sp-files-overlay {
+  background: rgba(0, 0, 0, 0.5);
+}
+
+.sp-files-panel {
+  width: 100%;
+  max-width: 600px;
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+  border-radius: 12px;
+  position: relative;
+  overflow: hidden;
+}
+
+.settings-preview--light .sp-files-panel {
+  background: #ffffff;
+  border: 1px solid #e5e5e5;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.15);
+}
+
+.settings-preview--dark .sp-files-panel {
+  background: #16181d;
+  border: 1px solid #27272a;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
+}
+
+/* File Search */
+.sp-file-search {
+  display: flex;
+  gap: 10px;
+  padding: 0 20px 16px;
+}
+
+.sp-search-input {
+  flex: 1;
+  padding: 8px 12px;
+  border: 1px solid;
+  border-radius: 6px;
+  font-size: 13px;
+  outline: none;
+}
+
+.settings-preview--light .sp-search-input {
+  background: #f5f5f5;
+  border-color: #e5e5e5;
+  color: #1a1a1a;
+}
+
+.settings-preview--dark .sp-search-input {
+  background: #1f1f26;
+  border-color: #27272a;
+  color: #e4e4e7;
+}
+
+.sp-filter-select,
+.sp-sort-select {
+  padding: 8px 12px;
+  border: 1px solid;
+  border-radius: 6px;
+  font-size: 13px;
+  cursor: pointer;
+  outline: none;
+}
+
+.settings-preview--light .sp-filter-select,
+.settings-preview--light .sp-sort-select {
+  background: #f5f5f5;
+  border-color: #e5e5e5;
+  color: #52525b;
+}
+
+.settings-preview--dark .sp-filter-select,
+.settings-preview--dark .sp-sort-select {
+  background: #1f1f26;
+  border-color: #27272a;
+  color: #a1a1aa;
+}
+
+/* File List */
+.sp-file-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 0 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.sp-file-row {
+  padding: 12px 14px;
+  border: 1px solid;
+  border-radius: 8px;
+  transition: all 0.15s ease;
+}
+
+.settings-preview--light .sp-file-row {
+  background: #ffffff;
+  border-color: #e5e5e5;
+}
+
+.settings-preview--light .sp-file-row:hover {
+  border-color: #60a5fa;
+  box-shadow: 0 2px 8px rgba(59, 130, 246, 0.1);
+}
+
+.settings-preview--dark .sp-file-row {
+  background: #1f1f26;
+  border-color: #27272a;
+}
+
+.settings-preview--dark .sp-file-row:hover {
+  border-color: #475569;
+}
+
+.sp-file-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.sp-file-checkbox {
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
+}
+
+.sp-file-icon {
+  font-size: 18px;
+}
+
+.sp-file-name {
+  font-size: 14px;
+  font-weight: 500;
+  flex: 1;
+}
+
+.sp-download-btn {
+  padding: 4px 10px;
+  border: 1px solid;
+  border-radius: 4px;
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.settings-preview--light .sp-download-btn {
+  background: transparent;
+  border-color: #d4d4d4;
+  color: #52525b;
+}
+
+.settings-preview--light .sp-download-btn:hover {
+  background: #dbeafe;
+  border-color: #3b82f6;
+  color: #3b82f6;
+}
+
+.settings-preview--dark .sp-download-btn {
+  background: transparent;
+  border-color: #3f3f46;
+  color: #a1a1aa;
+}
+
+.settings-preview--dark .sp-download-btn:hover {
+  background: #27272a;
+  border-color: #475569;
+  color: #60a5fa;
+}
+
+.sp-file-meta {
+  margin-top: 6px;
+  font-size: 12px;
+  color: #71717a;
+  padding-left: 26px;
+}
+
+.sp-download-actions {
+  display: flex;
+  gap: 10px;
+  padding: 16px 20px;
+  border-top: 1px solid;
+}
+
+.settings-preview--light .sp-download-actions {
+  border-color: #e5e5e5;
+}
+
+.settings-preview--dark .sp-download-actions {
+  border-color: #27272a;
+}
+
+/* ===========================================================
+   Connection Status (Header)
+   =========================================================== */
+
+.sp-connection {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: 6px;
+  font-size: 12px;
+}
+
+.settings-preview--light .sp-connection {
+  background: rgba(34, 197, 94, 0.1);
+  color: #15803d;
+}
+
+.settings-preview--dark .sp-connection {
+  background: rgba(34, 197, 94, 0.15);
+  color: #22c55e;
+}
+
+.sp-status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #ef4444;
+}
+
+.sp-status-dot.connected {
+  background: #22c55e;
+}
+
+.sp-status-text {
+  font-weight: 500;
+}
+
+/* ===========================================================
+   Input Bar (Bottom) - Higher
+   =========================================================== */
+
+.sp-input-bar {
+  display: flex;
+  gap: 12px;
+  padding: 14px 20px;
+  border-top: 1px solid;
+  align-items: stretch;
+}
+
+.settings-preview--light .sp-input-bar {
+  background: #ffffff;
+  border-color: #e5e5e5;
+}
+
+.settings-preview--dark .sp-input-bar {
+  background: #16181d;
+  border-color: #27272a;
+}
+
+.sp-input-box {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid;
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+.settings-preview--light .sp-input-box {
+  background: #f5f5f5;
+  border-color: #e5e5e5;
+}
+
+.settings-preview--dark .sp-input-box {
+  background: #1f1f26;
+  border-color: #27272a;
+}
+
+/* Attached Files Inside Input */
+.sp-attached-files {
+  display: flex;
+  gap: 8px;
+  padding: 10px 12px;
+  flex-wrap: wrap;
+  border-bottom: 1px solid;
+}
+
+.settings-preview--light .sp-attached-files {
+  background: #ffffff;
+  border-color: #e5e5e5;
+}
+
+.settings-preview--dark .sp-attached-files {
+  background: #27272a;
+  border-color: #3f3f46;
+}
+
+.sp-file-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.settings-preview--light .sp-file-chip {
+  background: #dbeafe;
+  color: #3b82f6;
+}
+
+.settings-preview--dark .sp-file-chip {
+  background: #334155;
+  color: #60a5fa;
+}
+
+.sp-chip-remove {
+  padding: 0;
+  border: none;
+  background: transparent;
+  font-size: 14px;
+  cursor: pointer;
+  opacity: 0.7;
+  line-height: 1;
+}
+
+.sp-chip-remove:hover {
+  opacity: 1;
+}
+
+.sp-input-field {
+  width: 100%;
+  padding: 14px 16px;
+  border: none;
+  font-size: 14px;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  outline: none;
+  resize: none;
+  min-height: 80px;
+  flex: 1;
+}
+
+.settings-preview--light .sp-input-field {
+  background: #f5f5f5;
+  color: #1a1a1a;
+}
+
+.settings-preview--light .sp-input-box:focus-within {
+  border-color: #3b82f6;
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.15);
+}
+
+.settings-preview--dark .sp-input-field {
+  background: #1f1f26;
+  color: #e4e4e7;
+}
+
+.settings-preview--dark .sp-input-box:focus-within {
+  border-color: #475569;
+  box-shadow: 0 0 0 3px rgba(71, 85, 105, 0.2);
+}
+
+.sp-attach-btn {
+  width: 44px;
+  height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid;
+  border-radius: 50%;
+  font-size: 20px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  align-self: flex-end;
+  margin-bottom: 6px;
+}
+
+.sp-attach-icon {
+  line-height: 1;
+}
+
+.settings-preview--light .sp-attach-btn {
+  background: #f5f5f5;
+  border-color: #d4d4d4;
+  color: #71717a;
+}
+
+.settings-preview--light .sp-attach-btn:hover {
+  background: #dbeafe;
+  border-color: #3b82f6;
+  color: #3b82f6;
+  transform: scale(1.05);
+}
+
+.settings-preview--dark .sp-attach-btn {
+  background: #27272a;
+  border-color: #3f3f46;
+  color: #a1a1aa;
+}
+
+.settings-preview--dark .sp-attach-btn:hover {
+  background: #334155;
+  border-color: #475569;
+  color: #60a5fa;
+  transform: scale(1.05);
+}
+
+.sp-send-btn {
+  width: 44px;
+  height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 50%;
+  font-size: 20px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  align-self: flex-end;
+  margin-bottom: 6px;
+}
+
+.sp-send-icon {
+  line-height: 1;
+}
+
+.settings-preview--light .sp-send-btn {
+  background: linear-gradient(135deg, #3b82f6 0%, #60a5fa 100%);
+  color: #ffffff;
+  box-shadow: 0 4px 12px rgba(59, 130, 246, 0.35);
+}
+
+.settings-preview--light .sp-send-btn:hover {
+  box-shadow: 0 6px 20px rgba(59, 130, 246, 0.5);
+  transform: translateY(-2px) scale(1.05);
+}
+
+.settings-preview--dark .sp-send-btn {
+  background: #475569;
+  color: #ffffff;
+  box-shadow: 0 4px 12px rgba(71, 85, 105, 0.3);
+}
+
+.settings-preview--dark .sp-send-btn:hover {
+  background: #334155;
+  box-shadow: 0 6px 20px rgba(71, 85, 105, 0.4);
+  transform: translateY(-2px) scale(1.05);
+}
+
+.settings-preview--dark .sp-send-btn:hover {
+  background: #334155;
+}
+
+/* ===========================================================
+   Responsive
+   =========================================================== */
+
+@media (max-width: 768px) {
+  .sp-sidebar {
+    display: none;
+  }
+
+  .sp-settings-panel,
+  .sp-files-panel {
+    max-width: 100%;
+    max-height: 100vh;
+    border-radius: 0;
+  }
+
+  .sp-input-bar {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .sp-attach-btn,
+  .sp-send-btn {
+    align-self: center;
+    margin-bottom: 0;
+  }
+}

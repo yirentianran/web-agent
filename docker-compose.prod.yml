@@ -1,0 +1,68 @@
+services:
+  # ── Nginx Reverse Proxy ────────────────────────────────────────
+  nginx:
+    build:
+      context: ./nginx
+      dockerfile: Dockerfile
+    ports:
+      - "80:80"
+    depends_on:
+      main-server:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 128m
+
+  # ── Main Server ────────────────────────────────────────────────
+  main-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    expose:
+      - "8080"
+    volumes:
+      - ./data:/data
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      - DATA_ROOT=/data
+      - LOG_LEVEL=info
+      - CONTAINER_MODE=false
+      - ENFORCE_AUTH=true
+      - ENFORCE_ADMIN=true
+      - ADMIN_USER_IDS=admin
+      - AUDIT_LOG_DIR=/data/logs/audit
+      - APP_LOG_DIR=/data/logs/app
+      - AGENT_LOG_DIR=/data/logs/agent
+      - APP_LOG_RETENTION_DAYS=30
+      - AGENT_LOG_RETENTION_DAYS=90
+      - CONTAINER_LOG_RETENTION_DAYS=7
+      - AUDIT_LOG_RETENTION_DAYS=1095
+    command: >
+      uvicorn main_server:app
+      --host 0.0.0.0
+      --port 8080
+      --workers 2
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 4g
+        reservations:
+          cpus: "0.5"
+          memory: 512m

@@ -1,0 +1,841 @@
+/* ===========================================================
+   Tech Preview - Cyberpunk AI Style
+   =========================================================== */
+
+/* ── Base ───────────────────────────────────────────────────── */
+.tech-preview {
+  min-height: 100vh;
+  background: #0a0a12;
+  color: #e0e0e8;
+  font-family: 'JetBrains Mono', 'SF Mono', 'Fira Code', monospace;
+  position: relative;
+  overflow: hidden;
+}
+
+/* ── Grid Background ─────────────────────────────────────────── */
+.tech-grid-bg {
+  position: fixed;
+  inset: 0;
+  background-image:
+    linear-gradient(rgba(0, 212, 255, 0.03) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(0, 212, 255, 0.03) 1px, transparent 1px);
+  background-size: 40px 40px;
+  pointer-events: none;
+  z-index: 0;
+}
+
+/* ── Scanline Effect ─────────────────────────────────────────── */
+.tech-scanline {
+  position: fixed;
+  inset: 0;
+  background: repeating-linear-gradient(
+    0deg,
+    transparent,
+    transparent 2px,
+    rgba(0, 0, 0, 0.1) 2px,
+    rgba(0, 0, 0, 0.1) 4px
+  );
+  pointer-events: none;
+  z-index: 1000;
+  opacity: 0.3;
+}
+
+/* ===========================================================
+   Header
+   =========================================================== */
+
+.tech-header {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 56px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 24px;
+  background: rgba(22, 33, 62, 0.95);
+  border-bottom: 1px solid rgba(0, 212, 255, 0.25);
+  backdrop-filter: blur(10px);
+  z-index: 100;
+}
+
+.tech-brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.tech-logo {
+  font-size: 24px;
+  color: #00d4ff;
+  text-shadow: 0 0 20px rgba(0, 212, 255, 0.5);
+  animation: tech-pulse-glow 2s ease-in-out infinite;
+}
+
+.tech-name {
+  font-size: 18px;
+  font-weight: 700;
+  letter-spacing: 3px;
+  color: #00d4ff;
+}
+
+.tech-tag {
+  padding: 4px 10px;
+  background: rgba(0, 212, 255, 0.1);
+  border: 1px solid rgba(0, 212, 255, 0.3);
+  border-radius: 4px;
+  font-size: 11px;
+  letter-spacing: 1px;
+  color: rgba(0, 212, 255, 0.7);
+}
+
+.tech-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+/* ── Status Indicator ────────────────────────────────────────── */
+.tech-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 14px;
+  background: rgba(0, 255, 136, 0.1);
+  border: 1px solid rgba(0, 255, 136, 0.3);
+  border-radius: 6px;
+}
+
+.tech-pulse {
+  width: 8px;
+  height: 8px;
+  background: #00ff88;
+  border-radius: 50%;
+  animation: tech-blink 1s ease-in-out infinite;
+  box-shadow: 0 0 10px rgba(0, 255, 136, 0.5);
+}
+
+.tech-status-text {
+  font-size: 12px;
+  letter-spacing: 2px;
+  color: #00ff88;
+}
+
+@keyframes tech-blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+@keyframes tech-pulse-glow {
+  0%, 100% { text-shadow: 0 0 20px rgba(0, 212, 255, 0.5); }
+  50% { text-shadow: 0 0 40px rgba(0, 212, 255, 0.8), 0 0 60px rgba(0, 212, 255, 0.4); }
+}
+
+/* ===========================================================
+   Buttons
+   =========================================================== */
+
+.tech-btn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 16px;
+  border: 1px solid;
+  border-radius: 6px;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 1px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  text-transform: uppercase;
+}
+
+.tech-btn-icon {
+  font-size: 14px;
+  line-height: 1;
+}
+
+/* ── Ghost Button ───────────────────────────────────────────── */
+.tech-btn.ghost {
+  background: transparent;
+  border-color: rgba(0, 212, 255, 0.2);
+  color: rgba(0, 212, 255, 0.7);
+}
+
+.tech-btn.ghost:hover {
+  background: rgba(0, 212, 255, 0.1);
+  border-color: rgba(0, 212, 255, 0.4);
+  color: #00d4ff;
+}
+
+.tech-btn.ghost.small {
+  padding: 6px 12px;
+  font-size: 11px;
+}
+
+/* ── Primary Button ──────────────────────────────────────────── */
+.tech-btn.primary {
+  background: linear-gradient(135deg, rgba(0, 212, 255, 0.2) 0%, rgba(124, 58, 237, 0.2) 100%);
+  border-color: rgba(0, 212, 255, 0.4);
+  color: #00d4ff;
+  box-shadow: 0 4px 20px rgba(0, 212, 255, 0.2);
+}
+
+.tech-btn.primary:hover {
+  background: linear-gradient(135deg, rgba(0, 212, 255, 0.3) 0%, rgba(124, 58, 237, 0.3) 100%);
+  border-color: #00d4ff;
+  box-shadow: 0 6px 30px rgba(0, 212, 255, 0.4);
+  transform: translateY(-2px);
+}
+
+.tech-btn.primary.pulse {
+  animation: tech-btn-pulse 2s ease-in-out infinite;
+}
+
+@keyframes tech-btn-pulse {
+  0%, 100% { box-shadow: 0 4px 20px rgba(0, 212, 255, 0.2); }
+  50% { box-shadow: 0 4px 40px rgba(0, 212, 255, 0.4); }
+}
+
+/* ── Outline Button ─────────────────────────────────────────── */
+.tech-btn.outline {
+  background: transparent;
+  border-color: rgba(0, 212, 255, 0.3);
+  color: #00d4ff;
+}
+
+.tech-btn.outline:hover {
+  background: rgba(0, 212, 255, 0.1);
+  border-color: #00d4ff;
+}
+
+/* ===========================================================
+   Layout
+   =========================================================== */
+
+.tech-layout {
+  display: flex;
+  height: calc(100vh - 56px - 32px);
+  padding-top: 56px;
+}
+
+/* ===========================================================
+   Sidebar
+   =========================================================== */
+
+.tech-sidebar {
+  width: 280px;
+  display: flex;
+  flex-direction: column;
+  padding: 24px 16px;
+  background: rgba(22, 33, 62, 0.6);
+  border-right: 1px solid rgba(0, 212, 255, 0.15);
+}
+
+.tech-sessions {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 24px;
+}
+
+/* ── Session Item ───────────────────────────────────────────── */
+.tech-session {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 16px;
+  background: rgba(22, 33, 62, 0.4);
+  border: 1px solid transparent;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.tech-session:hover {
+  background: rgba(0, 212, 255, 0.08);
+  border-color: rgba(0, 212, 255, 0.25);
+}
+
+.tech-session.active {
+  background: rgba(0, 212, 255, 0.15);
+  border-color: rgba(0, 212, 255, 0.4);
+  box-shadow: 0 0 20px rgba(0, 212, 255, 0.15);
+}
+
+.tech-node {
+  width: 10px;
+  height: 10px;
+  background: rgba(0, 212, 255, 0.3);
+  border-radius: 50%;
+  border: 2px solid rgba(0, 212, 255, 0.5);
+}
+
+.tech-node.active {
+  background: #00d4ff;
+  border-color: #00d4ff;
+  animation: tech-node-pulse 1s ease-in-out infinite;
+  box-shadow: 0 0 15px rgba(0, 212, 255, 0.5);
+}
+
+@keyframes tech-node-pulse {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.2); }
+}
+
+.tech-session-info {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.tech-session-title {
+  font-size: 13px;
+  font-weight: 500;
+  color: #e0e0e8;
+  letter-spacing: 0.5px;
+}
+
+.tech-session-time {
+  font-size: 11px;
+  color: rgba(0, 212, 255, 0.5);
+}
+
+.tech-session.active .tech-session-time {
+  color: #00d4ff;
+}
+
+.tech-session-badge {
+  color: #00ff88;
+  font-size: 10px;
+  animation: tech-blink 1s ease-in-out infinite;
+}
+
+/* ── Sidebar Footer ─────────────────────────────────────────── */
+.tech-sidebar-footer {
+  padding-top: 16px;
+  border-top: 1px solid rgba(0, 212, 255, 0.15);
+  margin-top: auto;
+}
+
+.tech-btn.files-btn {
+  width: 100%;
+  justify-content: center;
+}
+
+.tech-count {
+  padding: 4px 10px;
+  background: rgba(0, 212, 255, 0.2);
+  border-radius: 4px;
+  font-size: 12px;
+  font-weight: 700;
+  color: #00d4ff;
+  margin-left: auto;
+}
+
+/* ===========================================================
+   Main Content
+   =========================================================== */
+
+.tech-main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+}
+
+/* ── Welcome Screen ──────────────────────────────────────────── */
+.tech-welcome {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 40px;
+  position: relative;
+}
+
+.tech-welcome-glow {
+  position: absolute;
+  width: 500px;
+  height: 500px;
+  background: radial-gradient(circle, rgba(0, 212, 255, 0.25) 0%, rgba(124, 58, 237, 0.15) 50%, transparent 70%);
+  filter: blur(60px);
+  pointer-events: none;
+}
+
+.tech-welcome-logo {
+  font-size: 64px;
+  color: #00d4ff;
+  text-shadow: 0 0 60px rgba(0, 212, 255, 0.8), 0 0 120px rgba(0, 212, 255, 0.4);
+  margin-bottom: 24px;
+  animation: tech-logo-float 3s ease-in-out infinite;
+}
+
+@keyframes tech-logo-float {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-10px); }
+}
+
+.tech-welcome-title {
+  font-size: 32px;
+  font-weight: 700;
+  letter-spacing: 6px;
+  color: #e0e0e8;
+  margin-bottom: 12px;
+}
+
+.tech-highlight {
+  color: #00d4ff;
+  text-shadow: 0 0 30px rgba(0, 212, 255, 0.5);
+}
+
+.tech-welcome-desc {
+  font-size: 14px;
+  letter-spacing: 3px;
+  color: rgba(0, 212, 255, 0.5);
+  text-transform: uppercase;
+}
+
+/* ── Neural Network Visualization ────────────────────────────── */
+.tech-neural-net {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  margin-top: 40px;
+}
+
+.tech-node-visual {
+  width: 40px;
+  height: 40px;
+  background: rgba(0, 212, 255, 0.1);
+  border: 2px solid rgba(0, 212, 255, 0.3);
+  border-radius: 50%;
+  position: relative;
+}
+
+.tech-node-visual.active {
+  background: rgba(0, 212, 255, 0.2);
+  border-color: #00d4ff;
+  animation: tech-node-glow 1.5s ease-in-out infinite;
+  box-shadow: 0 0 30px rgba(0, 212, 255, 0.5);
+}
+
+@keyframes tech-node-glow {
+  0%, 100% { box-shadow: 0 0 30px rgba(0, 212, 255, 0.5); }
+  50% { box-shadow: 0 0 50px rgba(0, 212, 255, 0.8); }
+}
+
+.tech-connection {
+  width: 60px;
+  height: 2px;
+  background: rgba(0, 212, 255, 0.2);
+  position: relative;
+}
+
+.tech-connection.active {
+  background: linear-gradient(90deg, rgba(0, 212, 255, 0.8) 0%, rgba(0, 212, 255, 0.2) 100%);
+  animation: tech-data-flow 1s linear infinite;
+}
+
+@keyframes tech-data-flow {
+  0% { opacity: 0.3; }
+  50% { opacity: 1; }
+  100% { opacity: 0.3; }
+}
+
+/* ===========================================================
+   Input Bar
+   =========================================================== */
+
+.tech-input-bar {
+  display: flex;
+  gap: 16px;
+  padding: 24px;
+  align-items: stretch;
+}
+
+/* ── Attach Button ───────────────────────────────────────────── */
+.tech-btn.attach-btn {
+  width: 48px;
+  height: 48px;
+  justify-content: center;
+  background: rgba(0, 212, 255, 0.05);
+  border-color: rgba(0, 212, 255, 0.2);
+  border-radius: 50%;
+  align-self: flex-end;
+  margin-bottom: 4px;
+}
+
+.tech-btn.attach-btn:hover {
+  background: rgba(0, 212, 255, 0.1);
+  border-color: #00d4ff;
+  box-shadow: 0 0 20px rgba(0, 212, 255, 0.3);
+}
+
+.tech-btn.attach-btn .tech-btn-icon {
+  font-size: 18px;
+  color: #00d4ff;
+}
+
+/* ── Input Box ───────────────────────────────────────────────── */
+.tech-input-box {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  background: rgba(22, 33, 62, 0.7);
+  border: 1px solid rgba(0, 212, 255, 0.25);
+  border-radius: 12px;
+  position: relative;
+  overflow: hidden;
+}
+
+.tech-input-glow {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(180deg, rgba(0, 212, 255, 0.05) 0%, transparent 100%);
+  pointer-events: none;
+}
+
+.tech-input-box:focus-within {
+  border-color: #00d4ff;
+  box-shadow: 0 0 30px rgba(0, 212, 255, 0.2), inset 0 0 60px rgba(0, 212, 255, 0.05);
+}
+
+.tech-input-field {
+  flex: 1;
+  padding: 16px 20px;
+  background: transparent;
+  border: none;
+  font-family: inherit;
+  font-size: 14px;
+  color: #e0e0e8;
+  outline: none;
+  resize: none;
+  min-height: 100px;
+}
+
+.tech-input-field::placeholder {
+  color: rgba(0, 212, 255, 0.3);
+}
+
+/* ── Input Indicator ─────────────────────────────────────────── */
+.tech-input-indicator {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 20px;
+  background: rgba(0, 212, 255, 0.05);
+  border-top: 1px solid rgba(0, 212, 255, 0.1);
+}
+
+.tech-input-label {
+  font-size: 11px;
+  letter-spacing: 2px;
+  color: #00ff88;
+}
+
+.tech-input-bar {
+  width: 100px;
+  height: 4px;
+  background: rgba(0, 212, 255, 0.2);
+  border-radius: 2px;
+  position: relative;
+  overflow: hidden;
+}
+
+.tech-input-bar::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: -100%;
+  width: 100%;
+  height: 100%;
+  background: linear-gradient(90deg, transparent 0%, #00d4ff 50%, transparent 100%);
+  animation: tech-progress-bar 2s linear infinite;
+}
+
+@keyframes tech-progress-bar {
+  0% { left: -100%; }
+  100% { left: 100%; }
+}
+
+/* ── Send Button ─────────────────────────────────────────────── */
+.tech-btn.send-btn {
+  width: 48px;
+  height: 48px;
+  justify-content: center;
+  background: linear-gradient(135deg, #3b82f6 0%, #475569 100%);
+  border: none;
+  border-radius: 50%;
+  align-self: flex-end;
+  margin-bottom: 4px;
+  box-shadow: 0 4px 30px rgba(59, 130, 246, 0.4);
+  animation: tech-send-pulse 2s ease-in-out infinite;
+}
+
+.tech-btn.send-btn:hover {
+  box-shadow: 0 6px 40px rgba(59, 130, 246, 0.6);
+  transform: translateY(-4px) scale(1.05);
+}
+
+.tech-btn.send-btn .tech-btn-icon {
+  font-size: 20px;
+  color: #0a0a12;
+}
+
+@keyframes tech-send-pulse {
+  0%, 100% { box-shadow: 0 4px 30px rgba(0, 212, 255, 0.4); }
+  50% { box-shadow: 0 4px 50px rgba(0, 212, 255, 0.6); }
+}
+
+/* ===========================================================
+   Settings Panel
+   =========================================================== */
+
+.tech-settings-overlay {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 40px;
+  z-index: 500;
+  background: rgba(15, 52, 96, 0.7);
+  animation: tech-overlay-fade-in 0.3s ease;
+}
+
+@keyframes tech-overlay-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.tech-settings-panel {
+  width: 100%;
+  max-width: 600px;
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+  background: rgba(22, 33, 62, 0.95);
+  border: 1px solid rgba(0, 212, 255, 0.3);
+  border-radius: 16px;
+  box-shadow: 0 20px 60px rgba(0, 212, 255, 0.2);
+  overflow: hidden;
+  animation: tech-panel-slide-in 0.3s ease;
+}
+
+@keyframes tech-panel-slide-in {
+  from {
+    opacity: 0;
+    transform: translateY(-20px) scale(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.tech-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 20px 24px;
+  border-bottom: 1px solid rgba(0, 212, 255, 0.2);
+}
+
+.tech-panel-title {
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: 2px;
+  color: #00d4ff;
+}
+
+.tech-btn.close-btn {
+  width: 32px;
+  height: 32px;
+  justify-content: center;
+  background: transparent;
+  border-color: rgba(0, 212, 255, 0.2);
+  border-radius: 6px;
+  font-size: 18px;
+  color: rgba(0, 212, 255, 0.5);
+}
+
+.tech-btn.close-btn:hover {
+  background: rgba(255, 68, 68, 0.1);
+  border-color: rgba(255, 68, 68, 0.3);
+  color: #ff4444;
+}
+
+/* ── Upload Zone ─────────────────────────────────────────────── */
+.tech-upload-zone {
+  padding: 20px 24px;
+}
+
+.tech-upload-zone .tech-btn {
+  width: 100%;
+  justify-content: center;
+  padding: 16px;
+  background: transparent;
+  border-color: rgba(0, 212, 255, 0.2);
+}
+
+.tech-upload-zone .tech-btn:hover {
+  background: rgba(0, 212, 255, 0.1);
+  border-color: rgba(0, 212, 255, 0.4);
+}
+
+/* ── Skill List ──────────────────────────────────────────────── */
+.tech-skill-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 20px 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.tech-skill-card {
+  padding: 16px;
+  background: rgba(22, 33, 62, 0.5);
+  border: 1px solid rgba(0, 212, 255, 0.2);
+  border-radius: 10px;
+  transition: all 0.2s ease;
+}
+
+.tech-skill-card:hover {
+  background: rgba(0, 212, 255, 0.1);
+  border-color: rgba(0, 212, 255, 0.4);
+}
+
+.tech-skill-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.tech-skill-icon {
+  font-size: 16px;
+  color: #00d4ff;
+}
+
+.tech-skill-name {
+  font-size: 14px;
+  font-weight: 600;
+  color: #e0e0e8;
+  flex: 1;
+}
+
+.tech-skill-status {
+  padding: 4px 10px;
+  border-radius: 4px;
+  font-size: 11px;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+}
+
+.tech-skill-status.active {
+  background: rgba(0, 255, 136, 0.1);
+  border: 1px solid rgba(0, 255, 136, 0.3);
+  color: #00ff88;
+}
+
+.tech-skill-status.paused {
+  background: rgba(255, 170, 0, 0.1);
+  border: 1px solid rgba(255, 170, 0, 0.3);
+  color: #ffaa00;
+}
+
+.tech-skill-meta {
+  margin-top: 8px;
+  font-size: 12px;
+  color: rgba(0, 212, 255, 0.5);
+}
+
+.tech-skill-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+/* ===========================================================
+   Footer
+   =========================================================== */
+
+.tech-footer {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(22, 33, 62, 0.95);
+  border-top: 1px solid rgba(0, 212, 255, 0.15);
+}
+
+.tech-footer-text {
+  font-size: 11px;
+  letter-spacing: 2px;
+  color: rgba(0, 212, 255, 0.5);
+}
+
+/* ===========================================================
+   Back Link
+   =========================================================== */
+
+.tech-back-link {
+  position: fixed;
+  bottom: 48px;
+  right: 24px;
+  padding: 10px 20px;
+  background: rgba(0, 212, 255, 0.1);
+  border: 1px solid rgba(0, 212, 255, 0.3);
+  border-radius: 8px;
+  color: #00d4ff;
+  font-family: inherit;
+  font-size: 12px;
+  letter-spacing: 1px;
+  text-decoration: none;
+  z-index: 1001;
+  transition: all 0.2s ease;
+}
+
+.tech-back-link:hover {
+  background: rgba(0, 212, 255, 0.2);
+  border-color: #00d4ff;
+  box-shadow: 0 0 20px rgba(0, 212, 255, 0.3);
+}
+
+/* ===========================================================
+   Responsive
+   =========================================================== */
+
+@media (max-width: 768px) {
+  .tech-sidebar {
+    width: 240px;
+  }
+
+  .tech-welcome-title {
+    font-size: 24px;
+    letter-spacing: 4px;
+  }
+
+  .tech-neural-net {
+    gap: 12px;
+  }
+
+  .tech-node-visual {
+    width: 30px;
+    height: 30px;
+  }
+
+  .tech-connection {
+    width: 40px;
+  }
+}
