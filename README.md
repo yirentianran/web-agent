@@ -80,49 +80,64 @@ web-agent/
 ├── tests/                  # Backend tests
 │   └── unit/
 ├── docs/                   # Architecture docs
-├── docker-compose.yml      # Docker development config
+├── scripts/                # Management scripts
+│   ├── manage.sh           # Production server control (start/stop/restart)
+│   └── build.sh            # Frontend build script
 └── setup.sh                # One-time setup script
 ```
 
+## Deployment
+
+The project uses a **single-process architecture** — FastAPI serves both the API and the frontend static files. No Docker or Nginx required.
+
+### Production Setup
+
+1. **Build frontend assets**:
+   ```bash
+   ./scripts/build.sh
+   ```
+
+2. **Start the server**:
+   ```bash
+   ./scripts/manage.sh start
+   ```
+
+3. **Manage the server**:
+   | Command | Description |
+   |---------|-------------|
+   | `./scripts/manage.sh start` | Start server (background) |
+   | `./scripts/manage.sh stop` | Stop server (finds process by name) |
+   | `./scripts/manage.sh restart` | Restart server |
+   | `./scripts/manage.sh status` | Check server status |
+   | `./scripts/manage.sh logs` | View server logs |
+
+4. **Access**: Open `http://<server-ip>:8000`
+
 ## Development
 
-### Backend
+For local development with hot-reload:
 
 ```bash
-# Install dependencies
-uv sync  # or pip install -e .
-
-# Run tests
-uv run pytest
-
-# Run linter
-uv run ruff check src/ main_server.py
-
-# Run type check
-uv run mypy src/
+./start-dev.sh
 ```
 
-### Frontend
+This starts:
+- Backend on `http://localhost:8000` (with auto-reload)
+- Frontend on `http://localhost:3000` (Vite dev server with proxy)
 
+### Running Tests
+
+**Backend**:
 ```bash
-cd frontend
+uv run pytest
+```
 
-# Install dependencies
-npm install
-
-# Run tests
-npm test
-
-# Run type check
-npx tsc --noEmit
-
-# Start dev server
-npm run dev
+**Frontend**:
+```bash
+cd frontend && npm test
 ```
 
 ## API
-
-Interactive API docs at `http://localhost:8000/docs`
 
 Key endpoints:
 
