@@ -95,7 +95,7 @@ export default function SettingsPreview({ theme }: SettingsPreviewProps) {
         <main className="sp-main">
           <div className="sp-welcome">
             <div className="sp-welcome-logo">◎</div>
-            <h1 className="sp-welcome-title">Web Agent Platform</h1>
+            <h1 className="sp-welcome-title">Web Agent</h1>
             <p className="sp-welcome-desc">Your AI-powered coding companion</p>
           </div>
 

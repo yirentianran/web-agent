@@ -1,4 +1,4 @@
-# Web Agent Platform — 架构完成度分析报告
+# Web Agent — 架构完成度分析报告
 
 > 分析时间：2026-04-13 | 测试：235 通过 | 对比基准：`docs/claude-agent-sdk-multi-user-architecture.md`
 > 总体完成度：**~90%**（基础设施 100%，内容/示例 0%，安全加固 1 项缺失）

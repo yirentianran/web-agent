@@ -64,7 +64,7 @@ export default function DesignPreview({ style }: DesignPreviewProps) {
               {style === 'tech' ? '◎' : '✨'}
             </div>
             <h1 className="dp-welcome-title">
-              {style === 'tech' ? 'Web Agent Platform' : 'Your AI Assistant'}
+              {style === 'tech' ? 'Web Agent' : 'Your AI Assistant'}
             </h1>
             <p className="dp-welcome-desc">
               {style === 'tech'

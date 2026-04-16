@@ -79,7 +79,7 @@ if _DATA_ROOT_PATH.is_absolute():
 else:
     DATA_ROOT = (Path(__file__).parent / _DATA_ROOT_ENV).resolve()
 PROD = os.getenv("PROD", "false").lower() == "true"
-app = FastAPI(title="Web Agent Platform")
+app = FastAPI(title="Web Agent")
 
 # ── Skill upload limits ──────────────────────────────────────────
 MAX_ZIP_SIZE = 50 * 1024 * 1024  # 50MB compressed

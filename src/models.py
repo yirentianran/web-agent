@@ -1,4 +1,4 @@
-"""Shared Pydantic models for the web agent platform."""
+"""Shared Pydantic models for the web agent."""
 
 from __future__ import annotations
 

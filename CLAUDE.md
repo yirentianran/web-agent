@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-Multi-user web agent platform built with FastAPI (backend) and React (frontend). Each user gets isolated sessions, workspace, and memory. The backend communicates with Claude Agent SDK via WebSocket streaming.
+Multi-user web agent built with FastAPI (backend) and React (frontend). Each user gets isolated sessions, workspace, and memory. The backend communicates with Claude Agent SDK via WebSocket streaming.
 
 ## Architecture
 

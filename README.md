@@ -1,6 +1,6 @@
 # Web Agent
 
-Multi-user web agent platform powered by Claude Agent SDK. Each user gets an isolated workspace with full session history, file management, skill sharing, and real-time WebSocket communication.
+Multi-user web agent powered by Claude Agent SDK. Each user gets an isolated workspace with full session history, file management, skill sharing, and real-time WebSocket communication.
 
 ## Features
 

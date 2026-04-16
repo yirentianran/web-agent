@@ -165,6 +165,18 @@ export default function ChatArea({ messages, sessionId, sessionState, onAnswer, 
     return hookName.includes(':') ? hookName.split(':')[1] : hookName
   }
 
+  // Find the index of the latest TodoWrite message so MessageBubble can
+  // hide older TodoWrite visualizations (deduplicate todo lists).
+  const lastTodoWriteIndex = useMemo(() => {
+    let maxIndex = -1
+    for (const msg of messages) {
+      if (msg.type === 'tool_use' && msg.name === 'TodoWrite' && msg.index > maxIndex) {
+        maxIndex = msg.index
+      }
+    }
+    return maxIndex === -1 ? undefined : maxIndex
+  }, [messages])
+
   // Sort messages by index to ensure chronological order (newest at bottom)
   const sortedMessages = useMemo(
     () => [...messages].sort((a, b) => a.index - b.index),
@@ -206,6 +218,7 @@ export default function ChatArea({ messages, sessionId, sessionState, onAnswer, 
             sessionId={sessionId || ''}
             onAnswer={onAnswer}
             onFileClick={onFileClick}
+            lastTodoWriteIndex={lastTodoWriteIndex}
           />
         ))}
 

@@ -1,4 +1,4 @@
-# Web Agent Platform - Full Implementation Plan
+# Web Agent - Full Implementation Plan
 
 > Phase 1: 9/9 | Phase 2: 6/6 | Phase 3: 7/7 | Phase 4: 3/3 | Phase 5: 3/5 (OAuth deferred)
 > Last updated: 2026-04-13 | Tests: 235 passing

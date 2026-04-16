@@ -120,9 +120,10 @@ interface MessageBubbleProps {
   sessionId: string
   onAnswer: (sessionId: string, answers: Record<string, string>) => void
   onFileClick?: (filename: string) => void
+  lastTodoWriteIndex?: number
 }
 
-export default function MessageBubble({ message, sessionId, onAnswer, onFileClick }: MessageBubbleProps) {
+export default function MessageBubble({ message, sessionId, onAnswer, onFileClick, lastTodoWriteIndex }: MessageBubbleProps) {
   if (message.type === 'user') {
     const files = (message.data as Array<{ filename: string; size?: number }> | undefined) || []
     if ((!message.content || !message.content.trim()) && files.length === 0) return null
@@ -185,6 +186,10 @@ export default function MessageBubble({ message, sessionId, onAnswer, onFileClic
     if (message.name === 'TodoWrite') {
       const todos = parseTodoWriteInput(message.input)
       if (todos && todos.length > 0) {
+        // Only show the latest TodoWrite; hide older ones
+        if (lastTodoWriteIndex !== undefined && message.index < lastTodoWriteIndex) {
+          return null
+        }
         return <TodoWriteViz todos={todos} />
       }
     }

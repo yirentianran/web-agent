@@ -1,15 +1,17 @@
+import React from 'react'
 import { describe, it, expect, vi } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import '@testing-library/jest-dom/vitest'
 import MessageBubble, { formatBashCommand, formatFileContent } from '../components/MessageBubble'
 import type { Message } from '../lib/types'
 
-function renderMessage(message: Message) {
+function renderMessage(message: Message, overrides?: Partial<React.ComponentProps<typeof MessageBubble>>) {
   return render(
     <MessageBubble
       message={message}
       sessionId="test-session"
       onAnswer={() => {}}
+      {...overrides}
     />
   )
 }
@@ -537,6 +539,44 @@ describe('MessageBubble - TodoWrite visualization', () => {
     // Progress bar should exist
     const progressBar = screen.getByRole('progressbar')
     expect(progressBar).toHaveAttribute('aria-valuenow', '67')
+  })
+
+  it('hides older TodoWrite when lastTodoWriteIndex is provided', () => {
+    const oldTodo: Message = {
+      type: 'tool_use',
+      content: '',
+      index: 2,
+      name: 'TodoWrite',
+      input: {
+        todos: [
+          { content: 'Old task', status: 'pending' },
+        ],
+      },
+    }
+
+    renderMessage(oldTodo, { lastTodoWriteIndex: 10 })
+
+    // Older todo should NOT be visible
+    expect(screen.queryByText('Old task')).not.toBeInTheDocument()
+  })
+
+  it('shows latest TodoWrite when index matches lastTodoWriteIndex', () => {
+    const latestTodo: Message = {
+      type: 'tool_use',
+      content: '',
+      index: 10,
+      name: 'TodoWrite',
+      input: {
+        todos: [
+          { content: 'New task', status: 'in_progress' },
+        ],
+      },
+    }
+
+    renderMessage(latestTodo, { lastTodoWriteIndex: 10 })
+
+    // Latest todo should be visible
+    expect(screen.getByText('New task')).toBeInTheDocument()
   })
 })
 

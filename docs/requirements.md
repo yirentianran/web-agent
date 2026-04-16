@@ -1,4 +1,4 @@
-# Web Agent Platform — 需求文档
+# Web Agent — 需求文档
 
 > **版本**: v1.0
 > **日期**: 2026-04-14
