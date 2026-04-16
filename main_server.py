@@ -26,7 +26,7 @@ import uuid
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterator
+from typing import TYPE_CHECKING, Any, Iterator
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -43,6 +43,9 @@ from src.models import (
     SkillInfo,
     SkillSource,
 )
+
+if TYPE_CHECKING:
+    from src.session_store import SessionStore
 
 # ── Configuration ────────────────────────────────────────────────
 
@@ -98,6 +101,7 @@ if not PROD:
 
 # Global state
 buffer = MessageBuffer(base_dir=DATA_ROOT / ".msg-buffer")
+session_store: SessionStore | None = None  # Set externally for DB integration
 active_tasks: dict[str, asyncio.Task] = {}
 pending_answers: dict[str, asyncio.Future] = {}
 
@@ -1357,11 +1361,15 @@ async def create_session(user_id: str) -> dict[str, str]:
     # Initialize in MessageBuffer so history/status work immediately
     buffer._ensure_buf(session_id)
 
-    # Persist session metadata
-    sessions_dir = user_data_dir(user_id) / "claude-data" / "sessions"
-    sessions_dir.mkdir(parents=True, exist_ok=True)
-    session_file = sessions_dir / f"{session_id}.jsonl"
-    session_file.touch()
+    # Persist to DB if available
+    if session_store is not None:
+        await session_store.create_session(user_id=user_id, session_id=session_id)
+    else:
+        # Fallback: file-based persistence
+        sessions_dir = user_data_dir(user_id) / "claude-data" / "sessions"
+        sessions_dir.mkdir(parents=True, exist_ok=True)
+        session_file = sessions_dir / f"{session_id}.jsonl"
+        session_file.touch()
 
     return {"session_id": session_id, "title": ""}
 
@@ -1369,6 +1377,11 @@ async def create_session(user_id: str) -> dict[str, str]:
 @app.get("/api/users/{user_id}/sessions", response_model=list[dict[str, Any]])
 async def list_sessions(user_id: str) -> list[dict[str, Any]]:
     """List all historical sessions for a user."""
+    # Use DB-backed store if available
+    if session_store is not None:
+        return await session_store.list_sessions(user_id=user_id)
+
+    # Fallback: file-based scan
     sessions_dir = user_data_dir(user_id) / "claude-data" / "sessions"
     sessions: list[dict[str, Any]] = []
 
@@ -1430,6 +1443,17 @@ async def list_sessions(user_id: str) -> list[dict[str, Any]]:
 @app.get("/api/users/{user_id}/sessions/{session_id}/history")
 async def get_session_history(user_id: str, session_id: str) -> list[dict[str, Any]]:
     """Get all messages for a historical session."""
+    # Use DB-backed store if available
+    if session_store is not None:
+        messages = await session_store.get_session_history(session_id=session_id)
+        # Determine state from buffer or DB
+        state = buffer.get_session_state(session_id)
+        return [
+            {**msg, "session_id": session_id, "session_state": state.get("state", "idle")}
+            for msg in messages
+        ]
+
+    # Fallback: file-based
     messages = buffer.get_history(session_id, after_index=0)
     state = buffer.get_session_state(session_id)
     return [
@@ -1506,27 +1530,32 @@ async def get_all_generated_files(user_id: str) -> list[dict[str, Any]]:
 
 @app.delete("/api/users/{user_id}/sessions/{session_id}")
 async def delete_session(user_id: str, session_id: str) -> dict[str, str]:
-    """Delete a session file, metadata, in-memory buffer, and active client (free disk)."""
-    sessions_dir = user_data_dir(user_id) / "claude-data" / "sessions"
-    session_file = sessions_dir / f"{session_id}.jsonl"
-    meta_file = sessions_dir / f"{session_id}.meta.json"
+    """Delete a session, its messages, in-memory buffer, and active client (free disk)."""
+    # Use DB-backed store if available
+    if session_store is not None:
+        await session_store.delete_session(session_id=session_id)
+    else:
+        # Fallback: file-based deletion
+        sessions_dir = user_data_dir(user_id) / "claude-data" / "sessions"
+        session_file = sessions_dir / f"{session_id}.jsonl"
+        meta_file = sessions_dir / f"{session_id}.meta.json"
 
-    deleted = False
-    if session_file.exists():
-        session_file.unlink()
-        deleted = True
-    if meta_file.exists():
-        meta_file.unlink()
-        deleted = True
+        deleted = False
+        if session_file.exists():
+            session_file.unlink()
+            deleted = True
+        if meta_file.exists():
+            meta_file.unlink()
+            deleted = True
+
+        if not deleted:
+            raise HTTPException(status_code=404, detail="Session not found")
 
     # Clean up in-memory buffer so it won't reappear in the list
     buffer.remove_session(session_id)
 
     # Disconnect the active Claude SDK client for this session
     await cleanup_session_client(session_id)
-
-    if not deleted:
-        raise HTTPException(status_code=404, detail="Session not found")
     return {"status": "ok"}
 
 
@@ -1536,11 +1565,16 @@ class TitleUpdate(BaseModel):
 
 @app.patch("/api/users/{user_id}/sessions/{session_id}/title")
 async def update_session_title(user_id: str, session_id: str, req: TitleUpdate) -> dict[str, str]:
-    """Update a session's title. Stored in a lightweight metadata file."""
-    meta_file = user_data_dir(user_id) / "claude-data" / "sessions" / f"{session_id}.meta.json"
-    meta_file.parent.mkdir(parents=True, exist_ok=True)
-    meta = {"title": req.title, "updated_at": time.time()}
-    meta_file.write_text(json.dumps(meta))
+    """Update a session's title."""
+    # Use DB-backed store if available
+    if session_store is not None:
+        await session_store.update_session_title(user_id=user_id, session_id=session_id, title=req.title)
+    else:
+        # Fallback: file-based metadata
+        meta_file = user_data_dir(user_id) / "claude-data" / "sessions" / f"{session_id}.meta.json"
+        meta_file.parent.mkdir(parents=True, exist_ok=True)
+        meta = {"title": req.title, "updated_at": time.time()}
+        meta_file.write_text(json.dumps(meta))
     return {"status": "ok", "title": req.title}
 
 
