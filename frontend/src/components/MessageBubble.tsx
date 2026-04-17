@@ -156,8 +156,10 @@ export default function MessageBubble({ message, sessionId, onAnswer, onFileClic
     // - hook_started/response: shown as spinners in ChatArea
     // - init: internal initialization confirmation
     // - session_state_changed: used to update UI state, not displayed
-    const hiddenSubtypes = ['hook_started', 'hook_response', 'hook_error', 'init', 'session_state_changed']
-    if (hiddenSubtypes.includes(message.subtype || '')) {
+    // - task_started / task_started.*: internal SDK task notifications
+    const hiddenSubtypes = ['hook_started', 'hook_response', 'hook_error', 'init', 'session_state_changed', 'task_started']
+    const subtype = message.subtype || ''
+    if (hiddenSubtypes.includes(subtype) || subtype.startsWith('task_started.')) {
       return null
     }
     const displayText = message.content
@@ -192,8 +194,10 @@ export default function MessageBubble({ message, sessionId, onAnswer, onFileClic
     const summary = input ? buildToolSummary(message.name, input) : ''
 
     // Bash tool_use: show description + formatted command instead of raw JSON
-    if (message.name === 'Bash' && input) {
+    if (message.name === 'Bash') {
+      if (!input) return null
       const { command, description } = formatBashCommand(input)
+      if (!command) return null
       return (
         <details className="message tool-message" open={false}>
           <summary className="tool-summary">
@@ -237,6 +241,8 @@ export default function MessageBubble({ message, sessionId, onAnswer, onFileClic
 
   if (message.type === 'tool_result') {
     const content = message.content || ''
+    // Hide empty tool results (e.g., TaskOutput with no content)
+    if (!content && !message.is_error) return null
     const isJson = /^\s*[{[]/.test(content)
     return (
       <details className="message tool-result">
@@ -261,18 +267,7 @@ export default function MessageBubble({ message, sessionId, onAnswer, onFileClic
   }
 
   if (message.type === 'result') {
-    const parts = ['Session completed']
-    if (message.duration_ms !== undefined) {
-      parts.push(`in ${(message.duration_ms / 1000).toFixed(1)}s`)
-    }
-    if (message.total_cost_usd !== undefined) {
-      parts.push(`— $${message.total_cost_usd.toFixed(4)}`)
-    }
-    return (
-      <div className="message system-message">
-        <span className="system-text">{parts.join(' ')}</span>
-      </div>
-    )
+    return null
   }
 
   if (message.type === 'file_upload') {

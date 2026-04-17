@@ -81,6 +81,15 @@ export default function ChatArea({ messages, sessionId, sessionState, onAnswer, 
     }
   }, [messages])
 
+  // Clear running hooks when session enters a terminal state.
+  // Prevents the "Running hook: startup" spinner from persisting
+  // forever when hook_response is lost or never sent.
+  useEffect(() => {
+    if (sessionState === 'completed' || sessionState === 'error' || sessionState === 'cancelled') {
+      setRunningHooks(new Map())
+    }
+  }, [sessionState])
+
   // Track when agent started running.
   // Uses a ref to detect transitions into 'running' so follow-ups
   // correctly reset the elapsed timer. Heartbeats update a stale

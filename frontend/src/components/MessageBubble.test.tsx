@@ -443,6 +443,35 @@ describe('MessageBubble - assistant bubble styling', () => {
   })
 })
 
+describe('MessageBubble - result message (Session completed)', () => {
+  it('hides the result message bubble — no "Session completed" shown', () => {
+    const message: Message = {
+      type: 'result',
+      content: '',
+      index: 10,
+      session_id: 'session-1',
+      duration_ms: 64500,
+      total_cost_usd: 0.3835,
+      subtype: 'complete',
+    }
+
+    const { container } = renderMessage(message)
+    expect(container.firstChild).toBeNull()
+  })
+
+  it('still hides result message without duration or cost', () => {
+    const message: Message = {
+      type: 'result',
+      content: '',
+      index: 10,
+      session_id: 'session-1',
+    }
+
+    const { container } = renderMessage(message)
+    expect(container.firstChild).toBeNull()
+  })
+})
+
 describe('MessageBubble - tool result rendering', () => {
   it('renders tool_result content as Markdown, not plain pre', () => {
     const message: Message = {
@@ -471,6 +500,43 @@ describe('MessageBubble - tool result rendering', () => {
 
     // JSON should be rendered, not just raw pre text
     expect(screen.getByText(/"key"/)).toBeInTheDocument()
+  })
+
+  it('hides tool_result when content is empty', () => {
+    const message: Message = {
+      type: 'tool_result',
+      content: '',
+      index: 5,
+      name: 'TaskOutput',
+    }
+
+    const { container } = renderMessage(message)
+    expect(container.firstChild).toBeNull()
+  })
+
+  it('hides tool_result when content field is missing', () => {
+    const message: Message = {
+      type: 'tool_result',
+      index: 5,
+      name: 'TaskOutput',
+    } as Message
+
+    const { container } = renderMessage(message)
+    expect(container.firstChild).toBeNull()
+  })
+
+  it('shows tool_result when content is empty but is_error is true', () => {
+    const message: Message = {
+      type: 'tool_result',
+      content: '',
+      index: 5,
+      name: 'Bash',
+      is_error: true,
+    }
+
+    const { container } = renderMessage(message)
+    // Should render the details element even with empty content
+    expect(container.querySelector('details.tool-result')).toBeInTheDocument()
   })
 })
 
@@ -843,6 +909,109 @@ describe('MessageBubble - formatFileContent helper', () => {
       content: 'line1\\r\\nline2',
     })
     expect(result.content).toBe('line1\r\nline2')
+  })
+})
+
+describe('MessageBubble - hidden system message subtypes', () => {
+  it('hides system messages with subtype task_started', () => {
+    const message: Message = {
+      type: 'system',
+      subtype: 'task_started',
+      content: '',
+      index: 0,
+    }
+
+    const { container } = renderMessage(message)
+    expect(container.firstChild).toBeNull()
+  })
+
+  it('hides system messages with subtype task_started.todos', () => {
+    const message: Message = {
+      type: 'system',
+      subtype: 'task_started.todos',
+      content: '',
+      index: 0,
+    }
+
+    const { container } = renderMessage(message)
+    expect(container.firstChild).toBeNull()
+  })
+
+  it('hides system messages with subtype starting with task_started.', () => {
+    const message: Message = {
+      type: 'system',
+      subtype: 'task_started.some_detail',
+      content: '',
+      index: 0,
+    }
+
+    const { container } = renderMessage(message)
+    expect(container.firstChild).toBeNull()
+  })
+
+  it('still shows non-task_started system messages', () => {
+    const message: Message = {
+      type: 'system',
+      subtype: 'some_other',
+      content: 'Visible message',
+      index: 0,
+    }
+
+    renderMessage(message)
+    expect(screen.getByText('Visible message')).toBeInTheDocument()
+  })
+})
+
+describe('MessageBubble - Bash tool_use with empty command', () => {
+  it('returns null when Bash command is empty string', () => {
+    const message: Message = {
+      type: 'tool_use',
+      content: '',
+      index: 5,
+      name: 'Bash',
+      input: { command: '', description: '' },
+    }
+
+    const { container } = renderMessage(message)
+    expect(container.firstChild).toBeNull()
+  })
+
+  it('returns null when Bash command field is missing', () => {
+    const message: Message = {
+      type: 'tool_use',
+      content: '',
+      index: 5,
+      name: 'Bash',
+      input: { description: 'some description' },
+    }
+
+    const { container } = renderMessage(message)
+    expect(container.firstChild).toBeNull()
+  })
+
+  it('returns null when Bash input is undefined', () => {
+    const message: Message = {
+      type: 'tool_use',
+      content: '',
+      index: 5,
+      name: 'Bash',
+    }
+
+    const { container } = renderMessage(message)
+    expect(container.firstChild).toBeNull()
+  })
+
+  it('renders Bash tool_use when command is non-empty', () => {
+    const message: Message = {
+      type: 'tool_use',
+      content: '',
+      index: 5,
+      name: 'Bash',
+      input: { command: 'echo hello' },
+    }
+
+    const { container } = renderMessage(message)
+    expect(container.querySelector('details.tool-message')).toBeInTheDocument()
   })
 })
 
