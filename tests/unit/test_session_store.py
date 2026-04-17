@@ -304,6 +304,50 @@ class TestGetSessionHistory:
         # Verify data field is accessible
         assert history[0]["data"][0]["filename"] == "app.py"
 
+    @pytest.mark.asyncio
+    async def test_user_message_preserves_data_field(self, store: SessionStore) -> None:
+        """user messages store uploaded file metadata in payload["data"].
+        get_session_history must expose this as a top-level "data" field
+        so the frontend can render file upload bubbles on page refresh.
+
+        Bug: previously the DB read path only mapped "data" for file_result
+        messages, causing file-only user messages to vanish after reload.
+        """
+        await store.create_session(user_id="u1", session_id="s1")
+        user_msg = {
+            "type": "user",
+            "content": "",
+            "data": [
+                {"filename": "report.pdf", "size": 50000},
+                {"filename": "notes.txt", "size": 1024},
+            ],
+        }
+        await store.add_message(session_id="s1", message=user_msg)
+
+        history = await store.get_session_history(session_id="s1")
+        assert len(history) == 1
+        msg = history[0]
+        assert msg["type"] == "user"
+        assert "data" in msg, "user message must expose data field for frontend rendering"
+        assert len(msg["data"]) == 2
+        assert msg["data"][0]["filename"] == "report.pdf"
+        assert msg["data"][1]["filename"] == "notes.txt"
+
+    @pytest.mark.asyncio
+    async def test_user_message_without_data_roundtrips(self, store: SessionStore) -> None:
+        """user messages without file attachments should still roundtrip cleanly."""
+        await store.create_session(user_id="u1", session_id="s1")
+        await store.add_message(session_id="s1", message={
+            "type": "user",
+            "content": "Hello world",
+        })
+
+        history = await store.get_session_history(session_id="s1")
+        assert len(history) == 1
+        assert history[0]["type"] == "user"
+        assert history[0]["content"] == "Hello world"
+        assert "data" not in history[0]
+
 
 # ── delete_session ───────────────────────────────────────────────
 
