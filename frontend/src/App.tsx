@@ -267,12 +267,10 @@ function MainApp() {
       }
       loadSessions()
     }
-    // Update file count in real time when new files are generated
+    // Refresh file count from server when new files are generated
+    // (cannot blindly increment because the agent may overwrite existing files)
     if (msg.type === 'file_result') {
-      const files = msg.data as Array<{ filename: string }> | undefined
-      if (Array.isArray(files)) {
-        setFileCount(prev => prev + files.length)
-      }
+      loadFileCount()
     }
   }, [userId])
 
