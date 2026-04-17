@@ -80,7 +80,7 @@ function LoginScreen({ onLogin }: LoginScreenProps) {
   return (
     <div className="login-screen">
       <form className="login-form" onSubmit={handleSubmit}>
-        <h2>Web Agent Platform</h2>
+        <h2>Web Agent</h2>
         <input
           className="login-input"
           type="text"
