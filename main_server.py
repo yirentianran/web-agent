@@ -1315,7 +1315,7 @@ async def handle_ws(websocket: WebSocket) -> None:
                         msg_type = h.get("type", "unknown")
                         msg_subtype = h.get("subtype", "")
                         if msg_type == "system" and msg_subtype == "session_state_changed":
-                            logger.info(
+                            logger.debug(
                                 "WS: sending state_change=%s for session %s (idx=%d)",
                                 h.get("state", "?"), session_id, idx,
                             )

@@ -198,26 +198,41 @@ function MainApp() {
   }
 
   const handleIncomingMessage = useCallback((msg: Message) => {
+    // Use a functional update so we always work with the latest `prev`.
+    // This avoids stale-closure bugs and ensures dedup runs on every message.
     setMessages((prev) => {
-      // Clear old messages when a new turn's messages start arriving.
-      // This prevents old conversation results from appearing before the
-      // new response. We clear when either:
-      // 1. First replay message arrives (replay: true, not yet started)
-      // 2. First live message with index >= clearThreshold arrives
-      // We skip heartbeats and invisible state changes for the live trigger
-      // since they don't represent actual conversation content.
+      const optimistic = optimisticMsgRef.current
+
+      // Determine if this is the first message of a new turn that should
+      // trigger clearing of old conversation history.
       const isInvisibleMessage =
         msg.type === 'heartbeat' ||
         (msg.type === 'system' && msg.subtype === 'session_state_changed')
-      const shouldClear =
-        (msg.replay && !replayStartedRef.current) ||
-        (!msg.replay && !replayStartedRef.current && !isInvisibleMessage && msg.index >= clearThresholdRef.current)
-      if (shouldClear) {
+      const isFirstTurnMessage =
+        !replayStartedRef.current &&
+        ((msg.replay) ||
+          (!msg.replay && !isInvisibleMessage && msg.index >= clearThresholdRef.current))
+
+      if (isFirstTurnMessage) {
         replayStartedRef.current = true
-        const optimistic = optimisticMsgRef.current
+        // Build base with optimistic user message, then dedup the incoming
+        // message against it (handles the case where the server replays the
+        // user message with a different index).
         const base: Message[] = optimistic ? [optimistic] : []
+        // Replay dedup: skip if we already have this exact index
+        if (msg.replay && base.some((m) => m.index === msg.index)) {
+          return prev
+        }
+        // Live dedup for user messages: skip server copy if content matches
+        if (msg.type === 'user' && !msg.replay) {
+          if (base.some((m) => m.type === 'user' && m.content === msg.content)) {
+            return prev
+          }
+        }
         return [...base, msg]
       }
+
+      // Non-first message: append with dedup.
       // Replay dedup: skip if we already have this exact index
       if (msg.replay && prev.some((m) => m.index === msg.index)) {
         return prev
@@ -253,8 +268,11 @@ function MainApp() {
       loadSessions()
     }
     // Update file count in real time when new files are generated
-    if (msg.type === 'file_result' && msg.data && Array.isArray(msg.data)) {
-      setFileCount(prev => prev + msg.data.length)
+    if (msg.type === 'file_result') {
+      const files = msg.data as Array<{ filename: string }> | undefined
+      if (Array.isArray(files)) {
+        setFileCount(prev => prev + files.length)
+      }
     }
   }, [userId])
 

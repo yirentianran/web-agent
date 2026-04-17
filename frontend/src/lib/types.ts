@@ -5,13 +5,14 @@ export interface Message {
   name?: string
   index: number
   replay?: boolean
+  is_error?: boolean  // for tool_result error flag
   cost_usd?: number
   total_cost_usd?: number
   duration_ms?: number
   usage?: Record<string, number>
   id?: string       // for tool_use blocks
   input?: unknown   // for tool_use blocks
-  data?: unknown    // for system messages
+  data?: unknown    // for system messages, file_result
   uuid?: string     // for stream_event
   event?: unknown   // for stream_event
   session_id?: string

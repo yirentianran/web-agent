@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sqlite3
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -45,6 +46,8 @@ class MessageBuffer:
         self.sessions: dict[str, dict[str, Any]] = {}
         # Track per-session sequence numbers for DB writes
         self._seq: dict[str, int] = {}
+        # Single cached sync connection — avoids per-message open/close overhead
+        self._sync_conn: sqlite3.Connection | None = None
 
     # ── internal helpers ─────────────────────────────────────────
 
@@ -74,15 +77,17 @@ class MessageBuffer:
     def _write_db_sync(self, session_id: str, message: dict) -> None:
         """Synchronously append one message to the SQLite database.
 
-        Uses the sync sqlite3 connection to avoid async/sync boundary issues
-        when called from the synchronous add_message() method.
+        Uses a single cached sync connection to avoid per-message open/close
+        overhead and file-locking issues.
         """
-        if self.db is None or self.db._pool is None:
+        if self.db is None:
             return
 
-        import sqlite3
+        # Lazily create a single sync connection
+        if self._sync_conn is None:
+            self._sync_conn = sqlite3.connect(str(self.db.db_path))
 
-        conn = sqlite3.connect(str(self.db.db_path))
+        conn = self._sync_conn
         try:
             # Determine next seq: check DB for existing messages (e.g. after
             # migration) and use the higher of in-memory counter vs DB max.
@@ -116,8 +121,9 @@ class MessageBuffer:
                 ),
             )
             conn.commit()
-        finally:
-            conn.close()
+        except Exception:
+            conn.rollback()
+            raise
 
     def _read_disk(self, session_id: str, after_index: int = 0) -> list[dict]:
         """Read messages from disk starting at *after_index*."""
@@ -279,3 +285,9 @@ class MessageBuffer:
         ]
         for sid in expired:
             del self.sessions[sid]
+
+    def close(self) -> None:
+        """Close the cached sync database connection."""
+        if self._sync_conn is not None:
+            self._sync_conn.close()
+            self._sync_conn = None
