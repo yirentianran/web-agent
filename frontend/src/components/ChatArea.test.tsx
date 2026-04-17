@@ -452,3 +452,48 @@ describe('ChatArea - auto-scroll on session running', () => {
     expect(messagesContainer.scrollTop).toBe(100)
   })
 })
+
+// ── Hook tracking in terminal states ──────────────────────────────
+
+describe('Hook tracking', () => {
+  it('clears running hooks when sessionState is completed', () => {
+    const messages: Message[] = [
+      { type: 'system', subtype: 'hook_started', hook_id: 'hk-1', hook_name: 'startup', content: '', index: 0 },
+      { type: 'system', subtype: 'session_state_changed', state: 'completed', content: '', index: 1 },
+    ]
+
+    const { container } = renderChatArea(messages, { sessionState: 'completed' })
+    expect(container.querySelector('.status-spinner')).not.toBeInTheDocument()
+  })
+
+  it('shows error message text when sessionState is error', () => {
+    const messages: Message[] = [
+      { type: 'user', content: 'Hello', index: 0 },
+    ]
+
+    const { container } = renderChatArea(messages, { sessionState: 'error' })
+    // Spinner should be gone
+    expect(container.querySelector('.status-spinner')).not.toBeInTheDocument()
+    // Generic error message should be visible
+    expect(screen.getByText('Session ended with an error. Try sending a new message.')).toBeInTheDocument()
+  })
+
+  it('clears running hooks when sessionState is cancelled', () => {
+    const messages: Message[] = [
+      { type: 'system', subtype: 'hook_started', hook_id: 'hk-1', hook_name: 'startup', content: '', index: 0 },
+    ]
+
+    const { container } = renderChatArea(messages, { sessionState: 'cancelled' })
+    expect(container.querySelector('.status-spinner')).not.toBeInTheDocument()
+  })
+
+  it('shows agent spinner, not hook spinner, when hooks are cleared by terminal state', () => {
+    const messages: Message[] = [
+      { type: 'system', subtype: 'hook_started', hook_id: 'hk-1', hook_name: 'startup', content: '', index: 0 },
+      { type: 'system', subtype: 'session_state_changed', state: 'completed', content: '', index: 1 },
+    ]
+
+    const { container } = renderChatArea(messages, { sessionState: 'completed' })
+    expect(container.querySelector('.status-spinner')).not.toBeInTheDocument()
+  })
+})

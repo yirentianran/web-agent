@@ -81,6 +81,15 @@ export default function ChatArea({ messages, sessionId, sessionState, onAnswer, 
     }
   }, [messages])
 
+  // Clear running hooks when session enters a terminal state.
+  // Prevents the "Running hook: startup" spinner from persisting
+  // forever when hook_response is lost or never sent.
+  useEffect(() => {
+    if (sessionState === 'completed' || sessionState === 'error' || sessionState === 'cancelled') {
+      setRunningHooks(new Map())
+    }
+  }, [sessionState])
+
   // Track when agent started running.
   // Uses a ref to detect transitions into 'running' so follow-ups
   // correctly reset the elapsed timer. Heartbeats update a stale
@@ -171,6 +180,28 @@ export default function ChatArea({ messages, sessionId, sessionState, onAnswer, 
     [messages],
   )
 
+  // Keep only the latest TodoWrite message — hide all earlier updates.
+  // TodoWrite is a stateful progress widget; showing every snapshot
+  // creates stacked duplicate progress bars.
+  const filteredMessages = useMemo(() => {
+    let lastTodoWriteIndex = -1
+    for (let i = sortedMessages.length - 1; i >= 0; i--) {
+      if (
+        sortedMessages[i].type === 'tool_use' &&
+        sortedMessages[i].name === 'TodoWrite'
+      ) {
+        lastTodoWriteIndex = sortedMessages[i].index
+        break
+      }
+    }
+    return sortedMessages.filter(
+      (msg) =>
+        msg.type !== 'tool_use' ||
+        msg.name !== 'TodoWrite' ||
+        msg.index === lastTodoWriteIndex,
+    )
+  }, [sortedMessages])
+
   // Filter out invisible message types for the welcome screen check.
   // If a session only has heartbeats / internal state messages, show the welcome screen.
   const hasVisibleMessages = useMemo(() => {
@@ -199,7 +230,7 @@ export default function ChatArea({ messages, sessionId, sessionState, onAnswer, 
           </div>
         )}
 
-        {sortedMessages.map((msg, i) => (
+        {filteredMessages.map((msg, i) => (
           <MessageBubble
             key={`${msg.index}-${i}`}
             message={msg}

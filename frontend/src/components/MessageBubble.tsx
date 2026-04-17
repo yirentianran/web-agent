@@ -91,26 +91,43 @@ export function formatFileContent(input: Record<string, unknown>): FormattedFile
   return { content, filePath }
 }
 
-// ── Thinking block parser ────────────────────────────────────────
+export interface FormattedEditContent {
+  filePath: string | null
+  oldContent: string
+  newContent: string
+}
 
-const THINKING_RE = /\[thinking\]([\s\S]*?)\[\/thinking\]/g
+export function formatEditContent(input: Record<string, unknown>): FormattedEditContent {
+  const filePath = input.file_path ? String(input.file_path) : null
+  const oldStr = String(input.old_string ?? '')
+  const newStr = String(input.new_string ?? '')
+  return {
+    filePath,
+    oldContent: oldStr.replace(/\\r\\n/g, '\r\n').replace(/\\n/g, '\n'),
+    newContent: newStr.replace(/\\r\\n/g, '\r\n').replace(/\\n/g, '\n'),
+  }
+}
+
+// ── Thinking block parser ────────────────────────────────────────
 
 function parseThinkingBlocks(text: string): Array<{ kind: 'thinking' | 'text'; content: string }> {
   const parts: Array<{ kind: 'thinking' | 'text'; content: string }> = []
+  const matches = [...text.matchAll(/\[thinking\]([\s\S]*?)\[\/thinking\]/g)]
+
+  if (matches.length === 0) {
+    return [{ kind: 'text', content: text }]
+  }
+
   let lastIndex = 0
-  let match: RegExpExecArray | null
-  while ((match = THINKING_RE.exec(text)) !== null) {
-    if (match.index > lastIndex) {
-      parts.push({ kind: 'text', content: text.slice(lastIndex, match.index) })
+  for (const match of matches) {
+    if (match.index! > lastIndex) {
+      parts.push({ kind: 'text', content: text.slice(lastIndex, match.index!) })
     }
     parts.push({ kind: 'thinking', content: match[1].trim() })
-    lastIndex = THINKING_RE.lastIndex
+    lastIndex = match.index! + match[0].length
   }
   if (lastIndex < text.length) {
     parts.push({ kind: 'text', content: text.slice(lastIndex) })
-  }
-  if (parts.length === 0) {
-    parts.push({ kind: 'text', content: text })
   }
   return parts
 }
@@ -156,8 +173,10 @@ export default function MessageBubble({ message, sessionId, onAnswer, onFileClic
     // - hook_started/response: shown as spinners in ChatArea
     // - init: internal initialization confirmation
     // - session_state_changed: used to update UI state, not displayed
-    const hiddenSubtypes = ['hook_started', 'hook_response', 'hook_error', 'init', 'session_state_changed']
-    if (hiddenSubtypes.includes(message.subtype || '')) {
+    // - task_started / task_started.*: internal SDK task notifications
+    const hiddenSubtypes = ['hook_started', 'hook_response', 'hook_error', 'init', 'session_state_changed', 'task_started']
+    const subtype = message.subtype || ''
+    if (hiddenSubtypes.includes(subtype) || subtype.startsWith('task_started.')) {
       return null
     }
     const displayText = message.content
@@ -192,8 +211,10 @@ export default function MessageBubble({ message, sessionId, onAnswer, onFileClic
     const summary = input ? buildToolSummary(message.name, input) : ''
 
     // Bash tool_use: show description + formatted command instead of raw JSON
-    if (message.name === 'Bash' && input) {
+    if (message.name === 'Bash') {
+      if (!input) return null
       const { command, description } = formatBashCommand(input)
+      if (!command) return null
       return (
         <details className="message tool-message" open={false}>
           <summary className="tool-summary">
@@ -207,8 +228,8 @@ export default function MessageBubble({ message, sessionId, onAnswer, onFileClic
       )
     }
 
-    // Write/Edit tool_use: show file path + formatted content instead of raw JSON
-    if ((message.name === 'Write' || message.name === 'Edit') && input) {
+    // Write tool_use: show file path + content
+    if (message.name === 'Write' && input) {
       const { content, filePath } = formatFileContent(input)
       return (
         <details className="message tool-message" open={false}>
@@ -219,6 +240,31 @@ export default function MessageBubble({ message, sessionId, onAnswer, onFileClic
           </summary>
           {filePath && <div className="tool-description">{filePath}</div>}
           <pre className="tool-input"><code>{content}</code></pre>
+        </details>
+      )
+    }
+
+    // Edit tool_use: show old_string → new_string diff
+    if (message.name === 'Edit' && input) {
+      const { filePath, oldContent, newContent } = formatEditContent(input)
+      return (
+        <details className="message tool-message" open={false}>
+          <summary className="tool-summary">
+            <span className="tool-icon">{getToolIcon(message.name)}</span>
+            <span className="tool-name">{message.name}</span>
+            {filePath && <span className="tool-detail">{filePath}</span>}
+          </summary>
+          {filePath && <div className="tool-description">{filePath}</div>}
+          <div className="tool-edit-content">
+            <div className="tool-edit-old">
+              <span className="tool-edit-label">Removed:</span>
+              <pre><code>{oldContent || '(none)'}</code></pre>
+            </div>
+            <div className="tool-edit-new">
+              <span className="tool-edit-label">Added:</span>
+              <pre><code>{newContent || '(none)'}</code></pre>
+            </div>
+          </div>
         </details>
       )
     }
@@ -237,6 +283,8 @@ export default function MessageBubble({ message, sessionId, onAnswer, onFileClic
 
   if (message.type === 'tool_result') {
     const content = message.content || ''
+    // Hide empty tool results (e.g., TaskOutput with no content)
+    if (!content && !message.is_error) return null
     const isJson = /^\s*[{[]/.test(content)
     return (
       <details className="message tool-result">
@@ -261,18 +309,7 @@ export default function MessageBubble({ message, sessionId, onAnswer, onFileClic
   }
 
   if (message.type === 'result') {
-    const parts = ['Session completed']
-    if (message.duration_ms !== undefined) {
-      parts.push(`in ${(message.duration_ms / 1000).toFixed(1)}s`)
-    }
-    if (message.total_cost_usd !== undefined) {
-      parts.push(`— $${message.total_cost_usd.toFixed(4)}`)
-    }
-    return (
-      <div className="message system-message">
-        <span className="system-text">{parts.join(' ')}</span>
-      </div>
-    )
+    return null
   }
 
   if (message.type === 'file_upload') {
