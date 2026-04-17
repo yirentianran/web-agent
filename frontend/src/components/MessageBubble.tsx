@@ -91,6 +91,23 @@ export function formatFileContent(input: Record<string, unknown>): FormattedFile
   return { content, filePath }
 }
 
+export interface FormattedEditContent {
+  filePath: string | null
+  oldContent: string
+  newContent: string
+}
+
+export function formatEditContent(input: Record<string, unknown>): FormattedEditContent {
+  const filePath = input.file_path ? String(input.file_path) : null
+  const oldStr = String(input.old_string ?? '')
+  const newStr = String(input.new_string ?? '')
+  return {
+    filePath,
+    oldContent: oldStr.replace(/\\r\\n/g, '\r\n').replace(/\\n/g, '\n'),
+    newContent: newStr.replace(/\\r\\n/g, '\r\n').replace(/\\n/g, '\n'),
+  }
+}
+
 // ── Thinking block parser ────────────────────────────────────────
 
 const THINKING_RE = /\[thinking\]([\s\S]*?)\[\/thinking\]/g
@@ -211,8 +228,8 @@ export default function MessageBubble({ message, sessionId, onAnswer, onFileClic
       )
     }
 
-    // Write/Edit tool_use: show file path + formatted content instead of raw JSON
-    if ((message.name === 'Write' || message.name === 'Edit') && input) {
+    // Write tool_use: show file path + content
+    if (message.name === 'Write' && input) {
       const { content, filePath } = formatFileContent(input)
       return (
         <details className="message tool-message" open={false}>
@@ -223,6 +240,31 @@ export default function MessageBubble({ message, sessionId, onAnswer, onFileClic
           </summary>
           {filePath && <div className="tool-description">{filePath}</div>}
           <pre className="tool-input"><code>{content}</code></pre>
+        </details>
+      )
+    }
+
+    // Edit tool_use: show old_string → new_string diff
+    if (message.name === 'Edit' && input) {
+      const { filePath, oldContent, newContent } = formatEditContent(input)
+      return (
+        <details className="message tool-message" open={false}>
+          <summary className="tool-summary">
+            <span className="tool-icon">{getToolIcon(message.name)}</span>
+            <span className="tool-name">{message.name}</span>
+            {filePath && <span className="tool-detail">{filePath}</span>}
+          </summary>
+          {filePath && <div className="tool-description">{filePath}</div>}
+          <div className="tool-edit-content">
+            <div className="tool-edit-old">
+              <span className="tool-edit-label">Removed:</span>
+              <pre><code>{oldContent || '(none)'}</code></pre>
+            </div>
+            <div className="tool-edit-new">
+              <span className="tool-edit-label">Added:</span>
+              <pre><code>{newContent || '(none)'}</code></pre>
+            </div>
+          </div>
         </details>
       )
     }
