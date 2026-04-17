@@ -109,6 +109,8 @@ class SessionStore:
                 # so the frontend receives them in the expected format.
                 if msg.get("type") == "file_result" and "data" in parsed:
                     msg["data"] = parsed["data"]
+                if msg.get("type") == "user" and "data" in parsed:
+                    msg["data"] = parsed["data"]
                 if msg.get("type") == "tool_use":
                     if "id" in parsed:
                         msg["id"] = parsed["id"]
@@ -197,8 +199,8 @@ class SessionStore:
 
             payload_json = None
             if message.get("payload") or (
-                message.get("type") in ("tool_use", "tool_result")
-                and (message.get("content") or message.get("id") or message.get("input") or message.get("tool_use_id"))
+                message.get("type") in ("tool_use", "tool_result", "user")
+                and (message.get("content") or message.get("id") or message.get("input") or message.get("tool_use_id") or message.get("data"))
             ) or message.get("type") == "file_result":
                 # file_result always stores full JSON — its data lives in
                 # the "data" field, not "content" (which is empty string).
