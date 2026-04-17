@@ -110,24 +110,24 @@ export function formatEditContent(input: Record<string, unknown>): FormattedEdit
 
 // ── Thinking block parser ────────────────────────────────────────
 
-const THINKING_RE = /\[thinking\]([\s\S]*?)\[\/thinking\]/g
-
 function parseThinkingBlocks(text: string): Array<{ kind: 'thinking' | 'text'; content: string }> {
   const parts: Array<{ kind: 'thinking' | 'text'; content: string }> = []
+  const matches = [...text.matchAll(/\[thinking\]([\s\S]*?)\[\/thinking\]/g)]
+
+  if (matches.length === 0) {
+    return [{ kind: 'text', content: text }]
+  }
+
   let lastIndex = 0
-  let match: RegExpExecArray | null
-  while ((match = THINKING_RE.exec(text)) !== null) {
-    if (match.index > lastIndex) {
-      parts.push({ kind: 'text', content: text.slice(lastIndex, match.index) })
+  for (const match of matches) {
+    if (match.index! > lastIndex) {
+      parts.push({ kind: 'text', content: text.slice(lastIndex, match.index!) })
     }
     parts.push({ kind: 'thinking', content: match[1].trim() })
-    lastIndex = THINKING_RE.lastIndex
+    lastIndex = match.index! + match[0].length
   }
   if (lastIndex < text.length) {
     parts.push({ kind: 'text', content: text.slice(lastIndex) })
-  }
-  if (parts.length === 0) {
-    parts.push({ kind: 'text', content: text })
   }
   return parts
 }
