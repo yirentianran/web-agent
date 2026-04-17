@@ -5,6 +5,7 @@ Verifies that session CRUD endpoints work with SQLite-backed storage.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import sys
 from pathlib import Path
@@ -53,12 +54,7 @@ def _setup_db_store(tmp_path: Path) -> SessionStore:
 
     # Create DB and SessionStore
     db = Database(db_path=tmp_path / "test.db")
-
-    async def _init():
-        await db.init()
-
-    import asyncio
-    asyncio.get_event_loop_policy().get_event_loop().run_until_complete(_init())
+    asyncio.run(db.init())
 
     store = SessionStore(db=db, msg_buffer_dir=tmp_path / ".msg-buffer")
     main_server.session_store = store  # type: ignore[attr-defined]
@@ -85,18 +81,12 @@ class TestSessionEndpoints:
         sid = data["session_id"]
 
         # Verify session exists in DB
-        import asyncio
-        loop = asyncio.get_event_loop_policy().get_event_loop()
-        sessions = loop.run_until_complete(
-            _setup_db_store.list_sessions("alice")
-        )
+        sessions = asyncio.run(_setup_db_store.list_sessions("alice"))
         assert any(s["session_id"] == sid for s in sessions)
 
     def test_list_sessions_from_db(self, client: TestClient, _setup_db_store: SessionStore) -> None:
-        import asyncio
-        loop = asyncio.get_event_loop_policy().get_event_loop()
-        loop.run_until_complete(_setup_db_store.create_session("alice", "s1"))
-        loop.run_until_complete(_setup_db_store.create_session("alice", "s2"))
+        asyncio.run(_setup_db_store.create_session("alice", "s1"))
+        asyncio.run(_setup_db_store.create_session("alice", "s2"))
 
         resp = client.get("/api/users/alice/sessions")
         assert resp.status_code == 200
@@ -106,11 +96,9 @@ class TestSessionEndpoints:
         assert "s2" in sids
 
     def test_get_history_from_db(self, client: TestClient, _setup_db_store: SessionStore) -> None:
-        import asyncio
-        loop = asyncio.get_event_loop_policy().get_event_loop()
-        loop.run_until_complete(_setup_db_store.create_session("alice", "s1"))
-        loop.run_until_complete(_setup_db_store.add_message("s1", {"type": "user", "content": "hi"}))
-        loop.run_until_complete(_setup_db_store.add_message("s1", {"type": "assistant", "content": "hello"}))
+        asyncio.run(_setup_db_store.create_session("alice", "s1"))
+        asyncio.run(_setup_db_store.add_message("s1", {"type": "user", "content": "hi"}))
+        asyncio.run(_setup_db_store.add_message("s1", {"type": "assistant", "content": "hello"}))
 
         resp = client.get("/api/users/alice/sessions/s1/history")
         assert resp.status_code == 200
@@ -120,22 +108,17 @@ class TestSessionEndpoints:
         assert msgs[1]["type"] == "assistant"
 
     def test_delete_session_from_db(self, client: TestClient, _setup_db_store: SessionStore) -> None:
-        import asyncio
-        loop = asyncio.get_event_loop_policy().get_event_loop()
-        loop.run_until_complete(_setup_db_store.create_session("alice", "s1"))
+        asyncio.run(_setup_db_store.create_session("alice", "s1"))
 
         resp = client.delete("/api/users/alice/sessions/s1")
         assert resp.status_code == 200
 
         # Verify deleted from DB
-        loop = asyncio.get_event_loop_policy().get_event_loop()
-        sessions = loop.run_until_complete(_setup_db_store.list_sessions("alice"))
+        sessions = asyncio.run(_setup_db_store.list_sessions("alice"))
         assert not any(s["session_id"] == "s1" for s in sessions)
 
     def test_update_session_title_in_db(self, client: TestClient, _setup_db_store: SessionStore) -> None:
-        import asyncio
-        loop = asyncio.get_event_loop_policy().get_event_loop()
-        loop.run_until_complete(_setup_db_store.create_session("alice", "s1"))
+        asyncio.run(_setup_db_store.create_session("alice", "s1"))
 
         resp = client.patch(
             "/api/users/alice/sessions/s1/title",
@@ -144,6 +127,6 @@ class TestSessionEndpoints:
         assert resp.status_code == 200
 
         # Verify in DB
-        sessions = loop.run_until_complete(_setup_db_store.list_sessions("alice"))
+        sessions = asyncio.run(_setup_db_store.list_sessions("alice"))
         s1 = next(s for s in sessions if s["session_id"] == "s1")
         assert s1["title"] == "My Chat"

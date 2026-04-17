@@ -200,6 +200,110 @@ class TestGetSessionHistory:
         assert history[0]["type"] == "tool_use"
         assert history[0]["name"] == "Bash"
 
+    @pytest.mark.asyncio
+    async def test_tool_use_preserves_id_and_input(self, store: SessionStore) -> None:
+        """tool_use messages store their id and input in the payload JSON.
+        get_session_history must expose these as top-level fields so the
+        frontend can render tool call bubbles on page refresh."""
+        await store.create_session(user_id="u1", session_id="s1")
+        tool_use_msg = {
+            "type": "tool_use",
+            "name": "Bash",
+            "id": "toolu_abc123",
+            "input": {"command": "echo hello", "description": "Print hello"},
+        }
+        await store.add_message(session_id="s1", message=tool_use_msg)
+
+        history = await store.get_session_history(session_id="s1")
+        assert len(history) == 1
+        msg = history[0]
+        assert msg["type"] == "tool_use"
+        assert msg["name"] == "Bash"
+        assert msg.get("id") == "toolu_abc123", "tool_use id must be exposed for frontend rendering"
+        assert "input" in msg, "tool_use input must be exposed for frontend rendering"
+        assert msg["input"]["command"] == "echo hello"
+        assert msg["input"]["description"] == "Print hello"
+
+    @pytest.mark.asyncio
+    async def test_tool_result_preserves_tool_use_id(self, store: SessionStore) -> None:
+        """tool_result messages store tool_use_id in the payload JSON.
+        get_session_history must expose it as a top-level field."""
+        await store.create_session(user_id="u1", session_id="s1")
+        tool_result_msg = {
+            "type": "tool_result",
+            "name": "Bash",
+            "tool_use_id": "toolu_abc123",
+            "content": "hello",
+        }
+        await store.add_message(session_id="s1", message=tool_result_msg)
+
+        history = await store.get_session_history(session_id="s1")
+        assert len(history) == 1
+        msg = history[0]
+        assert msg["type"] == "tool_result"
+        assert msg["name"] == "Bash"
+        assert msg.get("tool_use_id") == "toolu_abc123", "tool_result tool_use_id must be exposed"
+        assert msg["content"] == "hello"
+
+    @pytest.mark.asyncio
+    async def test_file_result_preserves_data_field(self, store: SessionStore) -> None:
+        """file_result messages store their file list in payload["data"].
+        get_session_history must expose this as a top-level "data" field
+        so the frontend receives it correctly on page refresh replay."""
+        await store.create_session(user_id="u1", session_id="s1")
+        file_result_msg = {
+            "type": "file_result",
+            "content": "",
+            "session_id": "s1",
+            "user_id": "u1",
+            "data": [
+                {
+                    "filename": "index.html",
+                    "size": 1024,
+                    "download_url": "/api/users/u1/download/outputs/index.html",
+                },
+                {
+                    "filename": "styles.css",
+                    "size": 512,
+                    "download_url": "/api/users/u1/download/outputs/styles.css",
+                },
+            ],
+        }
+        await store.add_message(session_id="s1", message=file_result_msg)
+
+        history = await store.get_session_history(session_id="s1")
+        assert len(history) == 1
+        msg = history[0]
+        assert msg["type"] == "file_result"
+        assert "data" in msg, "file_result must expose data field for frontend rendering"
+        assert len(msg["data"]) == 2
+        assert msg["data"][0]["filename"] == "index.html"
+        assert msg["data"][1]["filename"] == "styles.css"
+
+    @pytest.mark.asyncio
+    async def test_file_result_ordering_before_completed(self, store: SessionStore) -> None:
+        """file_result should appear before session_state_changed:completed
+        in the history, matching the emission order in run_agent_task."""
+        await store.create_session(user_id="u1", session_id="s1")
+        await store.add_message(session_id="s1", message={
+            "type": "file_result",
+            "content": "",
+            "data": [{"filename": "app.py"}],
+        })
+        await store.add_message(session_id="s1", message={
+            "type": "system",
+            "subtype": "session_state_changed",
+            "state": "completed",
+        })
+
+        history = await store.get_session_history(session_id="s1")
+        assert len(history) == 2
+        assert history[0]["type"] == "file_result"
+        assert history[1]["type"] == "system"
+        assert history[1]["subtype"] == "session_state_changed"
+        # Verify data field is accessible
+        assert history[0]["data"][0]["filename"] == "app.py"
+
 
 # ── delete_session ───────────────────────────────────────────────
 

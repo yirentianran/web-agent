@@ -103,7 +103,19 @@ class SessionStore:
             if row[3] is not None:
                 msg["content"] = row[3]
             if row[4] is not None:
-                msg["payload"] = json.loads(row[4])
+                parsed = json.loads(row[4])
+                msg["payload"] = parsed
+                # Map payload fields to top-level keys for specific message types
+                # so the frontend receives them in the expected format.
+                if msg.get("type") == "file_result" and "data" in parsed:
+                    msg["data"] = parsed["data"]
+                if msg.get("type") == "tool_use":
+                    if "id" in parsed:
+                        msg["id"] = parsed["id"]
+                    if "input" in parsed:
+                        msg["input"] = parsed["input"]
+                if msg.get("type") == "tool_result" and "tool_use_id" in parsed:
+                    msg["tool_use_id"] = parsed["tool_use_id"]
             if row[5] is not None:
                 msg["usage"] = json.loads(row[5])
             result.append(msg)
@@ -185,9 +197,11 @@ class SessionStore:
 
             payload_json = None
             if message.get("payload") or (
-                message.get("type") in ("tool_use", "tool_result", "file_result")
-                and message.get("content")
-            ):
+                message.get("type") in ("tool_use", "tool_result")
+                and (message.get("content") or message.get("id") or message.get("input") or message.get("tool_use_id"))
+            ) or message.get("type") == "file_result":
+                # file_result always stores full JSON — its data lives in
+                # the "data" field, not "content" (which is empty string).
                 payload_json = json.dumps(message, ensure_ascii=False)
 
             usage_json = None

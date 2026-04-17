@@ -9,7 +9,6 @@ from __future__ import annotations
 import asyncio
 import json
 import time
-from collections import deque
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -53,7 +52,8 @@ class MessageBuffer:
         """Lazy-initialise a session buffer."""
         if session_id not in self.sessions:
             self.sessions[session_id] = {
-                "messages": deque(maxlen=MAX_HISTORY),
+                "messages": [],  # unbounded list — base_index tracks eviction
+                "base_index": 0,  # number of messages evicted from the front
                 "consumers": set(),
                 "done": False,
                 "state": "idle",  # idle | running | completed | error | waiting_user | cancelled
@@ -80,25 +80,32 @@ class MessageBuffer:
         if self.db is None or self.db._pool is None:
             return
 
-        seq = self._seq.get(session_id, 0)
-        self._seq[session_id] = seq + 1
-
-        usage_json = None
-        if message.get("usage"):
-            usage_json = json.dumps(message["usage"], ensure_ascii=False)
-
-        # Use the underlying sync connection via aiosqlite's connection
         import sqlite3
 
         conn = sqlite3.connect(str(self.db.db_path))
         try:
+            # Determine next seq: check DB for existing messages (e.g. after
+            # migration) and use the higher of in-memory counter vs DB max.
+            cursor = conn.execute(
+                "SELECT COALESCE(MAX(seq), -1) FROM messages WHERE session_id = ?",
+                (session_id,),
+            )
+            db_max_seq = cursor.fetchone()[0]
+
+            next_seq = max(self._seq.get(session_id, 0), db_max_seq + 1)
+            self._seq[session_id] = next_seq + 1
+
+            usage_json = None
+            if message.get("usage"):
+                usage_json = json.dumps(message["usage"], ensure_ascii=False)
+
             conn.execute(
                 """INSERT INTO messages
                    (session_id, seq, type, subtype, name, content, payload, usage, created_at)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     session_id,
-                    seq,
+                    next_seq,
                     message.get("type", ""),
                     message.get("subtype"),
                     message.get("name"),
@@ -127,6 +134,7 @@ class MessageBuffer:
         """SDK produces a message → write to memory + disk (and DB if attached)."""
         buf = self._ensure_buf(session_id)
         buf["messages"].append(message)
+        self._evict_old(session_id)
         buf["last_active"] = time.time()
         # Reset done flag when a new message arrives — the session is active again.
         # But don't reset if the session is already in a terminal state
@@ -165,56 +173,44 @@ class MessageBuffer:
         for event in list(buf["consumers"]):
             event.set()
 
-    def insert_before_type(self, session_id: str, message: dict, before_type: str) -> None:
-        """Insert a message before the first message of the given type in the buffer.
+    def _evict_old(self, session_id: str) -> None:
+        """Evict old messages when the buffer grows too large.
 
-        If no message of *before_type* exists, appends normally.
-        Also writes the message to disk at the insertion point.
+        Updates base_index so that global after_index counters
+        remain valid after eviction.
         """
-        buf = self._ensure_buf(session_id)
-        buf["last_active"] = time.time()
-
-        messages = buf["messages"]
-
-        # If deque is at max capacity, we can't use insert(). Fall back to append.
-        if len(messages) >= messages.maxlen:
-            messages.append(message)
-            self._write_disk(session_id, message)
-            for event in list(buf["consumers"]):
-                event.set()
+        buf = self.sessions.get(session_id)
+        if buf is None:
             return
-
-        # Find the index of the first message with the target type (search from end)
-        insert_idx = len(messages)
-        for i in range(len(messages) - 1, -1, -1):
-            if messages[i].get("type") == before_type:
-                insert_idx = i
-                break
-
-        # Insert at the found position
-        messages.insert(insert_idx, message)
-
-        # Write to disk (append the inserted message)
-        self._write_disk(session_id, message)
-
-        # Wake up all waiting consumers
-        for event in list(buf["consumers"]):
-            event.set()
+        msgs = buf["messages"]
+        if len(msgs) <= MAX_HISTORY:
+            return
+        # Keep the most recent MAX_HISTORY messages
+        to_drop = len(msgs) - MAX_HISTORY
+        buf["base_index"] += to_drop
+        buf["messages"] = msgs[to_drop:]
 
     def get_history(self, session_id: str, after_index: int = 0) -> list[dict]:
         """Get messages for replay / reconnection.
 
-        Falls back to disk when the in-memory deque doesn't have enough history.
+        Falls back to disk when the in-memory list doesn't have enough history.
+        The base_index offset ensures global after_index counters stay valid
+        even after old messages are evicted.
         """
         buf = self._ensure_buf(session_id)
-        messages = list(buf["messages"])
-        if len(messages) > after_index:
-            return messages[after_index:]
-        # Cold cache → load from disk and back-fill memory
-        disk_msgs = self._read_disk(session_id, after_index)
-        for msg in disk_msgs:
-            buf["messages"].append(msg)
-        return list(buf["messages"])[after_index:]
+        messages = buf["messages"]
+        base_index = buf.get("base_index", 0)
+
+        # Convert global after_index to local list position
+        local_index = after_index - base_index
+
+        if local_index >= 0 and local_index < len(messages):
+            # Have messages in memory starting from the requested position
+            return messages[local_index:]
+
+        # Need to read from disk — return disk messages directly without
+        # mixing them into the in-memory buffer (indices wouldn't align).
+        return self._read_disk(session_id, after_index)
 
     def get_session_state(self, session_id: str) -> dict[str, Any]:
         """Return current session state snapshot."""
