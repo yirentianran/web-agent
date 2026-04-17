@@ -6,12 +6,6 @@ import type { Message } from '../lib/types'
 
 const SCROLL_THRESHOLD = 100 // pixels from bottom to consider "at bottom"
 
-interface RunningHook {
-  hook_id: string
-  hook_name: string
-  hook_event: string
-}
-
 interface ChatAreaProps {
   messages: Message[]
   sessionId: string | null
@@ -26,7 +20,6 @@ export default function ChatArea({ messages, sessionId, sessionState, onAnswer, 
   const visitedRef = useRef<Set<string>>(new Set())
   const scrollRestoredRef = useRef(false)
   const isUserAtBottomRef = useRef(true)
-  const [runningHooks, setRunningHooks] = useState<Map<string, RunningHook>>(new Map())
   const [agentStartTime, setAgentStartTime] = useState<number | null>(null)
 
   const handleScroll = useCallback(() => {
@@ -51,44 +44,6 @@ export default function ChatArea({ messages, sessionId, sessionState, onAnswer, 
       container.scrollTop = container.scrollHeight
     })
   }, [])
-
-  // Track running hooks based on system messages
-  useEffect(() => {
-    const recentMessages = messages.slice(-10)
-
-    for (const msg of recentMessages) {
-      if (msg.type === 'system') {
-        if (msg.subtype === 'hook_started' && msg.hook_id && msg.hook_name) {
-          setRunningHooks(prev => {
-            const next = new Map(prev)
-            if (!next.has(msg.hook_id!)) {
-              next.set(msg.hook_id!, {
-                hook_id: msg.hook_id!,
-                hook_name: msg.hook_name!,
-                hook_event: msg.hook_event || ''
-              })
-            }
-            return next
-          })
-        } else if (msg.subtype === 'hook_response' && msg.hook_id) {
-          setRunningHooks(prev => {
-            const next = new Map(prev)
-            next.delete(msg.hook_id!)
-            return next
-          })
-        }
-      }
-    }
-  }, [messages])
-
-  // Clear running hooks when session enters a terminal state.
-  // Prevents the "Running hook: startup" spinner from persisting
-  // forever when hook_response is lost or never sent.
-  useEffect(() => {
-    if (sessionState === 'completed' || sessionState === 'error' || sessionState === 'cancelled') {
-      setRunningHooks(new Map())
-    }
-  }, [sessionState])
 
   // Track when agent started running.
   // Uses a ref to detect transitions into 'running' so follow-ups
@@ -166,13 +121,7 @@ export default function ChatArea({ messages, sessionId, sessionState, onAnswer, 
   }, [messages, scrollToBottom])
 
   // Determine what spinner to show
-  const hasRunningHooks = runningHooks.size > 0
-  const isAgentRunning = sessionState === 'running' && !hasRunningHooks
-
-  // Simplify hook name for display
-  const getHookDisplayName = (hookName: string) => {
-    return hookName.includes(':') ? hookName.split(':')[1] : hookName
-  }
+  const isAgentRunning = sessionState === 'running'
 
   // Find the index of the latest TodoWrite message so MessageBubble can
   // hide older TodoWrite visualizations (deduplicate todo lists).
@@ -221,7 +170,7 @@ export default function ChatArea({ messages, sessionId, sessionState, onAnswer, 
       if (msg.type === 'heartbeat') return false
       if (msg.type === 'system' && msg.subtype && [
         'hook_started', 'hook_response', 'hook_error',
-        'init', 'session_state_changed'
+        'init', 'session_state_changed', 'session_cancelled'
       ].includes(msg.subtype)) return false
       if (msg.type === 'user' && (!msg.content || !msg.content.trim())) {
         const files = (msg.data as Array<{ filename: string }> | undefined) || []
@@ -253,18 +202,7 @@ export default function ChatArea({ messages, sessionId, sessionState, onAnswer, 
           />
         ))}
 
-        {/* Show hook spinners */}
-        {hasRunningHooks && Array.from(runningHooks.values()).map(hook => (
-          <div key={hook.hook_id} className="message system-message">
-            <StatusSpinner
-              variant="hook"
-              text="Running hook:"
-              detail={getHookDisplayName(hook.hook_name)}
-            />
-          </div>
-        ))}
-
-        {/* Show agent spinner when no hooks are running */}
+        {/* Show agent spinner when session is running */}
         {isAgentRunning && (
           <div className="message system-message">
             <StatusSpinner

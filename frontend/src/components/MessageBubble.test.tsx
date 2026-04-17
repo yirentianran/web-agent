@@ -989,6 +989,18 @@ describe('MessageBubble - hidden system message subtypes', () => {
     expect(container.firstChild).toBeNull()
   })
 
+  it('hides system messages with subtype session_cancelled', () => {
+    const message: Message = {
+      type: 'system',
+      subtype: 'session_cancelled',
+      content: 'Session cancelled by user.',
+      index: 0,
+    }
+
+    const { container } = renderMessage(message)
+    expect(container.firstChild).toBeNull()
+  })
+
   it('still shows non-task_started system messages', () => {
     const message: Message = {
       type: 'system',

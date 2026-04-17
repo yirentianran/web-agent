@@ -175,7 +175,7 @@ export default function MessageBubble({ message, sessionId, onAnswer, onFileClic
     // - init: internal initialization confirmation
     // - session_state_changed: used to update UI state, not displayed
     // - task_started / task_started.*: internal SDK task notifications
-    const hiddenSubtypes = ['hook_started', 'hook_response', 'hook_error', 'init', 'session_state_changed', 'task_started']
+    const hiddenSubtypes = ['hook_started', 'hook_response', 'hook_error', 'init', 'session_state_changed', 'task_started', 'session_cancelled']
     const subtype = message.subtype || ''
     if (hiddenSubtypes.includes(subtype) || subtype.startsWith('task_started.')) {
       return null

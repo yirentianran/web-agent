@@ -453,6 +453,54 @@ describe('ChatArea - auto-scroll on session running', () => {
   })
 })
 
+// ── Hook spinners removed — no spinner should appear ──────────────────
+
+describe('Hook spinners removed', () => {
+  it('does NOT show hook spinner when hook_started message arrives', () => {
+    const messages: Message[] = [
+      { type: 'system', subtype: 'hook_started', hook_id: 'hk-1', hook_name: 'startup', content: '', index: 0 },
+    ]
+
+    const { container } = renderChatArea(messages, { sessionState: 'running' })
+    // Hook spinner variant should not exist
+    expect(container.querySelector('.status-spinner--hook')).not.toBeInTheDocument()
+    // Agent spinner should show instead
+    expect(container.querySelector('.status-spinner--agent')).toBeInTheDocument()
+  })
+
+  it('does NOT show hook spinner even with multiple hook_started messages', () => {
+    const messages: Message[] = [
+      { type: 'system', subtype: 'hook_started', hook_id: 'hk-1', hook_name: 'startup', content: '', index: 0 },
+      { type: 'system', subtype: 'hook_started', hook_id: 'hk-2', hook_name: 'shutdown', content: '', index: 1 },
+    ]
+
+    const { container } = renderChatArea(messages, { sessionState: 'running' })
+    // Only agent spinner, no hook spinners
+    expect(container.querySelectorAll('.status-spinner--hook').length).toBe(0)
+    expect(container.querySelector('.status-spinner--agent')).toBeInTheDocument()
+  })
+
+  it('still shows agent spinner when sessionState is running', () => {
+    const messages: Message[] = [
+      { type: 'user', content: 'Hello', index: 0 },
+    ]
+
+    const { container } = renderChatArea(messages, { sessionState: 'running' })
+    expect(container.querySelector('.status-spinner')).toBeInTheDocument()
+    expect(screen.getByText('Agent is working...')).toBeInTheDocument()
+  })
+
+  it('does NOT show any spinner when sessionState is completed', () => {
+    const messages: Message[] = [
+      { type: 'user', content: 'Hello', index: 0 },
+      { type: 'system', subtype: 'hook_started', hook_id: 'hk-1', hook_name: 'startup', content: '', index: 1 },
+    ]
+
+    const { container } = renderChatArea(messages, { sessionState: 'completed' })
+    expect(container.querySelector('.status-spinner')).not.toBeInTheDocument()
+  })
+})
+
 // ── Hook tracking in terminal states ──────────────────────────────
 
 describe('Hook tracking', () => {
