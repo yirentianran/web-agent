@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "Multi-user web agent platform for financial audit, powered by Claude Agent SDK"
 requires-python = ">=3.12"
 dependencies = [
+    "aiosqlite>=0.20.0",
     "fastapi>=0.115.0",
     "uvicorn[standard]>=0.32.0",
     "claude-agent-sdk>=0.1.58",

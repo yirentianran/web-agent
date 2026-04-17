@@ -26,7 +26,7 @@ import uuid
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterator
+from typing import TYPE_CHECKING, Any, Iterator
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -43,6 +43,10 @@ from src.models import (
     SkillInfo,
     SkillSource,
 )
+
+if TYPE_CHECKING:
+    from src.database import Database
+    from src.session_store import SessionStore
 
 # ── Configuration ────────────────────────────────────────────────
 
@@ -97,7 +101,9 @@ if not PROD:
     )
 
 # Global state
+_db: Database | None = None  # SQLite database
 buffer = MessageBuffer(base_dir=DATA_ROOT / ".msg-buffer")
+session_store: SessionStore | None = None  # Initialized at startup if DATA_DB_PATH set
 active_tasks: dict[str, asyncio.Task] = {}
 pending_answers: dict[str, asyncio.Future] = {}
 
@@ -552,7 +558,7 @@ def build_sdk_options(
         rewritten = _rewrite_bash_command(cmd, workspace)
         if rewritten == cmd:
             return {"sync": True, "continue_": True}
-        logger.info("PreToolUse[Bash]: rewrote external write in command")
+        logger.info("PreToolUse[Bash]: rewrote '%s' → '%s'", cmd[:120], rewritten[:120])
         new_input = dict(hook_input.get("tool_input", {}))
         new_input["command"] = rewritten
         return {
@@ -931,11 +937,17 @@ async def run_agent_task(
         # Receive messages until result
         msg_count = 0
         generated_files: list[dict[str, Any]] = []
+        buffered_result: dict[str, Any] | None = None  # SDK result for reordering
         async for msg in client.receive_response():
             msg_count += 1
             for event in message_to_dicts(msg):
                 # User message already persisted at function start — skip duplicates from agent response
                 if event.get("type") == "user":
+                    continue
+                # Buffer the SDK result message so file_result can be emitted
+                # first, ensuring file cards appear before "Session completed".
+                if event.get("type") == "result":
+                    buffered_result = event
                     continue
                 # Track Write tool use to collect generated files
                 if event.get("type") == "tool_use" and event.get("name") == "Write":
@@ -1048,8 +1060,10 @@ async def run_agent_task(
                         except Exception as e:
                             logger.warning("Failed to relocate stray file %s: %s", f, e)
 
-        # Emit file_result message if the agent generated any files this turn
-        # Insert before the "result" message so "Session completed" appears at the bottom
+        # Emit file_result message if the agent generated any files this turn.
+        # Uses add_message() (append order) — file_result is emitted BEFORE
+        # session_state_changed:completed, so it appears before "Session completed"
+        # in both live streaming and DB replay.
         # Filter out infrastructure files (logs, caches, etc.) and invalid filenames
         generated_files = [f for f in generated_files if f.get("filename") and should_include_generated_file(f["filename"])]
         if generated_files:
@@ -1057,24 +1071,30 @@ async def run_agent_task(
             for f in generated_files:
                 if "download_url" not in f:
                     f["download_url"] = build_download_url(user_id, f["filename"], directory="outputs")
-            buffer.insert_before_type(session_id, {
+            buffer.add_message(session_id, {
                 "type": "file_result",
                 "content": "",
                 "session_id": session_id,
                 "user_id": user_id,
                 "data": generated_files,
-            }, before_type="result")
+            })
 
         logger.info(
             "Agent task %s: completed with %d messages in %.1fs",
             session_id, msg_count, time.time() - start_time,
         )
-        buffer.mark_done(session_id)
+        # Add state change BEFORE mark_done() so the subscribe loop's
+        # final pull (after is_done() returns True) catches the message.
         buffer.add_message(session_id, {
             "type": "system",
             "subtype": "session_state_changed",
             "state": "completed",
         })
+        # Re-add the buffered SDK result AFTER file_result and state_change
+        # so "Session completed" appears as the last visible message.
+        if buffered_result is not None:
+            buffer.add_message(session_id, buffered_result)
+        buffer.mark_done(session_id)
         duration_ms = (time.time() - start_time) * 1000
         agent_log.end_session(session_id, status="completed")
 
@@ -1084,12 +1104,13 @@ async def run_agent_task(
             "subtype": "session_cancelled",
             "message": "Session cancelled by user.",
         })
-        buffer.mark_done(session_id)
+        # Add state change BEFORE mark_done() for the same reason.
         buffer.add_message(session_id, {
             "type": "system",
             "subtype": "session_state_changed",
             "state": "cancelled",
         })
+        buffer.mark_done(session_id)
         agent_log.end_session(session_id, status="cancelled")
     except Exception as e:
         logger.exception("Agent task failed for session %s", session_id)
@@ -1097,12 +1118,13 @@ async def run_agent_task(
             "type": "error",
             "message": str(e),
         })
-        buffer.mark_done(session_id)
+        # Add state change BEFORE mark_done() so the error is delivered.
         buffer.add_message(session_id, {
             "type": "system",
             "subtype": "session_state_changed",
             "state": "error",
         })
+        buffer.mark_done(session_id)
         agent_log.end_session(session_id, status="error")
     # Note: do NOT disconnect — client is kept alive for follow-ups
 
@@ -1289,9 +1311,14 @@ async def handle_ws(websocket: WebSocket) -> None:
 
                     new_messages = buffer.get_history(session_id, after_index=last_seen)
                     for i, h in enumerate(new_messages):
-                        if h.get("type") == "user":
-                            continue
                         idx = last_seen + i
+                        msg_type = h.get("type", "unknown")
+                        msg_subtype = h.get("subtype", "")
+                        if msg_type == "system" and msg_subtype == "session_state_changed":
+                            logger.debug(
+                                "WS: sending state_change=%s for session %s (idx=%d)",
+                                h.get("state", "?"), session_id, idx,
+                            )
                         await websocket.send_text(json.dumps({
                             **h,
                             "index": idx,
@@ -1300,7 +1327,19 @@ async def handle_ws(websocket: WebSocket) -> None:
                         }))
                     last_seen += len(new_messages)
 
+                    # If session is done, pull one final time to ensure
+                    # session_state_changed: completed is not missed
+                    # (it may have been added after the get_history snapshot).
                     if buffer.is_done(session_id):
+                        final_messages = buffer.get_history(session_id, after_index=last_seen)
+                        for i, h in enumerate(final_messages):
+                            idx = last_seen + i
+                            await websocket.send_text(json.dumps({
+                                **h,
+                                "index": idx,
+                                "replay": False,
+                                "session_id": session_id,
+                            }))
                         break
 
                     event.clear()
@@ -1314,7 +1353,9 @@ async def handle_ws(websocket: WebSocket) -> None:
                             "replay": False,
                             "session_id": session_id,
                         }))
-                        last_seen += 1
+                        # Heartbeats are synthetic — do NOT increment last_seen.
+                        # Incrementing it would drift the cursor past the actual
+                        # buffer end, causing the final pull to miss messages.
                         continue
             finally:
                 buffer.unsubscribe(session_id, event)
@@ -1357,11 +1398,15 @@ async def create_session(user_id: str) -> dict[str, str]:
     # Initialize in MessageBuffer so history/status work immediately
     buffer._ensure_buf(session_id)
 
-    # Persist session metadata
-    sessions_dir = user_data_dir(user_id) / "claude-data" / "sessions"
-    sessions_dir.mkdir(parents=True, exist_ok=True)
-    session_file = sessions_dir / f"{session_id}.jsonl"
-    session_file.touch()
+    # Persist to DB if available
+    if session_store is not None:
+        await session_store.create_session(user_id=user_id, session_id=session_id)
+    else:
+        # Fallback: file-based persistence
+        sessions_dir = user_data_dir(user_id) / "claude-data" / "sessions"
+        sessions_dir.mkdir(parents=True, exist_ok=True)
+        session_file = sessions_dir / f"{session_id}.jsonl"
+        session_file.touch()
 
     return {"session_id": session_id, "title": ""}
 
@@ -1369,6 +1414,11 @@ async def create_session(user_id: str) -> dict[str, str]:
 @app.get("/api/users/{user_id}/sessions", response_model=list[dict[str, Any]])
 async def list_sessions(user_id: str) -> list[dict[str, Any]]:
     """List all historical sessions for a user."""
+    # Use DB-backed store if available
+    if session_store is not None:
+        return await session_store.list_sessions(user_id=user_id)
+
+    # Fallback: file-based scan
     sessions_dir = user_data_dir(user_id) / "claude-data" / "sessions"
     sessions: list[dict[str, Any]] = []
 
@@ -1430,6 +1480,17 @@ async def list_sessions(user_id: str) -> list[dict[str, Any]]:
 @app.get("/api/users/{user_id}/sessions/{session_id}/history")
 async def get_session_history(user_id: str, session_id: str) -> list[dict[str, Any]]:
     """Get all messages for a historical session."""
+    # Use DB-backed store if available
+    if session_store is not None:
+        messages = await session_store.get_session_history(session_id=session_id)
+        # Determine state from buffer or DB
+        state = buffer.get_session_state(session_id)
+        return [
+            {**msg, "session_id": session_id, "session_state": state.get("state", "idle")}
+            for msg in messages
+        ]
+
+    # Fallback: file-based
     messages = buffer.get_history(session_id, after_index=0)
     state = buffer.get_session_state(session_id)
     return [
@@ -1506,27 +1567,32 @@ async def get_all_generated_files(user_id: str) -> list[dict[str, Any]]:
 
 @app.delete("/api/users/{user_id}/sessions/{session_id}")
 async def delete_session(user_id: str, session_id: str) -> dict[str, str]:
-    """Delete a session file, metadata, in-memory buffer, and active client (free disk)."""
-    sessions_dir = user_data_dir(user_id) / "claude-data" / "sessions"
-    session_file = sessions_dir / f"{session_id}.jsonl"
-    meta_file = sessions_dir / f"{session_id}.meta.json"
+    """Delete a session, its messages, in-memory buffer, and active client (free disk)."""
+    # Use DB-backed store if available
+    if session_store is not None:
+        await session_store.delete_session(session_id=session_id)
+    else:
+        # Fallback: file-based deletion
+        sessions_dir = user_data_dir(user_id) / "claude-data" / "sessions"
+        session_file = sessions_dir / f"{session_id}.jsonl"
+        meta_file = sessions_dir / f"{session_id}.meta.json"
 
-    deleted = False
-    if session_file.exists():
-        session_file.unlink()
-        deleted = True
-    if meta_file.exists():
-        meta_file.unlink()
-        deleted = True
+        deleted = False
+        if session_file.exists():
+            session_file.unlink()
+            deleted = True
+        if meta_file.exists():
+            meta_file.unlink()
+            deleted = True
+
+        if not deleted:
+            raise HTTPException(status_code=404, detail="Session not found")
 
     # Clean up in-memory buffer so it won't reappear in the list
     buffer.remove_session(session_id)
 
     # Disconnect the active Claude SDK client for this session
     await cleanup_session_client(session_id)
-
-    if not deleted:
-        raise HTTPException(status_code=404, detail="Session not found")
     return {"status": "ok"}
 
 
@@ -1536,11 +1602,16 @@ class TitleUpdate(BaseModel):
 
 @app.patch("/api/users/{user_id}/sessions/{session_id}/title")
 async def update_session_title(user_id: str, session_id: str, req: TitleUpdate) -> dict[str, str]:
-    """Update a session's title. Stored in a lightweight metadata file."""
-    meta_file = user_data_dir(user_id) / "claude-data" / "sessions" / f"{session_id}.meta.json"
-    meta_file.parent.mkdir(parents=True, exist_ok=True)
-    meta = {"title": req.title, "updated_at": time.time()}
-    meta_file.write_text(json.dumps(meta))
+    """Update a session's title."""
+    # Use DB-backed store if available
+    if session_store is not None:
+        await session_store.update_session_title(user_id=user_id, session_id=session_id, title=req.title)
+    else:
+        # Fallback: file-based metadata
+        meta_file = user_data_dir(user_id) / "claude-data" / "sessions" / f"{session_id}.meta.json"
+        meta_file.parent.mkdir(parents=True, exist_ok=True)
+        meta = {"title": req.title, "updated_at": time.time()}
+        meta_file.write_text(json.dumps(meta))
     return {"status": "ok", "title": req.title}
 
 
@@ -2586,11 +2657,31 @@ async def health() -> dict[str, str]:
 
 @app.on_event("startup")
 async def startup() -> None:
-    """Start background cleanup tasks and ensure required directories exist."""
+    """Start background cleanup tasks and initialize DB if configured."""
     # Ensure training data directories exist
     for subdir in ["training/qa", "training/skill-feedback", "training/preferences",
                     "training/skill_outcomes", "training/corrections"]:
         (DATA_ROOT / subdir).mkdir(parents=True, exist_ok=True)
+
+    # Initialize SQLite + SessionStore if DATA_DB_PATH is set
+    global _db, buffer, session_store
+    db_path_env = os.getenv("DATA_DB_PATH", "")
+    if db_path_env:
+        db_path = Path(db_path_env)
+        if db_path.is_absolute():
+            db_path = Path(db_path_env)
+        else:
+            db_path = Path(__file__).parent / db_path_env
+        from src.database import Database
+        from src.session_store import SessionStore
+        _db = Database(db_path=db_path)
+        await _db.init()
+        buffer.db = _db  # Wire DB into message buffer
+        session_store = SessionStore(db=_db, msg_buffer_dir=DATA_ROOT / ".msg-buffer")
+        logger.info("SQLite initialized: %s (%.2f MB)", db_path, db_path.stat().st_size / (1024 * 1024))
+    else:
+        logger.info("No DATA_DB_PATH set — using file-based storage")
+
     asyncio.create_task(_cleanup_loop())
 
 

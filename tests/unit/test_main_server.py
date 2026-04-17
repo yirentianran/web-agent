@@ -518,3 +518,538 @@ class TestMessageToDicts:
         })
         msgs = main_server.buffer.get_history(sid)
         assert msgs[0]["is_error"] is True
+
+
+# ── Error handling: subscribe loop must receive state message ─────
+
+class TestAgentTaskErrorHandling:
+    """When an error occurs in run_agent_task, the subscribe loop must
+    receive BOTH the error message AND the session_state_changed message.
+    The subscribe loop checks `is_done()` and then does a final pull —
+    the state message MUST be in the buffer before `mark_done()` sets done=True.
+    """
+
+    def test_completed_path_state_message_reachable_after_done(self) -> None:
+        """Normal completion: session_state_changed: completed must be
+        added to buffer so the subscribe loop's final pull catches it.
+        The state message must be visible in history after mark_done()."""
+        sid = "session_test_completed_ordering"
+        buf = main_server.buffer
+
+        # Correct ordering (what the fix implements): state message first, then mark_done
+        buf.add_message(sid, {"type": "system", "subtype": "session_state_changed", "state": "completed"})
+        buf.mark_done(sid)
+
+        # The subscribe loop does: is_done() → True → final pull → get_history()
+        # The state message must be in that final pull.
+        history = buf.get_history(sid)
+        assert any(m.get("subtype") == "session_state_changed" for m in history)
+        assert buf.is_done(sid) is True
+        assert buf.get_session_state(sid)["state"] == "completed"
+
+    def test_error_path_error_and_state_reachable_after_done(self) -> None:
+        """Error path: both the error message and session_state_changed: error
+        must be visible in history after mark_done()."""
+        sid = "session_test_error_ordering"
+        buf = main_server.buffer
+
+        # Correct ordering (what the fix implements):
+        # 1. Add error message (wakes consumers)
+        buf.add_message(sid, {"type": "error", "message": "Something failed"})
+        # 2. Add state change (wakes consumers)
+        buf.add_message(sid, {"type": "system", "subtype": "session_state_changed", "state": "error"})
+        # 3. Mark done (NO wake — relies on prior add_message wakes)
+        buf.mark_done(sid)
+
+        # Verify: both messages exist in buffer and are reachable
+        history = buf.get_history(sid)
+        assert any(m["type"] == "error" for m in history)
+        assert any(m.get("subtype") == "session_state_changed" and m.get("state") == "error" for m in history)
+        assert buf.is_done(sid) is True
+
+    def test_cancelled_path_state_reachable_after_done(self) -> None:
+        """Cancellation: session_state_changed: cancelled must be reachable
+        in history after mark_done()."""
+        sid = "session_test_cancelled_ordering"
+        buf = main_server.buffer
+
+        buf.add_message(sid, {"type": "system", "subtype": "session_cancelled", "message": "Cancelled"})
+        buf.mark_done(sid)
+        buf.add_message(sid, {"type": "system", "subtype": "session_state_changed", "state": "cancelled"})
+
+        history = buf.get_history(sid)
+        assert any(m.get("subtype") == "session_state_changed" and m.get("state") == "cancelled" for m in history)
+        assert buf.is_done(sid) is True
+
+    def test_state_message_wakes_consumers(self) -> None:
+        """When a terminal state message is added to buffer, it must
+        wake consumers via event.set(). The subscribe loop must not
+        need to wait for a heartbeat to discover the state change."""
+        sid = "session_test_consumer_wake"
+        buf = main_server.buffer
+
+        event = buf.subscribe(sid)
+
+        # Add state change message — this should wake the consumer
+        buf.add_message(sid, {"type": "system", "subtype": "session_state_changed", "state": "completed"})
+
+        # Event should be set (consumer was woken)
+        assert event.is_set() is True
+
+    def test_source_completed_path_state_before_mark_done(self) -> None:
+        """In the completed path of run_agent_task, the source code must
+        call add_message(session_state_changed) BEFORE mark_done()."""
+        import inspect
+        source = inspect.getsource(main_server.run_agent_task)
+        lines = source.split('\n')
+
+        # Find the completed path: look for session_state_changed in the main try block
+        # (before any except blocks). The state message must come before mark_done.
+        state_msg_line = None
+        mark_done_line = None
+
+        for i, line in enumerate(lines):
+            stripped = line.strip()
+            # Skip comment lines
+            if stripped.startswith('#'):
+                continue
+
+            # Stop searching when we hit the first except block
+            if 'except asyncio.CancelledError' in stripped:
+                break
+
+            if '"session_state_changed"' in stripped:
+                # Check if the next few lines contain "completed" state
+                for j in range(i + 1, min(i + 3, len(lines))):
+                    if '"completed"' in lines[j]:
+                        state_msg_line = i
+                        break
+
+            if state_msg_line is None and 'buffer.mark_done' in stripped:
+                mark_done_line = i
+
+        assert state_msg_line is not None, "session_state_changed: completed not found in source"
+        assert mark_done_line is None or state_msg_line < mark_done_line, (
+            f"BUG: mark_done() at line {mark_done_line} appears before "
+            f"session_state_changed at line {state_msg_line}"
+        )
+
+    def test_source_error_path_state_before_mark_done(self) -> None:
+        """In the error path of run_agent_task, the source code must
+        call add_message(session_state_changed) BEFORE mark_done()."""
+        import inspect
+        source = inspect.getsource(main_server.run_agent_task)
+        lines = source.split('\n')
+
+        # Find the error block at the function level (indent=4 spaces)
+        error_start = None
+        for i, line in enumerate(lines):
+            stripped = line.strip()
+            if stripped.startswith('#'):
+                continue
+            # Match only the outer except block (4-space indent relative to function)
+            if line.startswith('    except Exception') and 'CancelledError' not in stripped:
+                error_start = i
+                break
+
+        assert error_start is not None, "Could not find outer except Exception block"
+
+        # Search only within the error block
+        state_msg_line = None
+        mark_done_line = None
+
+        for i in range(error_start, len(lines)):
+            stripped = lines[i].strip()
+            if stripped.startswith('#'):
+                continue
+            # Stop at next def or outer except
+            if i > error_start and lines[i].startswith('    ') and not lines[i].startswith('        '):
+                break
+
+            if '"session_state_changed"' in stripped:
+                for j in range(i + 1, min(i + 3, len(lines))):
+                    if '"error"' in lines[j]:
+                        state_msg_line = i
+                        break
+
+            if state_msg_line is None and 'buffer.mark_done' in stripped:
+                mark_done_line = i
+
+        assert state_msg_line is not None, "session_state_changed: error not found in source"
+        assert mark_done_line is None or state_msg_line < mark_done_line, (
+            f"BUG: mark_done() at line {mark_done_line} appears before "
+            f"session_state_changed at line {state_msg_line}"
+        )
+
+    def test_source_cancelled_path_state_before_mark_done(self) -> None:
+        """In the cancelled path of run_agent_task, the source code must
+        call add_message(session_state_changed) BEFORE mark_done()."""
+        import inspect
+        source = inspect.getsource(main_server.run_agent_task)
+        lines = source.split('\n')
+
+        # Find the cancelled block at the function level (4-space indent)
+        cancelled_start = None
+        for i, line in enumerate(lines):
+            stripped = line.strip()
+            if stripped.startswith('#'):
+                continue
+            if line.startswith('    except asyncio.CancelledError'):
+                cancelled_start = i
+                break
+
+        assert cancelled_start is not None, "Could not find outer except CancelledError block"
+
+        # Search only within the cancelled block
+        state_msg_line = None
+        mark_done_line = None
+
+        for i in range(cancelled_start, len(lines)):
+            stripped = lines[i].strip()
+            if stripped.startswith('#'):
+                continue
+            # Stop at next def or outer except
+            if i > cancelled_start and lines[i].startswith('    ') and not lines[i].startswith('        '):
+                break
+
+            if '"session_state_changed"' in stripped:
+                for j in range(i + 1, min(i + 3, len(lines))):
+                    if '"cancelled"' in lines[j]:
+                        state_msg_line = i
+                        break
+
+            if state_msg_line is None and 'buffer.mark_done' in stripped:
+                mark_done_line = i
+
+        assert state_msg_line is not None, "session_state_changed: cancelled not found in source"
+        assert mark_done_line is None or state_msg_line < mark_done_line, (
+            f"BUG: mark_done() at line {mark_done_line} appears before "
+            f"session_state_changed at line {state_msg_line}"
+        )
+
+
+# ── MessageBubble: error message visibility ───────────────────────
+
+
+# ── file_result: append (not insert_before) so subscribe loop catches it ──
+
+class TestFileResultDelivery:
+    """file_result should be appended (not insert_before_type) so the
+    subscribe loop's final pull after is_done() returns True catches it.
+
+    Previously, insert_before_type("result") inserted at an index already
+    sent by the subscribe loop, causing the file_result to be silently
+    dropped from the WebSocket stream.
+    """
+
+    def test_file_result_reachable_after_mark_done(self) -> None:
+        """A file_result appended before mark_done() should be reachable
+        by the subscribe loop's final get_history call."""
+        sid = "session_file_result_test"
+        # Simulate: result message already in buffer (sent by subscribe loop)
+        main_server.buffer.add_message(sid, {
+            "type": "result",
+            "content": "Session completed",
+        })
+        # Append file_result BEFORE mark_done (matching the fixed code path)
+        main_server.buffer.add_message(sid, {
+            "type": "file_result",
+            "content": "",
+            "session_id": sid,
+            "user_id": "user-123",
+            "data": [
+                {"filename": "report.pdf", "size": 51200, "download_url": "/api/users/user-123/download/outputs/report.pdf"},
+            ],
+        })
+        main_server.buffer.add_message(sid, {
+            "type": "system",
+            "subtype": "session_state_changed",
+            "state": "completed",
+        })
+        main_server.buffer.mark_done(sid)
+
+        # Subscribe loop's final pull: get all messages after the "result"
+        # (simulating last_seen = 1, i.e., after the result was sent)
+        msgs = main_server.buffer.get_history(sid, after_index=1)
+        # Should contain file_result and session_state_changed
+        types = [m.get("type") for m in msgs]
+        assert "file_result" in types, f"file_result not reachable! Messages: {types}"
+        assert "system" in types
+
+    def test_subscribe_loop_no_duplicate_result(self) -> None:
+        """Simulate the subscribe loop's two-phase pull (normal iteration
+        + final pull after is_done). The "result" message must NOT appear
+        in both phases."""
+        sid = "session_no_duplicate_result"
+
+        # Phase 1: Normal iteration sends messages up to and including "result"
+        main_server.buffer.add_message(sid, {"type": "assistant", "content": "Hello"})
+        main_server.buffer.add_message(sid, {"type": "result", "content": "Session completed"})
+
+        # Normal iteration pulls and sends both messages
+        normal_batch = main_server.buffer.get_history(sid, after_index=0)
+        normal_types = [m.get("type") for m in normal_batch]
+        assert "result" in normal_types
+        assert "file_result" not in normal_types  # Not added yet
+
+        last_seen = len(normal_batch)  # last_seen = 2
+
+        # Phase 2: Agent task exits, adds file_result and state_change, marks done
+        main_server.buffer.add_message(sid, {
+            "type": "file_result",
+            "content": "",
+            "session_id": sid,
+            "user_id": "user-123",
+            "data": [{"filename": "test.pdf", "size": 1024}],
+        })
+        main_server.buffer.add_message(sid, {
+            "type": "system",
+            "subtype": "session_state_changed",
+            "state": "completed",
+        })
+        main_server.buffer.mark_done(sid)
+
+        # Final pull: should only get NEW messages after last_seen
+        final_batch = main_server.buffer.get_history(sid, after_index=last_seen)
+        final_types = [m.get("type") for m in final_batch]
+
+        # file_result and state_change should be present
+        assert "file_result" in final_types, f"Missing file_result in final pull! Types: {final_types}"
+        assert "system" in final_types
+
+        # result must NOT be in the final pull (it was already sent in normal iteration)
+        assert "result" not in final_types, (
+            f"BUG: result duplicated in final pull! Normal had {normal_types}, "
+            f"final had {final_types}"
+        )
+
+        # Combined: each message type appears exactly once
+        all_types = normal_types + final_types
+        assert all_types.count("result") == 1, "result appears more than once"
+        assert all_types.count("file_result") == 1, "file_result appears more than once"
+
+    def test_file_result_wakes_consumers(self) -> None:
+        """Appending file_result should wake up waiting consumers."""
+        import asyncio
+        from threading import Event, Thread
+
+        sid = "session_file_result_wake"
+        buf = main_server.buffer._ensure_buf(sid)
+
+        # Simulate a waiting consumer
+        event = Event()
+        buf["consumers"].add(event)
+
+        # Add file_result (this should wake the consumer)
+        main_server.buffer.add_message(sid, {
+            "type": "file_result",
+            "content": "",
+            "session_id": sid,
+            "user_id": "user-123",
+            "data": [{"filename": "test.pdf", "size": 1024}],
+        })
+
+        # Consumer should have been woken
+        assert event.is_set(), "file_result did not wake consumers"
+
+    def test_file_result_includes_user_id(self) -> None:
+        """file_result message should include user_id for download URL
+        construction in the frontend."""
+        sid = "session_file_result_userid"
+        main_server.buffer.add_message(sid, {
+            "type": "file_result",
+            "content": "",
+            "session_id": sid,
+            "user_id": "user-456",
+            "data": [{"filename": "data.xlsx", "size": 2048}],
+        })
+        msgs = main_server.buffer.get_history(sid)
+        assert msgs[0].get("user_id") == "user-456"
+
+    def test_source_completed_file_result_before_mark_done(self) -> None:
+        """In the completed path of run_agent_task, the source code must
+        call add_message(file_result) BEFORE mark_done()."""
+        import inspect
+        source = inspect.getsource(main_server.run_agent_task)
+        lines = source.split('\n')
+
+        # Find the completed block (mark_done area)
+        mark_done_line = None
+        file_result_line = None
+        for i, line in enumerate(lines):
+            stripped = line.strip()
+            if stripped.startswith('#'):
+                continue
+            if 'buffer.mark_done' in stripped:
+                mark_done_line = i
+            if '"file_result"' in stripped or "'file_result'" in stripped:
+                file_result_line = i
+
+        assert file_result_line is not None, "file_result not found in completed path"
+        assert mark_done_line is not None, "mark_done not found in completed path"
+        assert file_result_line < mark_done_line, (
+            f"BUG: file_result at line {file_result_line} appears after "
+            f"mark_done at line {mark_done_line}"
+        )
+
+
+# ── File result ordering vs SDK result ────────────────────────────
+
+
+class TestFileResultBeforeResult:
+    """file_result must appear BEFORE the SDK's "result" message
+    (which renders as "Session completed") in both live streaming
+    and DB replay.
+
+    The SDK emits a ResultMessage last, which message_to_dicts converts
+    to {"type": "result", ...}. If this result is added to the buffer
+    before file_result, the subscribe loop sends result first and
+    file_result second — putting the file card AFTER "Session completed".
+
+    Fix: Buffer the SDK result message, add file_result first, then
+    re-add the buffered result.
+    """
+
+    def test_file_result_before_result_in_subscribe_output(self) -> None:
+        """Simulate the subscribe loop sending all messages.
+        file_result must have a lower index than result so the
+        file card appears above 'Session completed' in the UI.
+
+        This test simulates the buffer state AFTER the fix:
+        file_result should be at a lower seq/index than result.
+        """
+        # Simulate the CORRECT buffer state after the fix
+        # (file_result added before result)
+        sid = "session_order_correct"
+        main_server.buffer.add_message(sid, {"type": "assistant", "content": "Hello"})
+        main_server.buffer.add_message(sid, {
+            "type": "file_result",
+            "content": "",
+            "session_id": sid,
+            "user_id": "user-123",
+            "data": [{"filename": "calendar.docx", "size": 36000}],
+        })
+        main_server.buffer.add_message(sid, {
+            "type": "system",
+            "subtype": "session_state_changed",
+            "state": "completed",
+        })
+        main_server.buffer.add_message(sid, {
+            "type": "result",
+            "subtype": "complete",
+            "duration_ms": 64500,
+            "total_cost_usd": 0.3835,
+        })
+        main_server.buffer.mark_done(sid)
+
+        history = main_server.buffer.get_history(sid)
+        types = [m.get("type") for m in history]
+
+        # Find indices
+        file_result_idx = types.index("file_result")
+        result_idx = types.index("result")
+        assert file_result_idx < result_idx, (
+            f"file_result (idx={file_result_idx}) must appear before "
+            f"result (idx={result_idx}) — got order: {types}"
+        )
+
+    def test_current_broken_ordering_result_before_file_result(self) -> None:
+        """This test documents the OLD broken ordering (result before file_result).
+        After the fix to run_agent_task, the actual buffer ordering is now correct
+        (file_result before result), verified by the test above.
+
+        This test remains as a behavioral specification: if messages are added
+        in the order result→file_result, file_result will have a higher index.
+        The fix prevents this by buffering the SDK result and emitting it last.
+        """
+        sid = "session_order_broken"
+        # Simulate the BROKEN old state (result before file_result)
+        main_server.buffer.add_message(sid, {"type": "assistant", "content": "Hello"})
+        main_server.buffer.add_message(sid, {
+            "type": "result",
+            "subtype": "complete",
+            "duration_ms": 64500,
+            "total_cost_usd": 0.3835,
+        })
+        main_server.buffer.add_message(sid, {
+            "type": "file_result",
+            "content": "",
+            "session_id": sid,
+            "user_id": "user-123",
+            "data": [{"filename": "calendar.docx", "size": 36000}],
+        })
+        main_server.buffer.mark_done(sid)
+
+        history = main_server.buffer.get_history(sid)
+        types = [m.get("type") for m in history]
+
+        result_idx = types.index("result")
+        file_result_idx = types.index("file_result")
+
+        # Documents: when result is added before file_result, result has lower index.
+        # The fix prevents this by buffering the SDK result until after file_result.
+        assert result_idx < file_result_idx, (
+            f"Expected result before file_result in this simulation. Got: {types}"
+        )
+
+
+# ── User message visibility in subscribe loop ─────────────────────
+
+
+class TestUserMessageInSubscribeLoop:
+    """The subscribe loop must send user messages back to the frontend
+    so they survive as confirmed server messages, not just optimistic
+    local copies that disappear on state changes."""
+
+    def test_user_message_not_filtered_in_source(self) -> None:
+        """The subscribe loop source must NOT filter out user messages."""
+        import inspect
+        source = inspect.getsource(main_server.handle_ws)
+        # The subscribe loop should not have a filter that skips user messages
+        # Look for the problematic pattern: if h.get("type") == "user": continue
+        lines = source.split('\n')
+        for i, line in enumerate(lines):
+            if 'h.get("type") == "user"' in line or "h.get('type') == 'user'" in line:
+                # Found the filter — verify it's removed or that user messages are sent
+                pytest.fail(
+                    f"Subscribe loop still filters user messages at line {i}: {line.strip()}. "
+                    "User messages must be sent so the frontend has confirmed copies."
+                )
+
+
+# ── Heartbeat inflating last_seen cursor ──────────────────────────
+
+
+class TestHeartbeatDoesNotInflateCursor:
+    """The subscribe loop sends heartbeats during idle periods. Each
+    heartbeat increments last_seen by 1, but heartbeats are synthetic
+    messages NOT stored in the buffer. After many heartbeats, last_seen
+    drifts past the actual buffer end, causing the final pull to skip
+    session_state_changed:completed and the page stays 'running'.
+
+    The fix: do NOT increment last_seen for heartbeat messages.
+    """
+
+    def test_heartbeat_last_seen_increment_in_source(self) -> None:
+        """The subscribe loop must NOT increment last_seen after sending
+        a heartbeat. The line 'last_seen += 1' must not exist in the
+        heartbeat TimeoutError branch."""
+        import inspect
+        source = inspect.getsource(main_server.handle_ws)
+        lines = source.split('\n')
+
+        # Find the heartbeat TimeoutError block and check for last_seen += 1
+        in_heartbeat_block = False
+        for i, line in enumerate(lines):
+            stripped = line.strip()
+            if 'asyncio.TimeoutError' in stripped:
+                in_heartbeat_block = True
+            if in_heartbeat_block and 'except' in stripped and 'TimeoutError' not in stripped:
+                in_heartbeat_block = False
+                continue
+            if in_heartbeat_block and 'last_seen += 1' in stripped:
+                pytest.fail(
+                    f"Heartbeat handler still inflates last_seen at line {i}: {stripped}. "
+                    "Heartbeats are synthetic — incrementing last_seen causes the cursor "
+                    "to drift past the actual buffer end, missing completion messages."
+                )

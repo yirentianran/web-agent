@@ -115,11 +115,36 @@ function MainApp() {
   useEffect(() => {
     activeSessionRef.current = activeSession
   }, [activeSession])
-  const [sessionState, setSessionState] = useState('idle')
+  const [sessionStates, setSessionStates] = useState<Map<string, string>>(new Map())
+
+  // Per-session state setter — updates only the specified session
+  const setSessionStateFor = useCallback((sessionId: string, state: string) => {
+    setSessionStates(prev => {
+      const next = new Map(prev)
+      next.set(sessionId, state)
+      return next
+    })
+  }, [])
+
+  // Get the current active session's state (for InputBar disabled check)
+  const activeSessionState = activeSession
+    ? (sessionStates.get(activeSession) ?? 'idle')
+    : 'idle'
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [filesOpen, setFilesOpen] = useState(false)
   const [fileCount, setFileCount] = useState<number>(0)
   const inputBarRef = useRef<InputBarHandle>(null)
+  // Tracks the optimistic user message added before replay/live messages arrive.
+  // Used to preserve it when clearing old messages.
+  const optimisticMsgRef = useRef<Message | null>(null)
+  // Index threshold: messages with index >= this are "new turn" messages.
+  // When the first such live message arrives, old messages (index < threshold)
+  // are cleared to prevent old conversation results from appearing before
+  // the new response.
+  const clearThresholdRef = useRef<number>(-1)
+  // Tracks whether replay has started for the current turn.
+  // If replay sends messages, we don't clear (replay already handles ordering).
+  const replayStartedRef = useRef(false)
 
   // Click a file in a message bubble to reference it in the input
   const handleFileClick = useCallback((filename: string) => {
@@ -173,9 +198,52 @@ function MainApp() {
   }
 
   const handleIncomingMessage = useCallback((msg: Message) => {
+    // Use a functional update so we always work with the latest `prev`.
+    // This avoids stale-closure bugs and ensures dedup runs on every message.
     setMessages((prev) => {
+      const optimistic = optimisticMsgRef.current
+
+      // Determine if this is the first message of a new turn that should
+      // trigger clearing of old conversation history.
+      const isInvisibleMessage =
+        msg.type === 'heartbeat' ||
+        (msg.type === 'system' && msg.subtype === 'session_state_changed')
+      const isFirstTurnMessage =
+        !replayStartedRef.current &&
+        ((msg.replay) ||
+          (!msg.replay && !isInvisibleMessage && msg.index >= clearThresholdRef.current))
+
+      if (isFirstTurnMessage) {
+        replayStartedRef.current = true
+        // Build base with optimistic user message, then dedup the incoming
+        // message against it (handles the case where the server replays the
+        // user message with a different index).
+        const base: Message[] = optimistic ? [optimistic] : []
+        // Replay dedup: skip if we already have this exact index
+        if (msg.replay && base.some((m) => m.index === msg.index)) {
+          return prev
+        }
+        // Live dedup for user messages: skip server copy if content matches
+        if (msg.type === 'user' && !msg.replay) {
+          if (base.some((m) => m.type === 'user' && m.content === msg.content)) {
+            return prev
+          }
+        }
+        return [...base, msg]
+      }
+
+      // Non-first message: append with dedup.
+      // Replay dedup: skip if we already have this exact index
       if (msg.replay && prev.some((m) => m.index === msg.index)) {
         return prev
+      }
+      // Live dedup for user messages: the frontend optimistically adds
+      // the user message; the server sends back the confirmed copy with
+      // a different index. Skip the server copy if content matches.
+      if (msg.type === 'user' && !msg.replay) {
+        if (prev.some((m) => m.type === 'user' && m.content === msg.content)) {
+          return prev
+        }
       }
       return [...prev, msg]
     })
@@ -184,11 +252,11 @@ function MainApp() {
       setActiveSession(msg.session_id)
     }
 
-    if (msg.type === 'system' && msg.subtype === 'session_state_changed') {
-      setSessionState(msg.state || msg.content || 'completed')
+    if (msg.type === 'system' && msg.subtype === 'session_state_changed' && msg.session_id) {
+      setSessionStateFor(msg.session_id, msg.state || msg.content || 'completed')
     }
-    if (msg.type === 'result') {
-      setSessionState('completed')
+    if (msg.type === 'result' && msg.session_id) {
+      setSessionStateFor(msg.session_id, 'completed')
       // Auto-generate title from first message
       if (activeSessionRef.current && firstMessageRef.current) {
         fetch(`/api/users/${userId}/sessions/${activeSessionRef.current}/title`, {
@@ -198,6 +266,11 @@ function MainApp() {
         }).catch(() => {})
       }
       loadSessions()
+    }
+    // Refresh file count from server when new files are generated
+    // (cannot blindly increment because the agent may overwrite existing files)
+    if (msg.type === 'file_result') {
+      loadFileCount()
     }
   }, [userId])
 
@@ -227,19 +300,30 @@ function MainApp() {
           logger.error('Session creation failed, using synthetic ID', errorMsg)
           sessionId = `session_${userId}_${Date.now()}`
           setActiveSession(sessionId)
-          setSessionState('error')
-          setTimeout(() => setSessionState('idle'), 3000)
+          setSessionStateFor(sessionId, 'error')
+          setTimeout(() => setSessionStateFor(sessionId!, 'idle'), 3000)
         }
       }
 
-      // Add user message immediately for UI responsiveness
+      // Add user message immediately for UI responsiveness.
+      // Use index = lastBackendIndex - 1 so it sorts BEFORE any replay
+      // messages (which start at lastBackendIndex) but won't collide
+      // with them during dedup.
       const lastBackendIndex = messagesRef.current
+      // Set threshold: messages with index >= this are "new turn".
+      // When first such message arrives, clear old messages.
+      clearThresholdRef.current = lastBackendIndex
+      replayStartedRef.current = false
       const fileMetadata = files?.map(f => ({ filename: f.name, size: f.size }))
-      setMessages((prev) => [
-        ...prev,
-        { type: 'user', content: message, index: prev.length, data: fileMetadata },
-      ])
-      setSessionState('running')
+      const optimisticMsg: Message = {
+        type: 'user',
+        content: message,
+        index: lastBackendIndex - 1,
+        data: fileMetadata,
+      }
+      optimisticMsgRef.current = optimisticMsg
+      setMessages((prev) => [...prev, optimisticMsg])
+      setSessionStateFor(sessionId!, 'running')
 
       // last_index: number of messages the backend has already seen
       sendMessage({
@@ -255,13 +339,20 @@ function MainApp() {
   const handleNewSession = useCallback(async () => {
     setMessages([])
     setActiveSession(null)
-    setSessionState('idle')
+    // Clear active session state on new session — no active session means input should be enabled
+    optimisticMsgRef.current = null
+    clearThresholdRef.current = -1
+    replayStartedRef.current = false
   }, [])
 
   const handleSelectSession = useCallback(async (id: string) => {
     setActiveSession(id)
-    setSessionState('idle')
+    // Don't hardcode 'idle' — the state will be derived from message history below
     firstMessageRef.current = null
+    // Reset replay tracking refs when switching sessions
+    optimisticMsgRef.current = null
+    clearThresholdRef.current = -1
+    replayStartedRef.current = false
 
     // Load historical messages from backend
     try {
@@ -275,13 +366,30 @@ function MainApp() {
         // Restore first user message for title
         const firstUser = msgs.find((m: Message) => m.type === 'user')
         if (firstUser) firstMessageRef.current = firstUser.content.slice(0, 50)
+        // Derive sessionState from the last session_state_changed message,
+        // or fall back to 'idle' if none found.
+        let derivedState = 'idle'
+        for (let i = msgs.length - 1; i >= 0; i--) {
+          const m = msgs[i]
+          if (m.type === 'system' && m.subtype === 'session_state_changed' && m.state) {
+            derivedState = m.state
+            break
+          }
+          if (m.type === 'result') {
+            derivedState = 'completed'
+            break
+          }
+        }
+        setSessionStateFor(id, derivedState)
       } else {
         setMessages([])
+        setSessionStateFor(id, 'idle')
       }
     } catch {
       setMessages([])
+      setSessionStateFor(id, 'idle')
     }
-  }, [userId, authToken])
+  }, [userId, authToken, setSessionStateFor])
 
   const handleDeleteSession = useCallback(async (id: string) => {
     if (!confirm('Delete this session?')) return
@@ -300,7 +408,16 @@ function MainApp() {
       if (id === activeSession) {
         setMessages([])
         setActiveSession(null)
-        setSessionState('idle')
+        // Clear this session's state from the map
+        setSessionStates(prev => {
+          const next = new Map(prev)
+          next.delete(id)
+          return next
+        })
+        // Reset replay tracking refs
+        optimisticMsgRef.current = null
+        clearThresholdRef.current = -1
+        replayStartedRef.current = false
       }
     } catch (err) {
       logger.error('Failed to delete session', err)
@@ -328,7 +445,7 @@ function MainApp() {
         headers
       })
       if (resp.ok) {
-        setSessionState('idle')
+        setSessionStateFor(activeSession, 'idle')
       }
     } catch (err) {
       console.error('Failed to stop session', err)
@@ -365,7 +482,7 @@ function MainApp() {
           <ChatArea
             messages={messages}
             sessionId={activeSession}
-            sessionState={sessionState}
+            sessionState={activeSessionState}
             onAnswer={sendAnswer}
             scrollPositions={sessionScrollPositions}
             onFileClick={handleFileClick}
@@ -374,7 +491,7 @@ function MainApp() {
             ref={inputBarRef}
             onSend={handleSend}
             onStop={stopSession}
-            disabled={!connected || sessionState === 'running'}
+            disabled={!connected || activeSessionState === 'running'}
             userId={userId}
           />
         </main>
