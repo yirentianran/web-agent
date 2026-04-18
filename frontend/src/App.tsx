@@ -202,7 +202,13 @@ function MainApp() {
           return []
         })
         .then(data => {
-          const msgs = (data as any[]).map((m: any, i: number) => ({ ...m, index: i }))
+          const msgs = (data as any[]).map((m: any) => ({
+            ...m,
+            // Use backend's absolute index; fallback to enumerate position
+            index: m.index ?? -1,
+            // Defensive: always ensure session_id for correct filtering
+            session_id: activeSession,
+          }))
           setMessages(msgs)
           // Derive sessionState from history
           let derivedState = 'idle'
@@ -447,7 +453,11 @@ function MainApp() {
       const resp = await fetch(`/api/users/${userId}/sessions/${id}/history`, { headers })
       if (resp.ok) {
         const data = await resp.json()
-        const msgs = data.map((m: any, i: number) => ({ ...m, index: i }))
+        const msgs = (data as any[]).map((m: any) => ({
+          ...m,
+          index: m.index ?? -1,
+          session_id: id,
+        }))
         setMessages(msgs)
         // Restore first user message for title
         const firstUser = msgs.find((m: Message) => m.type === 'user')

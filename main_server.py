@@ -1567,23 +1567,29 @@ async def list_sessions(user_id: str) -> list[dict[str, Any]]:
 
 @app.get("/api/users/{user_id}/sessions/{session_id}/history")
 async def get_session_history(user_id: str, session_id: str) -> list[dict[str, Any]]:
-    """Get all messages for a historical session."""
+    """Get all messages for a historical session.
+
+    Each message includes an absolute 'index' field for consistent
+    dedup with WebSocket messages. Index 0 = first message ever
+    sent for this session.
+    """
     # Use DB-backed store if available
     if session_store is not None:
         messages = await session_store.get_session_history(session_id=session_id)
-        # Determine state from buffer or DB
         state = buffer.get_session_state(session_id)
         return [
-            {**msg, "session_id": session_id, "session_state": state.get("state", "idle")}
-            for msg in messages
+            {**msg, "index": msg.get("seq", i), "session_id": session_id,
+             "session_state": state.get("state", "idle")}
+            for i, msg in enumerate(messages)
         ]
 
-    # Fallback: file-based
+    # Fallback: file-based — enumerate to assign absolute indices
     messages = buffer.get_history(session_id, after_index=0)
     state = buffer.get_session_state(session_id)
     return [
-        {**msg, "session_id": session_id, "session_state": state.get("state", "idle")}
-        for msg in messages
+        {**msg, "index": i, "session_id": session_id,
+         "session_state": state.get("state", "idle")}
+        for i, msg in enumerate(messages)
     ]
 
 
