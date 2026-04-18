@@ -91,6 +91,13 @@ export default function ChatArea({ messages, sessionId, sessionState, onAnswer, 
     if (isFirstVisit) {
       visitedRef.current.add(sessionId)
 
+      // Running sessions: always scroll to bottom to show latest activity
+      if (sessionState === 'running') {
+        scrollRestoredRef.current = false
+        scrollToBottom()
+        return
+      }
+
       // Try to restore from localStorage (survives page refresh)
       try {
         const SCROLL_STORAGE_KEY = 'web-agent-scroll-positions'

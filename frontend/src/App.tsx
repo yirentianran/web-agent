@@ -443,6 +443,9 @@ function MainApp() {
           }
         }
         setSessionStateFor(id, derivedState)
+        // After loading history, recover to catch up any live messages
+        // from an active agent session (state may not yet be persisted)
+        sendRecover(id, msgs.length)
       } else {
         setMessages([])
         setSessionStateFor(id, 'idle')
@@ -451,7 +454,7 @@ function MainApp() {
       setMessages([])
       setSessionStateFor(id, 'idle')
     }
-  }, [userId, authToken, setSessionStateFor])
+  }, [userId, authToken, setSessionStateFor, sendRecover])
 
   const handleDeleteSession = useCallback(async (id: string) => {
     if (!confirm('Delete this session?')) return

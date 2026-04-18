@@ -353,6 +353,65 @@ describe('message handling after recovery', () => {
     })
   })
 
+  describe('session switch recovery', () => {
+    it('receives live state messages after switching back to a running session', () => {
+      // Simulate the flow:
+      // 1. Session A is running, user switches to Session B
+      // 2. User switches back to Session A
+      // 3. handleSelectSession loads history via REST
+      // 4. sendRecover is called → backend pushes live state messages
+      // 5. State should update to 'running'
+
+      const stateChanges: { sessionId: string; state: string }[] = []
+      const handler = createMessageHandler({
+        onSessionStateChange: (sessionId: string, state: string) => {
+          stateChanges.push({ sessionId, state })
+        },
+      })
+
+      // Step 1: REST loads history (no state message yet, just user/assistant)
+      handler.simulateReplay([
+        { type: 'user', content: 'analyze data', index: 0 },
+      ])
+
+      // Step 2: Recovery pushes live messages including running state
+      handler.simulateReplay([
+        { type: 'user', content: 'analyze data', index: 0 },
+        { type: 'system', subtype: 'session_state_changed', state: 'running', content: '', index: 1, session_id: 'sessA' },
+      ])
+
+      // Step 3: Live agent messages arrive
+      handler.simulateLiveMessage({
+        type: 'assistant',
+        content: 'Analyzing...',
+        index: 2,
+      })
+
+      expect(handler.getMessages()).toHaveLength(3)
+      expect(stateChanges.some(c => c.state === 'running')).toBe(true)
+    })
+
+    it('dedups messages when REST and recover both load same history', () => {
+      const handler = createMessageHandler()
+
+      // REST loads 2 messages
+      handler.simulateReplay([
+        { type: 'user', content: 'hello', index: 0 },
+        { type: 'assistant', content: 'Hi!', index: 1 },
+      ])
+      expect(handler.getMessages()).toHaveLength(2)
+
+      // sendRecover → backend replays same 2 messages (replay=true)
+      handler.simulateReplay([
+        { type: 'user', content: 'hello', index: 0 },
+        { type: 'assistant', content: 'Hi!', index: 1 },
+      ])
+
+      // Should still be 2 — dedup by index
+      expect(handler.getMessages()).toHaveLength(2)
+    })
+  })
+
   describe('session state after recovery', () => {
     it('sets running state when session_state_changed is replayed', () => {
       // Track state changes via a callback
