@@ -95,6 +95,7 @@ CREATE TABLE IF NOT EXISTS skill_feedback (
     session_id TEXT,
     rating INTEGER NOT NULL,
     comment TEXT NOT NULL DEFAULT '',
+    user_edits TEXT NOT NULL DEFAULT '',
     skill_version TEXT NOT NULL DEFAULT '',
     created_at REAL NOT NULL DEFAULT (strftime('%s', 'now'))
 );

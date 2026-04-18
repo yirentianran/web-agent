@@ -2,27 +2,37 @@ import { useState } from 'react'
 
 interface SkillFeedbackWidgetProps {
   skillName?: string
-  onSubmit: (rating: number, comment: string) => Promise<void>
+  onSubmit: (rating: number, comment: string, userEdits: string) => Promise<void>
 }
 
 export default function SkillFeedbackWidget({ skillName, onSubmit }: SkillFeedbackWidgetProps) {
   const [rating, setRating] = useState(0)
   const [comment, setComment] = useState('')
+  const [userEdits, setUserEdits] = useState('')
   const [submitted, setSubmitted] = useState(false)
   const [loading, setLoading] = useState(false)
   const [collapsed, setCollapsed] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+  const [showEdits, setShowEdits] = useState(false)
 
   const handleSubmit = async () => {
     if (rating === 0) return
     setLoading(true)
+    setError(null)
     try {
-      await onSubmit(rating, comment)
+      await onSubmit(rating, comment, userEdits)
       setSubmitted(true)
-    } catch {
-      // Keep UI visible so user can retry
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to submit feedback. Please try again.')
     } finally {
       setLoading(false)
     }
+  }
+
+  // Reset error when user changes input
+  const handleRatingChange = (star: number) => {
+    setRating(star)
+    if (error) setError(null)
   }
 
   if (submitted) {
@@ -67,7 +77,7 @@ export default function SkillFeedbackWidget({ skillName, onSubmit }: SkillFeedba
               <button
                 key={star}
                 className={`star ${star <= rating ? 'filled' : ''}`}
-                onClick={() => setRating(star)}
+                onClick={() => handleRatingChange(star)}
                 type="button"
                 aria-label={`${star} star${star > 1 ? 's' : ''}`}
               >
@@ -79,9 +89,29 @@ export default function SkillFeedbackWidget({ skillName, onSubmit }: SkillFeedba
             className="feedback-comment"
             placeholder="What could be improved? (optional)"
             value={comment}
-            onChange={(e) => setComment(e.target.value)}
+            onChange={(e) => { setComment(e.target.value); if (error) setError(null) }}
             rows={2}
           />
+          <details className="feedback-edits-toggle">
+            <summary onClick={(e) => { e.preventDefault(); setShowEdits(!showEdits) }}>
+              What did you change? (optional)
+            </summary>
+            <textarea
+              className="feedback-comment"
+              placeholder="Describe any edits you made..."
+              value={userEdits}
+              onChange={(e) => setUserEdits(e.target.value)}
+              rows={2}
+            />
+          </details>
+          {error && (
+            <div className="feedback-error">
+              <span>{error}</span>
+              <button onClick={handleSubmit} type="button" disabled={loading}>
+                {loading ? 'Retrying...' : 'Retry'}
+              </button>
+            </div>
+          )}
           <button
             className="btn-submit-feedback"
             disabled={rating === 0 || loading}

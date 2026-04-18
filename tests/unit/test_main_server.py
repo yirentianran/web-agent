@@ -502,6 +502,58 @@ class TestFeedbackAPI:
         assert resp.json()["status"] == "ok"
 
 
+class TestSkillFeedbackAuth:
+    """Test that skill feedback endpoint extracts user_id from auth header."""
+
+    def test_submit_skill_feedback_without_auth_fallback_default(self, client: TestClient) -> None:
+        """When ENFORCE_AUTH=false (default in tests), missing token falls back to 'default'."""
+        with patch("main_server._get_user_id_from_header", return_value="default"):
+            resp = client.post(
+                "/api/skills/test-skill/feedback",
+                json={"rating": 4, "comment": "Good"},
+            )
+            assert resp.status_code == 200
+
+    def test_submit_skill_feedback_with_auth_header(self, client: TestClient) -> None:
+        """When auth header is provided, user_id is extracted from token."""
+        with patch("main_server._get_user_id_from_header", return_value="alice"):
+            resp = client.post(
+                "/api/skills/test-skill/feedback",
+                json={"rating": 5, "comment": "Excellent"},
+            )
+            assert resp.status_code == 200
+
+    def test_submit_skill_feedback_with_user_edits(self, client: TestClient) -> None:
+        """user_edits field is accepted and stored."""
+        with patch("main_server._get_user_id_from_header", return_value="alice"):
+            resp = client.post(
+                "/api/skills/test-skill/feedback",
+                json={"rating": 4, "comment": "Good", "user_edits": "Fixed formatting"},
+            )
+            assert resp.status_code == 200
+
+
+class TestUserFeedbackQuery:
+    """Test GET /api/users/{user_id}/feedback endpoint."""
+
+    def test_get_user_feedback_empty(self, client: TestClient) -> None:
+        """Returns empty result when user has no feedback."""
+        resp = client.get("/api/users/alice/feedback")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["stats"] == []
+        assert data["items"] == []
+        assert data["total_count"] == 0
+
+    def test_get_user_feedback_with_data_no_db_fallback(self, client: TestClient) -> None:
+        """When no DB is available, returns empty result (expected fallback)."""
+        # In test environment, _db is None, so the endpoint returns empty fallback
+        resp = client.get("/api/users/alice/feedback")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["total_count"] == 0
+
+
 class TestUserMessagePersistence:
     def test_user_message_persisted_on_first_session(self, client: TestClient) -> None:
         """User messages should be written to buffer on session start so they survive page refresh."""

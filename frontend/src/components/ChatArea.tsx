@@ -13,9 +13,10 @@ interface ChatAreaProps {
   onAnswer: (sessionId: string, answers: Record<string, string>) => void
   scrollPositions: Map<string, number>
   onFileClick?: (filename: string) => void
+  authToken?: string | null
 }
 
-export default function ChatArea({ messages, sessionId, sessionState, onAnswer, scrollPositions, onFileClick }: ChatAreaProps) {
+export default function ChatArea({ messages, sessionId, sessionState, onAnswer, scrollPositions, onFileClick, authToken }: ChatAreaProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const visitedRef = useRef<Set<string>>(new Set())
   const scrollRestoredRef = useRef(false)
@@ -266,11 +267,13 @@ export default function ChatArea({ messages, sessionId, sessionState, onAnswer, 
 
       {sessionState === 'completed' && (
         <SkillFeedbackWidget
-          onSubmit={async (rating, comment) => {
+          onSubmit={async (rating, comment, userEdits) => {
+            const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+            if (authToken) headers['Authorization'] = `Bearer ${authToken}`
             await fetch('/api/skills/general/feedback', {
               method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ rating, comment, session_id: sessionId }),
+              headers,
+              body: JSON.stringify({ rating, comment, user_edits: userEdits, session_id: sessionId }),
             })
           }}
         />

@@ -2303,6 +2303,7 @@ async def delete_task_endpoint(user_id: str, task_id: str) -> dict[str, str]:
 class SkillFeedbackRequest(BaseModel):
     rating: int
     comment: str = ""
+    user_edits: str = ""
     session_id: str | None = None
 
 
@@ -2310,27 +2311,45 @@ class SkillFeedbackRequest(BaseModel):
 async def submit_skill_feedback(
     skill_name: str,
     req: SkillFeedbackRequest,
-    user_id: str = "anonymous",
+    authorization: str | None = None,
 ) -> dict[str, Any]:
     """Submit feedback for a skill."""
-    from src.skill_feedback import SkillFeedbackManager
+    user_id = _get_user_id_from_header(authorization)
 
-    mgr = SkillFeedbackManager()
-    entry = mgr.submit_feedback(
-        skill_name,
-        user_id=user_id,
-        rating=req.rating,
-        comment=req.comment,
-        session_id=req.session_id,
-    )
+    # Use DB-backed manager if database is available
+    if _db is not None:
+        from src.skill_feedback import DBSkillFeedbackManager
+        mgr = DBSkillFeedbackManager(db=_db)
+        entry = await mgr.submit_feedback(
+            skill_name,
+            user_id=user_id,
+            rating=req.rating,
+            comment=req.comment,
+            session_id=req.session_id,
+            user_edits=req.user_edits,
+        )
+    else:
+        from src.skill_feedback import SkillFeedbackManager
+        mgr = SkillFeedbackManager()
+        entry = mgr.submit_feedback(
+            skill_name,
+            user_id=user_id,
+            rating=req.rating,
+            comment=req.comment,
+            session_id=req.session_id,
+        )
     return {"status": "ok", "feedback": entry}
 
 
 @app.get("/api/skills/{skill_name}/analytics")
 async def get_skill_analytics(skill_name: str) -> dict[str, Any]:
     """Get aggregated analytics for a skill."""
-    from src.skill_feedback import SkillFeedbackManager
+    if _db is not None:
+        from src.skill_feedback import DBSkillFeedbackManager
+        mgr = DBSkillFeedbackManager(db=_db)
+        return await mgr.get_analytics(skill_name)
 
+    from src.skill_feedback import SkillFeedbackManager
     mgr = SkillFeedbackManager()
     return mgr.get_analytics(skill_name)
 
@@ -2591,6 +2610,20 @@ async def submit_feedback(user_id: str, feedback: dict[str, Any]) -> dict[str, s
             "timestamp": time.time(),
         }, ensure_ascii=False))
     return {"status": "ok"}
+
+
+@app.get("/api/users/{user_id}/feedback")
+async def get_user_feedback(user_id: str) -> dict[str, Any]:
+    """Get user's feedback records and stats."""
+    if _db is not None:
+        from src.skill_feedback import DBSkillFeedbackManager
+        mgr = DBSkillFeedbackManager(db=_db)
+        items = await mgr.get_user_feedback(user_id)
+        stats_result = await mgr.get_user_feedback_stats(user_id)
+        return {"stats": stats_result["stats"], "items": items, "total_count": stats_result["total_count"]}
+
+    # Fallback: empty response when no DB available
+    return {"stats": [], "items": [], "total_count": 0}
 
 
 # ── Authentication ───────────────────────────────────────────────

@@ -5,6 +5,7 @@ import ChatArea from './components/ChatArea'
 import InputBar, { type InputBarHandle } from './components/InputBar'
 import SettingsPanel from './components/SettingsPanel'
 import FilesPanel from './components/FilesPanel'
+import FeedbackPage from './components/FeedbackPage'
 import DesignPreviewPage from './DesignPreviewPage'
 import SettingsPreviewPage from './SettingsPreviewPage'
 import TechPreviewPage from './TechPreviewPage'
@@ -155,6 +156,7 @@ function MainApp() {
     : 'idle'
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [filesOpen, setFilesOpen] = useState(false)
+  const [showFeedback, setShowFeedback] = useState(false)
   const [fileCount, setFileCount] = useState<number>(0)
   const inputBarRef = useRef<InputBarHandle>(null)
   // Index threshold: messages with index >= this are "new turn" messages.
@@ -566,6 +568,11 @@ function MainApp() {
     return <LoginScreen onLogin={(uid) => { setUserId(uid); setAuthToken(localStorage.getItem('authToken')) }} />
   }
 
+  // Feedback management page
+  if (showFeedback) {
+    return <FeedbackPage userId={userId} authToken={authToken} onBack={() => setShowFeedback(false)} />
+  }
+
   return (
     <div className="app">
       {/* Header */}
@@ -573,6 +580,7 @@ function MainApp() {
         connected={connected}
         userId={userId}
         onOpenSettings={() => setSettingsOpen(true)}
+        onOpenFeedback={() => setShowFeedback(true)}
         onLogout={handleLogout}
       />
 
@@ -595,6 +603,7 @@ function MainApp() {
             onAnswer={sendAnswer}
             scrollPositions={sessionScrollPositions}
             onFileClick={handleFileClick}
+            authToken={authToken}
           />
           <InputBar
             key={activeSession}

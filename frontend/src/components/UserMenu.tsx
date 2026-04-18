@@ -3,10 +3,11 @@ import { useState, useRef, useEffect, type MouseEvent } from 'react'
 interface UserMenuProps {
   userId: string
   onOpenSettings: () => void
+  onOpenFeedback: () => void
   onLogout: () => void
 }
 
-export default function UserMenu({ userId, onOpenSettings, onLogout }: UserMenuProps) {
+export default function UserMenu({ userId, onOpenSettings, onOpenFeedback, onLogout }: UserMenuProps) {
   const [open, setOpen] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
 
@@ -42,6 +43,10 @@ export default function UserMenu({ userId, onOpenSettings, onLogout }: UserMenuP
           <button className="user-menu-item" role="menuitem" onClick={() => handleAction(onOpenSettings)} type="button">
             <span className="user-menu-item-icon">⚙</span>
             Settings
+          </button>
+          <button className="user-menu-item" role="menuitem" onClick={() => handleAction(onOpenFeedback)} type="button">
+            <span className="user-menu-item-icon">💬</span>
+            Feedback
           </button>
           <button className="user-menu-item user-menu-item--logout" role="menuitem" onClick={() => handleAction(onLogout)} type="button">
             <span className="user-menu-item-icon">⏻</span>

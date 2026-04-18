@@ -115,7 +115,7 @@ describe('SkillFeedbackWidget - rating interaction', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /submit feedback/i }))
 
-    expect(onSubmit).toHaveBeenCalledWith(4, 'Good but slow')
+    expect(onSubmit).toHaveBeenCalledWith(4, 'Good but slow', '')
   })
 })
 
@@ -174,5 +174,80 @@ describe('SkillFeedbackWidget - positioned inside ChatArea', () => {
     // The feedback widget is inside chat-area's DOM tree,
     // positioned with absolute (not fixed) so it stays in chat-area's corner
     expect(feedbackWidget!.classList.contains('feedback-widget')).toBe(true)
+  })
+})
+
+describe('SkillFeedbackWidget - error handling', () => {
+  it('shows error message on submission failure', async () => {
+    const onSubmit = vi.fn().mockRejectedValue(new Error('Server error'))
+    renderWidget({ onSubmit })
+
+    fireEvent.click(screen.getByRole('button', { name: /show feedback/i }))
+    fireEvent.click(screen.getByRole('button', { name: '1 star' }))
+    fireEvent.click(screen.getByRole('button', { name: /submit feedback/i }))
+
+    expect(await screen.findByText(/Server error/)).toBeInTheDocument()
+  })
+
+  it('shows retry button after failure', async () => {
+    let callCount = 0
+    const onSubmit = vi.fn().mockImplementation(async () => {
+      callCount++
+      if (callCount === 1) throw new Error('First try failed')
+    })
+    renderWidget({ onSubmit })
+
+    fireEvent.click(screen.getByRole('button', { name: /show feedback/i }))
+    fireEvent.click(screen.getByRole('button', { name: '1 star' }))
+    fireEvent.click(screen.getByRole('button', { name: /submit feedback/i }))
+
+    // Should show retry button
+    expect(await screen.findByRole('button', { name: /retry/i })).toBeInTheDocument()
+
+    // Click retry
+    fireEvent.click(screen.getByRole('button', { name: /retry/i }))
+
+    // Should show thank-you after successful retry
+    expect(await screen.findByText(/thank you for your feedback/i)).toBeInTheDocument()
+  })
+
+  it('clears error when user changes rating', async () => {
+    const onSubmit = vi.fn().mockRejectedValueOnce(new Error('Failed')).mockResolvedValueOnce(undefined)
+    renderWidget({ onSubmit })
+
+    fireEvent.click(screen.getByRole('button', { name: /show feedback/i }))
+    fireEvent.click(screen.getByRole('button', { name: '1 star' }))
+    fireEvent.click(screen.getByRole('button', { name: /submit feedback/i }))
+
+    expect(await screen.findByText(/Failed/)).toBeInTheDocument()
+
+    // Change rating should clear error
+    fireEvent.click(screen.getByRole('button', { name: '2 stars' }))
+    expect(screen.queryByText(/Failed/)).not.toBeInTheDocument()
+  })
+})
+
+describe('SkillFeedbackWidget - user_edits', () => {
+  it('calls onSubmit with user_edits when provided', async () => {
+    const onSubmit = vi.fn().mockResolvedValue(undefined)
+    const { container } = renderWidget({ onSubmit })
+
+    fireEvent.click(screen.getByRole('button', { name: /show feedback/i }))
+    fireEvent.click(screen.getByRole('button', { name: '5 stars' }))
+
+    const commentArea = screen.getByPlaceholderText('What could be improved? (optional)')
+    fireEvent.change(commentArea, { target: { value: 'Great!' } })
+
+    // Open the "What did you change?" section
+    const details = container.querySelector('details.feedback-edits-toggle')
+    expect(details).not.toBeNull()
+    fireEvent.click(screen.getByText('What did you change? (optional)'))
+
+    const editsArea = screen.getByPlaceholderText('Describe any edits you made...')
+    fireEvent.change(editsArea, { target: { value: 'Fixed formatting' } })
+
+    fireEvent.click(screen.getByRole('button', { name: /submit feedback/i }))
+
+    expect(onSubmit).toHaveBeenCalledWith(5, 'Great!', 'Fixed formatting')
   })
 })

@@ -6,12 +6,14 @@ import UserMenu from '../components/UserMenu'
 function renderUserMenu(props?: {
   userId?: string
   onOpenSettings?: () => void
+  onOpenFeedback?: () => void
   onLogout?: () => void
 }) {
   return render(
     <UserMenu
       userId={props?.userId ?? 'test-user'}
       onOpenSettings={props?.onOpenSettings ?? (() => {})}
+      onOpenFeedback={props?.onOpenFeedback ?? (() => {})}
       onLogout={props?.onLogout ?? (() => {})}
     />,
   )
