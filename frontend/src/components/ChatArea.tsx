@@ -225,6 +225,18 @@ export default function ChatArea({ messages, sessionId, sessionState, onAnswer, 
     })
   }, [messages])
 
+  // Derive skill name from tool_use messages for feedback endpoint.
+  // If exactly one skill was used, use its name; otherwise fallback to "general".
+  const feedbackSkillName = useMemo(() => {
+    const skillTools = new Set<string>()
+    for (const msg of messages) {
+      if (msg.type === 'tool_use' && msg.name) {
+        skillTools.add(msg.name)
+      }
+    }
+    return skillTools.size === 1 ? skillTools.values().next().value : 'general'
+  }, [messages])
+
   return (
     <div className="chat-area">
       <div className="messages" ref={containerRef} onScroll={handleScroll}>
@@ -267,10 +279,11 @@ export default function ChatArea({ messages, sessionId, sessionState, onAnswer, 
 
       {sessionState === 'completed' && (
         <SkillFeedbackWidget
+          skillName={feedbackSkillName}
           onSubmit={async (rating, comment, userEdits) => {
             const headers: Record<string, string> = { 'Content-Type': 'application/json' }
             if (authToken) headers['Authorization'] = `Bearer ${authToken}`
-            await fetch('/api/skills/general/feedback', {
+            await fetch(`/api/skills/${feedbackSkillName}/feedback`, {
               method: 'POST',
               headers,
               body: JSON.stringify({ rating, comment, user_edits: userEdits, session_id: sessionId }),

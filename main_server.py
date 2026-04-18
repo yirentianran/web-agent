@@ -2806,6 +2806,17 @@ async def startup() -> None:
         buffer.db = _db  # Wire DB into message buffer
         session_store = SessionStore(db=_db, msg_buffer_dir=DATA_ROOT / ".msg-buffer")
         logger.info("SQLite initialized: %s (%.2f MB)", db_path, db_path.stat().st_size / (1024 * 1024))
+
+        # Migrate any existing JSONL feedback files to SQLite
+        try:
+            from src.skill_feedback import DBSkillFeedbackManager
+            feedback_dir = DATA_ROOT / "training" / "skill-feedback"
+            mgr = DBSkillFeedbackManager(db=_db)
+            migrated = await mgr.migrate_from_jsonl(feedback_dir)
+            if migrated > 0:
+                logger.info("Migrated %d JSONL feedback entries to SQLite", migrated)
+        except Exception:
+            logger.exception("Feedback JSONL migration failed")
     else:
         logger.info("No DATA_DB_PATH set — using file-based storage")
 

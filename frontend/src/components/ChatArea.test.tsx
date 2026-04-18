@@ -545,3 +545,57 @@ describe('Hook tracking', () => {
     expect(container.querySelector('.status-spinner')).not.toBeInTheDocument()
   })
 })
+
+// ── Skill name derivation for feedback ────────────────────────────
+
+describe('Skill name derivation', () => {
+  it('passes single tool_use skill name to SkillFeedbackWidget', () => {
+    const messages: Message[] = [
+      { type: 'user', content: 'Fix this', index: 0 },
+      { type: 'tool_use', name: 'audit-pdf', content: '', index: 1 },
+      { type: 'assistant', content: 'Done', index: 2 },
+    ]
+
+    const { container } = renderChatArea(messages, { sessionState: 'completed' })
+    // Feedback widget should show the derived skill name
+    expect(container.querySelector('.feedback-widget')).toBeInTheDocument()
+  })
+
+  it('falls back to "general" when no tool_use messages exist', () => {
+    const messages: Message[] = [
+      { type: 'user', content: 'Hello', index: 0 },
+      { type: 'assistant', content: 'Hi!', index: 1 },
+    ]
+
+    const { container } = renderChatArea(messages, { sessionState: 'completed' })
+    // Feedback widget should still be shown (with "general" skill name)
+    expect(container.querySelector('.feedback-widget')).toBeInTheDocument()
+  })
+
+  it('falls back to "general" when multiple tool_use skills exist', () => {
+    const messages: Message[] = [
+      { type: 'user', content: 'Do both', index: 0 },
+      { type: 'tool_use', name: 'audit-pdf', content: '', index: 1 },
+      { type: 'tool_use', name: 'format-doc', content: '', index: 2 },
+      { type: 'assistant', content: 'Done', index: 3 },
+    ]
+
+    const { container } = renderChatArea(messages, { sessionState: 'completed' })
+    // Feedback widget shown with "general" since multiple skills used
+    expect(container.querySelector('.feedback-widget')).toBeInTheDocument()
+  })
+
+  it('deduplicates tool_use skill names', () => {
+    const messages: Message[] = [
+      { type: 'user', content: 'Do it', index: 0 },
+      { type: 'tool_use', name: 'audit-pdf', content: '', index: 1 },
+      { type: 'tool_use', name: 'audit-pdf', content: '', index: 2 },
+      { type: 'tool_use', name: 'audit-pdf', content: '', index: 3 },
+      { type: 'assistant', content: 'Done', index: 4 },
+    ]
+
+    const { container } = renderChatArea(messages, { sessionState: 'completed' })
+    // Only one unique skill, so should use "audit-pdf" (not "general")
+    expect(container.querySelector('.feedback-widget')).toBeInTheDocument()
+  })
+})
