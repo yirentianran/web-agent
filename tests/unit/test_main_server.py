@@ -182,6 +182,94 @@ class TestWebSocketEndpoint:
             # Either an error message or the server closed cleanly
             assert "type" in result or result is not None
 
+    def test_ws_recover_sends_replay_messages(self, client: TestClient) -> None:
+        """Send recover — verify replay messages are sent with correct flags."""
+        buf = main_server.buffer
+        sid = "session_recover_test"
+        buf.add_message(sid, {"type": "user", "content": "hello"})
+        buf.add_message(sid, {"type": "assistant", "content": "hi back"})
+        buf.mark_done(sid)
+
+        with client.websocket_connect("/ws") as ws:
+            ws.send_text(json.dumps({
+                "type": "recover",
+                "session_id": sid,
+                "user_id": "alice",
+                "last_index": 0,
+            }))
+            # Verify replayed messages arrive with correct structure
+            msg1 = json.loads(ws.receive_text())
+            assert msg1["type"] == "user"
+            assert msg1["content"] == "hello"
+            assert msg1["replay"] is True
+            assert msg1["index"] == 0
+
+            msg2 = json.loads(ws.receive_text())
+            assert msg2["type"] == "assistant"
+            assert msg2["content"] == "hi back"
+            assert msg2["replay"] is True
+            assert msg2["index"] == 1
+
+            # Session is done — after replay, the handler enters subscribe loop,
+            # checks is_done(), does final pull (none), and exits.
+            # The connection should close cleanly.
+            # We don't assert on close because TestClient behavior varies.
+
+    def test_ws_recover_partial_from_index(self, client: TestClient) -> None:
+        """Recover with last_index > 0 — only newer messages are replayed."""
+        buf = main_server.buffer
+        sid = "session_recover_partial"
+        for i in range(4):
+            buf.add_message(sid, {"type": "user", "content": f"msg-{i}"})
+        buf.mark_done(sid)
+
+        with client.websocket_connect("/ws") as ws:
+            ws.send_text(json.dumps({
+                "type": "recover",
+                "session_id": sid,
+                "user_id": "alice",
+                "last_index": 2,
+            }))
+            msg1 = json.loads(ws.receive_text())
+            assert msg1["content"] == "msg-2"
+            assert msg1["index"] == 2
+            assert msg1["replay"] is True
+
+            msg2 = json.loads(ws.receive_text())
+            assert msg2["content"] == "msg-3"
+            assert msg2["index"] == 3
+            assert msg2["replay"] is True
+
+    def test_ws_recover_includes_session_id(self, client: TestClient) -> None:
+        """Recover replay messages must include session_id so frontend
+        can derive session state from session_state_changed messages."""
+        buf = main_server.buffer
+        sid = "session_recover_state_test"
+        buf.add_message(sid, {"type": "user", "content": "hello"})
+        buf.add_message(sid, {
+            "type": "system",
+            "subtype": "session_state_changed",
+            "state": "running",
+        })
+
+        with client.websocket_connect("/ws") as ws:
+            ws.send_text(json.dumps({
+                "type": "recover",
+                "session_id": sid,
+                "user_id": "alice",
+                "last_index": 0,
+            }))
+            msg1 = json.loads(ws.receive_text())
+            assert msg1["session_id"] == sid
+            assert msg1["replay"] is True
+
+            msg2 = json.loads(ws.receive_text())
+            assert msg2["session_id"] == sid
+            assert msg2["type"] == "system"
+            assert msg2["subtype"] == "session_state_changed"
+            assert msg2["state"] == "running"
+            assert msg2["replay"] is True
+
 
 # ── File Management API ────────────────────────────────────────────
 
@@ -1053,3 +1141,140 @@ class TestHeartbeatDoesNotInflateCursor:
                     "Heartbeats are synthetic — incrementing last_seen causes the cursor "
                     "to drift past the actual buffer end, missing completion messages."
                 )
+
+
+# ── Recover check must come AFTER session_id check ────────────────
+
+
+class TestRecoverCheckOrderInSubscribeLoop:
+    """In the subscribe loop (and recover loop), the session_id check
+    must come BEFORE the type=="recover" check. Otherwise a recover
+    message for a *different* session hits `continue` and never triggers
+    the break that switches the WS to the new session.
+
+    Symptoms: after switching sessions, "Agent is working" disappears
+    and the new session's real-time messages are never received.
+    """
+
+    def _check_order_in_loop(self, source_lines: list[str], loop_label: str) -> None:
+        """Find the first session_id comparison and first recover check
+        after an answer check within the same logical block. The
+        session_id check must appear before the recover check."""
+        # Find lines containing the key patterns within the subscribe/recover loop area.
+        # We look for the pattern:
+        #   elif item.get("type") == "recover":   ← must NOT come before
+        #   elif item.get("session_id") != session_id:
+        # The correct order is session_id first, then recover.
+        recover_line = None
+        session_id_line = None
+        for i, line in enumerate(source_lines):
+            stripped = line.strip()
+            if 'item.get("type") == "recover"' in stripped or "item.get('type') == 'recover'" in stripped:
+                if recover_line is None:
+                    recover_line = i
+            if 'item.get("session_id")' in stripped and '!=' in stripped:
+                if session_id_line is None:
+                    session_id_line = i
+
+        if recover_line is not None and session_id_line is not None:
+            if recover_line < session_id_line:
+                pytest.fail(
+                    f"In {loop_label}, the recover type check (line {recover_line}) "
+                    f"comes BEFORE the session_id check (line {session_id_line}). "
+                    f"This causes recover messages for other sessions to be silently "
+                    f"skipped, preventing WS session switching. "
+                    f"Move the session_id check before the recover check."
+                )
+
+    def test_subscribe_loop_recover_check_order(self) -> None:
+        """In the subscribe loop's elif chain (answer → recover → session_id),
+        the session_id check must come before the recover check."""
+        import inspect
+        source = inspect.getsource(main_server.handle_ws)
+        lines = source.split('\n')
+
+        # Find the subscribe loop: look for "Subscribe to real-time messages" comment
+        in_subscribe = False
+        found_chain = False
+        recover_line = None
+        session_id_line = None
+
+        for i, line in enumerate(lines):
+            stripped = line.strip()
+            if 'Subscribe to real-time messages' in stripped:
+                in_subscribe = True
+                continue
+            if not in_subscribe:
+                continue
+            # Look for the answer/recover/session_id elif chain
+            if 'item.get("type") == "answer"' in stripped and 'if item.get("session_id")' not in stripped:
+                # This is the old pattern — the answer check that's a plain if
+                found_chain = True
+                recover_line = None
+                session_id_line = None
+                continue
+            if found_chain:
+                if 'item.get("type") == "recover"' in stripped and recover_line is None:
+                    recover_line = i
+                if 'item.get("session_id")' in stripped and '!=' in stripped and session_id_line is None:
+                    session_id_line = i
+                if 'else:' in stripped or 'Message for same session' in stripped:
+                    # Chain ended
+                    break
+
+        if recover_line is not None and session_id_line is not None:
+            if recover_line < session_id_line:
+                pytest.fail(
+                    f"In subscribe loop, recover check (line {recover_line}) "
+                    f"comes before session_id check (line {session_id_line}). "
+                    f"Move session_id check before recover check."
+                )
+
+    def test_recover_loop_recover_check_order(self) -> None:
+        import inspect
+        # The recover loop is inside handle_ws as well — same source.
+        # We need to find both occurrences. The test above catches the first one.
+        # For the second, we scan the full source and verify ALL recover checks
+        # come after their corresponding session_id checks.
+        source = inspect.getsource(main_server.handle_ws)
+        lines = source.split('\n')
+
+        # Find all blocks that contain both patterns
+        # Strategy: find "subscribe" or recover-loop entry points and check within each block
+        # The recover loop is a separate while-True block inside handle_ws.
+        # We'll check that in every while-True block after the initial subscribe,
+        # the order is correct.
+
+        # Simpler approach: just verify no recover check comes before
+        # a session_id check in ANY adjacent elif chain.
+        in_answer_recover_chain = False
+        recover_line = None
+        session_id_line = None
+        chain_start = None
+        failures = []
+
+        for i, line in enumerate(lines):
+            stripped = line.strip()
+            if 'item.get("type") == "answer"' in stripped:
+                in_answer_recover_chain = True
+                chain_start = i
+                recover_line = None
+                session_id_line = None
+            elif in_answer_recover_chain and 'item.get("type") == "recover"' in stripped:
+                recover_line = i
+            elif in_answer_recover_chain and 'item.get("session_id")' in stripped and '!=' in stripped:
+                session_id_line = i
+            elif in_answer_recover_chain and ('else:' in stripped or stripped.startswith('except') or stripped.startswith('def ')):
+                # Chain ended — check order
+                if recover_line is not None and session_id_line is not None:
+                    if recover_line < session_id_line:
+                        failures.append(
+                            f"Recover check at line {recover_line} comes before "
+                            f"session_id check at line {session_id_line}"
+                        )
+                in_answer_recover_chain = False
+
+        if failures:
+            pytest.fail(
+                "Recover check order violation in handle_ws:\n" + "\n".join(failures)
+            )

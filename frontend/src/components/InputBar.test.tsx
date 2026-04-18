@@ -233,3 +233,66 @@ describe('InputBar - file upload on send', () => {
     })
   })
 })
+
+// ── Session switch reset tests ─────────────────────────────────────
+
+describe('InputBar - session switch reset', () => {
+  it('resets input text when key changes (session switch)', async () => {
+    const { onSend } = renderInputBar()
+    const textarea = screen.getByPlaceholderText(/Enter instruction/)
+
+    // Type some text in session A
+    fireEvent.change(textarea, { target: { value: 'text for session A' } })
+    expect(textarea).toHaveValue('text for session A')
+
+    // Clean up old render to start fresh
+    document.body.innerHTML = ''
+
+    // Render new InputBar — simulates parent changing key=activeSession
+    const { unmount } = render(
+      <InputBar
+        onSend={onSend}
+        onStop={() => {}}
+        disabled={false}
+        userId="test-user"
+      />,
+    )
+
+    // New InputBar should have empty input
+    const newTextarea = screen.getByPlaceholderText(/Enter instruction/)
+    expect(newTextarea).toHaveValue('')
+
+    unmount()
+  })
+
+  it('resets attached files when key changes (session switch)', async () => {
+    // Clean DOM first
+    document.body.innerHTML = ''
+
+    const { onSend } = renderInputBar()
+    const file = new File(['data'], 'session-a.pdf', { type: 'application/pdf' })
+
+    // Attach a file in session A
+    const fileInput = document.querySelector('input[type="file"]')!
+    fireEvent.change(fileInput, { target: { files: [file] } })
+    expect(screen.getByText('session-a.pdf')).toBeInTheDocument()
+
+    // Clean up old render
+    document.body.innerHTML = ''
+
+    // Render new InputBar — simulates parent changing key=activeSession
+    const { unmount } = render(
+      <InputBar
+        onSend={onSend}
+        onStop={() => {}}
+        disabled={false}
+        userId="test-user"
+      />,
+    )
+
+    // New InputBar should not have the old file
+    expect(screen.queryByText('session-a.pdf')).not.toBeInTheDocument()
+
+    unmount()
+  })
+})

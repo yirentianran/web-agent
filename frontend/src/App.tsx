@@ -553,6 +553,7 @@ function MainApp() {
             onFileClick={handleFileClick}
           />
           <InputBar
+            key={activeSession}
             ref={inputBarRef}
             onSend={handleSend}
             onStop={stopSession}

@@ -851,12 +851,6 @@ async def run_agent_task(
     agent_log.start_session(session_id, user_message=user_message)
     start_time = time.time()
 
-    # Persist user message to buffer so it survives page refresh
-    user_msg: dict[str, Any] = {"type": "user", "content": user_message}
-    if attached_files:
-        user_msg["data"] = [{"filename": f} for f in attached_files]
-    buffer.add_message(session_id, user_msg)
-
     # Resolve workspace path — needed for both tool permission check and file snapshot
     workspace = user_data_dir(user_id) / "workspace"
 
@@ -1196,6 +1190,10 @@ async def handle_ws(websocket: WebSocket) -> None:
                         future = pending_answers.get(sid)
                         if future and not future.done():
                             future.set_result(answers)
+                    elif item.get("type") == "recover":
+                        # Route recover messages to the main handler
+                        data = item
+                        break
                     else:
                         data = item
                         break
@@ -1214,7 +1212,10 @@ async def handle_ws(websocket: WebSocket) -> None:
                     if future and not future.done():
                         future.set_result(answers)
                     continue
-                data = item
+                elif item.get("type") == "recover":
+                    data = item
+                else:
+                    data = item
 
             user_message = data.get("message", "")
             session_id = data.get("session_id")
@@ -1235,9 +1236,86 @@ async def handle_ws(websocket: WebSocket) -> None:
                     **h,
                     "index": last_index + i,
                     "replay": True,
+                    "session_id": session_id,
                 }))
 
-            # Start or reuse agent task
+            # ── Recover: read-only replay + subscribe (no agent task) ────────
+            if data.get("type") == "recover":
+                current_session_id = session_id
+                last_seen = last_index + len(history)
+                event = buffer.subscribe(session_id)
+
+                try:
+                    while True:
+                        # Check for new WebSocket messages
+                        try:
+                            item = pending_ws_msgs.get_nowait()
+                            if item is None:
+                                return  # WebSocket closed
+                            if item.get("session_id") and item.get("session_id") != session_id:
+                                # New session — break out to handle it (including its recover)
+                                pending_ws_msgs.put_nowait(item)
+                                break
+                            if item.get("type") == "answer":
+                                sid = item.get("session_id", "")
+                                answers = item.get("answers", {})
+                                future = pending_answers.get(sid)
+                                if future and not future.done():
+                                    future.set_result(answers)
+                            elif item.get("type") == "recover":
+                                continue  # ignore duplicate recover for SAME session
+                            else:
+                                # New chat message for this session — break out
+                                # so the outer loop can create the agent task
+                                pending_ws_msgs.put_nowait(item)
+                                break
+                        except asyncio.QueueEmpty:
+                            pass
+
+                        # Pull new messages
+                        new_messages = buffer.get_history(session_id, after_index=last_seen)
+                        for i, h in enumerate(new_messages):
+                            idx = last_seen + i
+                            await websocket.send_text(json.dumps({
+                                **h,
+                                "index": idx,
+                                "replay": False,
+                                "session_id": session_id,
+                            }))
+                        last_seen += len(new_messages)
+
+                        # If session is done, final pull and exit
+                        if buffer.is_done(session_id):
+                            final_messages = buffer.get_history(session_id, after_index=last_seen)
+                            for i, h in enumerate(final_messages):
+                                idx = last_seen + i
+                                await websocket.send_text(json.dumps({
+                                    **h,
+                                    "index": idx,
+                                    "replay": False,
+                                    "session_id": session_id,
+                                }))
+                            break
+
+                        event.clear()
+                        try:
+                            await asyncio.wait_for(event.wait(), timeout=HEARTBEAT_INTERVAL)
+                        except asyncio.TimeoutError:
+                            hb = make_heartbeat()
+                            await websocket.send_text(json.dumps({
+                                **hb,
+                                "index": last_seen,
+                                "replay": False,
+                                "session_id": session_id,
+                            }))
+                            continue
+                finally:
+                    buffer.unsubscribe(session_id, event)
+                    current_session_id = None
+
+                continue  # Back to outer loop
+
+            # ── Chat: start or reuse agent task ──────────────────────────────
             task_key = f"task_{session_id}"
             task_is_new = task_key not in active_tasks or active_tasks[task_key].done()
             if task_is_new:
@@ -1249,6 +1327,14 @@ async def handle_ws(websocket: WebSocket) -> None:
                 if buf_state:
                     buf_state["done"] = False
                     buf_state["state"] = "running"
+
+                # Buffer user message BEFORE agent task starts — ensures recovery
+                # includes the user message even during the race window before
+                # run_agent_task reaches its add_message call.
+                user_msg_buf: dict[str, Any] = {"type": "user", "content": user_message}
+                if attached_files:
+                    user_msg_buf["data"] = [{"filename": f} for f in attached_files]
+                buffer.add_message(session_id, user_msg_buf)
 
                 # Broadcast running state to frontend via WebSocket
                 buffer.add_message(session_id, {
@@ -1284,16 +1370,18 @@ async def handle_ws(websocket: WebSocket) -> None:
                         item = pending_ws_msgs.get_nowait()
                         if item is None:
                             return  # WebSocket closed
+                        if item.get("session_id") and item.get("session_id") != session_id:
+                            # New session — break out to handle it (including its recover)
+                            pending_ws_msgs.put_nowait(item)
+                            break
                         if item.get("type") == "answer":
                             sid = item.get("session_id", "")
                             answers = item.get("answers", {})
                             future = pending_answers.get(sid)
                             if future and not future.done():
                                 future.set_result(answers)
-                        elif item.get("session_id") != session_id:
-                            # New session — break out to handle it
-                            pending_ws_msgs.put_nowait(item)
-                            break
+                        elif item.get("type") == "recover":
+                            continue  # ignore duplicate recover for SAME session
                         else:
                             # Message for same session — process it
                             user_message = item.get("message", "")
