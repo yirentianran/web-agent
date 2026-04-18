@@ -20,8 +20,21 @@ const logger = {
   },
 }
 
-// Track scroll position per session (sessionId -> scrollTop)
-const sessionScrollPositions = new Map<string, number>()
+// Persist scroll position to localStorage so it survives page refresh
+const SCROLL_STORAGE_KEY = 'web-agent-scroll-positions'
+
+function loadScrollPositions(): Map<string, number> {
+  try {
+    const raw = localStorage.getItem(SCROLL_STORAGE_KEY)
+    if (!raw) return new Map()
+    const parsed = JSON.parse(raw) as [string, number][]
+    return new Map(parsed)
+  } catch {
+    return new Map()
+  }
+}
+
+const sessionScrollPositions = loadScrollPositions()
 
 // Check if we're on design preview page
 function isDesignPreviewRoute(): boolean {
@@ -109,11 +122,21 @@ function MainApp() {
   })
   const [messages, setMessages] = useState<Message[]>([])
   const [sessions, setSessions] = useState<SessionItem[]>([])
-  const [activeSession, setActiveSession] = useState<string | null>(null)
+  const [activeSession, setActiveSession] = useState<string | null>(() => {
+    return localStorage.getItem('activeSession')
+  })
   const activeSessionRef = useRef<string | null>(null)
   // Keep ref in sync so handleIncomingMessage doesn't need activeSession as a dep
   useEffect(() => {
     activeSessionRef.current = activeSession
+  }, [activeSession])
+  // Persist activeSession to localStorage
+  useEffect(() => {
+    if (activeSession) {
+      localStorage.setItem('activeSession', activeSession)
+    } else {
+      localStorage.removeItem('activeSession')
+    }
   }, [activeSession])
   const [sessionStates, setSessionStates] = useState<Map<string, string>>(new Map())
 
@@ -171,6 +194,42 @@ function MainApp() {
     loadFileCount()
   }, [userId])
 
+  // Restore message history for the active session on mount (survives page refresh)
+  useEffect(() => {
+    if (activeSession) {
+      // Load historical messages from backend
+      const headers: Record<string, string> = {}
+      if (authToken) headers['Authorization'] = `Bearer ${authToken}`
+      fetch(`/api/users/${userId}/sessions/${activeSession}/history`, { headers })
+        .then(resp => {
+          if (resp.ok) return resp.json()
+          return []
+        })
+        .then(data => {
+          const msgs = (data as any[]).map((m: any, i: number) => ({ ...m, index: i }))
+          setMessages(msgs)
+          // Derive sessionState from history
+          let derivedState = 'idle'
+          for (let i = msgs.length - 1; i >= 0; i--) {
+            const m = msgs[i]
+            if (m.type === 'system' && m.subtype === 'session_state_changed' && m.state) {
+              derivedState = m.state
+              break
+            }
+            if (m.type === 'result') {
+              derivedState = 'completed'
+              break
+            }
+          }
+          setSessionStateFor(activeSession, derivedState)
+        })
+        .catch(() => {
+          setMessages([])
+          setSessionStateFor(activeSession, 'idle')
+        })
+    }
+  }, [userId])
+
   const loadSessions = async () => {
     try {
       const headers: Record<string, string> = {}
@@ -201,8 +260,6 @@ function MainApp() {
     // Use a functional update so we always work with the latest `prev`.
     // This avoids stale-closure bugs and ensures dedup runs on every message.
     setMessages((prev) => {
-      const optimistic = optimisticMsgRef.current
-
       // Determine if this is the first message of a new turn that should
       // trigger clearing of old conversation history.
       const isInvisibleMessage =
@@ -215,21 +272,12 @@ function MainApp() {
 
       if (isFirstTurnMessage) {
         replayStartedRef.current = true
-        // Build base with optimistic user message, then dedup the incoming
-        // message against it (handles the case where the server replays the
-        // user message with a different index).
-        const base: Message[] = optimistic ? [optimistic] : []
-        // Replay dedup: skip if we already have this exact index
-        if (msg.replay && base.some((m) => m.index === msg.index)) {
+        // Append the incoming message to existing messages (which may
+        // include recovered history). Dedup by index only.
+        if (prev.some((m) => m.index === msg.index)) {
           return prev
         }
-        // Live dedup for user messages: skip server copy if content matches
-        if (msg.type === 'user' && !msg.replay) {
-          if (base.some((m) => m.type === 'user' && m.content === msg.content)) {
-            return prev
-          }
-        }
-        return [...base, msg]
+        return [...prev, msg]
       }
 
       // Non-first message: append with dedup.
@@ -274,11 +322,25 @@ function MainApp() {
     }
   }, [userId])
 
-  const { connected, sendMessage, sendAnswer } = useWebSocket({
+  const { connected, sendMessage, sendAnswer, sendRecover } = useWebSocket({
     userId,
     onMessage: handleIncomingMessage,
     token: authToken ?? undefined,
   })
+
+  // Auto-recover message history when WebSocket reconnects
+  // Skip recovery on initial page load if REST already populated messages
+  const didRecoverRef = useRef(false)
+  useEffect(() => {
+    if (connected && activeSessionRef.current && !didRecoverRef.current) {
+      didRecoverRef.current = true
+      sendRecover(activeSessionRef.current, 0)
+    }
+    // Reset recovery flag on disconnect so next reconnect can recover again
+    if (!connected) {
+      didRecoverRef.current = false
+    }
+  }, [connected, sendRecover])
 
   const handleSend = useCallback(
     async (message: string, files?: File[]) => {

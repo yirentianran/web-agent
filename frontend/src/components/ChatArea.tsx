@@ -31,9 +31,24 @@ export default function ChatArea({ messages, sessionId, sessionState, onAnswer, 
     const distanceFromBottom = scrollHeight - scrollTop - clientHeight
     isUserAtBottomRef.current = distanceFromBottom <= SCROLL_THRESHOLD
 
-    // Always save scroll position for session restore
+    // Save scroll position to localStorage for session restore
     if (sessionId) {
       scrollPositions.set(sessionId, scrollTop)
+      // Also persist to localStorage so it survives page refresh
+      try {
+        const SCROLL_STORAGE_KEY = 'web-agent-scroll-positions'
+        const positions = new Map<string, number>()
+        // Read current positions from localStorage
+        const raw = localStorage.getItem(SCROLL_STORAGE_KEY)
+        if (raw) {
+          const parsed = JSON.parse(raw) as [string, number][]
+          parsed.forEach(([k, v]) => positions.set(k, v))
+        }
+        positions.set(sessionId, scrollTop)
+        localStorage.setItem(SCROLL_STORAGE_KEY, JSON.stringify(Array.from(positions)))
+      } catch {
+        // localStorage full or unavailable — skip
+      }
     }
   }, [sessionId, scrollPositions])
 
@@ -68,15 +83,37 @@ export default function ChatArea({ messages, sessionId, sessionState, onAnswer, 
     prevSessionStateRef.current = sessionState
   }, [sessionState, messages])
 
-  // Restore scroll position when session changes
+  // Restore scroll position when session changes or messages load
   useEffect(() => {
     if (!sessionId || !containerRef.current) return
 
     const isFirstVisit = !visitedRef.current.has(sessionId)
     if (isFirstVisit) {
       visitedRef.current.add(sessionId)
+
+      // Try to restore from localStorage (survives page refresh)
+      try {
+        const SCROLL_STORAGE_KEY = 'web-agent-scroll-positions'
+        const raw = localStorage.getItem(SCROLL_STORAGE_KEY)
+        if (raw) {
+          const parsed = JSON.parse(raw) as [string, number][]
+          const savedPos = parsed.find(([k]) => k === sessionId)?.[1]
+          if (savedPos !== undefined) {
+            scrollRestoredRef.current = true
+            requestAnimationFrame(() => {
+              if (containerRef.current) {
+                containerRef.current.scrollTop = savedPos
+              }
+            })
+            return
+          }
+        }
+      } catch {
+        // localStorage unavailable — fall through to scroll-to-bottom
+      }
+
+      // No saved position: first real visit, scroll to bottom
       scrollRestoredRef.current = false
-      // First visit: scroll to bottom to show latest messages
       scrollToBottom()
       return
     }

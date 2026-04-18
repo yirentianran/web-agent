@@ -3,7 +3,7 @@ import type { Message } from '../lib/types'
 
 /** Outgoing WebSocket message shape — sent from frontend to backend. */
 export interface WSOutgoingMessage {
-  type?: 'chat' | 'answer'
+  type?: 'chat' | 'answer' | 'recover'
   message?: string
   session_id?: string
   last_index?: number
@@ -109,6 +109,18 @@ export function useWebSocket({ userId, onMessage, onConnect, onDisconnect, token
     }
   }, [userId])
 
+  const sendRecover = useCallback((sessionId: string, lastIndex: number) => {
+    const ws = wsRef.current
+    if (ws?.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({
+        type: 'recover',
+        session_id: sessionId,
+        last_index: lastIndex,
+        user_id: userId,
+      }))
+    }
+  }, [userId])
+
   useEffect(() => {
     connect()
     return () => {
@@ -117,5 +129,5 @@ export function useWebSocket({ userId, onMessage, onConnect, onDisconnect, token
     }
   }, [connect])
 
-  return { connected, sendMessage, sendAnswer, reconnect: connect }
+  return { connected, sendMessage, sendAnswer, sendRecover, reconnect: connect }
 }
