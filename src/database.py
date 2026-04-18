@@ -131,6 +131,14 @@ class Database:
         await self._pool.executescript(_CREATE_TABLES)
         await self._pool.commit()
 
+        # Add user_edits column if it doesn't exist (migration for existing DBs)
+        try:
+            await self._pool.execute(
+                "ALTER TABLE skill_feedback ADD COLUMN user_edits TEXT NOT NULL DEFAULT ''"
+            )
+        except Exception:
+            pass  # Column already exists
+
         self._initialized = True
 
     @asynccontextmanager
