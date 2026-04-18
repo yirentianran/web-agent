@@ -157,14 +157,10 @@ function MainApp() {
   const [filesOpen, setFilesOpen] = useState(false)
   const [fileCount, setFileCount] = useState<number>(0)
   const inputBarRef = useRef<InputBarHandle>(null)
-  // Tracks the optimistic user message added before replay/live messages arrive.
-  // Used to preserve it when clearing old messages.
-  const optimisticMsgRef = useRef<Message | null>(null)
   // Index threshold: messages with index >= this are "new turn" messages.
-  // When the first such live message arrives, old messages (index < threshold)
-  // are cleared to prevent old conversation results from appearing before
-  // the new response.
-  const clearThresholdRef = useRef<number>(-1)
+  // Use MAX_SAFE_INTEGER so only replay messages trigger the first-turn path.
+  // Live messages (index < MAX) fall through to normal append logic.
+  const clearThresholdRef = useRef<number>(Number.MAX_SAFE_INTEGER)
   // Tracks whether replay has started for the current turn.
   // If replay sends messages, we don't clear (replay already handles ordering).
   const replayStartedRef = useRef(false)
@@ -413,7 +409,6 @@ function MainApp() {
         index: lastBackendIndex - 1,
         data: fileMetadata,
       }
-      optimisticMsgRef.current = optimisticMsg
       setMessages((prev) => [...prev, optimisticMsg])
       setSessionStateFor(sessionId!, 'running')
 
@@ -431,19 +426,18 @@ function MainApp() {
   const handleNewSession = useCallback(async () => {
     setMessages([])
     setActiveSession(null)
-    // Clear active session state on new session — no active session means input should be enabled
-    optimisticMsgRef.current = null
-    clearThresholdRef.current = -1
+    // Reset tracking refs — no active session means input should be enabled
+    clearThresholdRef.current = Number.MAX_SAFE_INTEGER
     replayStartedRef.current = false
   }, [])
 
   const handleSelectSession = useCallback(async (id: string) => {
     setActiveSession(id)
-    // Don't hardcode 'idle' — the state will be derived from message history below
+    activeSessionRef.current = id  // Sync ref immediately — WS messages arriving
+                                   // in the same tick must use the new session
     firstMessageRef.current = null
-    // Reset replay tracking refs when switching sessions
-    optimisticMsgRef.current = null
-    clearThresholdRef.current = -1
+    // Reset tracking refs
+    clearThresholdRef.current = Number.MAX_SAFE_INTEGER
     replayStartedRef.current = false
 
     // Load historical messages from backend
@@ -476,6 +470,7 @@ function MainApp() {
         // After loading history, recover to catch up any live messages
         // from an active agent session (state may not yet be persisted)
         sendRecover(id, msgs.length)
+        didRecoverRef.current = true  // Prevent auto-recovery from sending duplicate recover
         // Fetch live buffer state — the buffer may have session_state_changed
         // messages that haven't been flushed to DB yet (e.g., agent just started).
         fetch(`/api/users/${userId}/sessions/${id}/status`, { headers })
@@ -520,8 +515,7 @@ function MainApp() {
           return next
         })
         // Reset replay tracking refs
-        optimisticMsgRef.current = null
-        clearThresholdRef.current = -1
+        clearThresholdRef.current = Number.MAX_SAFE_INTEGER
         replayStartedRef.current = false
       }
     } catch (err) {

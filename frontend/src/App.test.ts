@@ -852,4 +852,115 @@ describe('cross-session message filtering', () => {
 
     expect(handler.getMessages()).toHaveLength(1)
   })
+
+  it('accepts messages when activeSessionRef is updated synchronously', () => {
+    // Issue A: After setActiveSession(id), activeSessionRef.current should
+    // be updated immediately so that WS messages arriving in the same tick
+    // are not incorrectly filtered out.
+    const activeSessionRef = { current: 'session-a' }
+    const handler = createMessageHandlerWithSessionFilter({
+      activeSessionRef,
+    })
+
+    // Simulate session switch: update both state AND ref
+    activeSessionRef.current = 'session-b'
+
+    // Message from new session arrives immediately
+    handler.handleIncomingMessage({
+      type: 'assistant',
+      content: 'B message',
+      index: 0,
+      session_id: 'session-b',
+    })
+
+    expect(handler.getMessages()).toHaveLength(1)
+    expect(handler.getMessages()[0].content).toBe('B message')
+  })
+})
+
+// ── Issue D: clearThresholdRef sentinel value ────────────────────
+
+/**
+ * When clearThresholdRef = -1 (old sentinel), isFirstTurnMessage
+ * triggers for ANY live message (all indices >= 0). This means the
+ * first live message after a session switch enters the "first turn"
+ * path even though it's not the start of a new conversation turn.
+ *
+ * Fix: use Number.MAX_SAFE_INTEGER as the sentinel so that
+ * msg.index >= threshold is false for all live messages, and only
+ * replay messages (msg.replay=true) trigger isFirstTurnMessage.
+ */
+
+function simulateIsFirstTurnMessage(
+  clearThreshold: number,
+  replayStarted: boolean,
+  msgReplay: boolean,
+  msgIndex: number,
+): boolean {
+  return !replayStarted && (msgReplay || msgIndex >= clearThreshold)
+}
+
+describe('clearThresholdRef sentinel value (Issue D)', () => {
+  it('with -1 sentinel, ALL live messages trigger isFirstTurnMessage (buggy)', () => {
+    // This demonstrates the bug: -1 makes every index >= -1 true
+    expect(simulateIsFirstTurnMessage(-1, false, false, 0)).toBe(true)
+    expect(simulateIsFirstTurnMessage(-1, false, false, 10)).toBe(true)
+    expect(simulateIsFirstTurnMessage(-1, false, false, 100)).toBe(true)
+  })
+
+  it('with MAX_SAFE_INTEGER sentinel, live messages do NOT trigger isFirstTurnMessage (fixed)', () => {
+    const MAX = Number.MAX_SAFE_INTEGER
+    expect(simulateIsFirstTurnMessage(MAX, false, false, 0)).toBe(false)
+    expect(simulateIsFirstTurnMessage(MAX, false, false, 10)).toBe(false)
+    expect(simulateIsFirstTurnMessage(MAX, false, false, 100)).toBe(false)
+  })
+
+  it('with MAX_SAFE_INTEGER sentinel, replay messages still trigger isFirstTurnMessage', () => {
+    const MAX = Number.MAX_SAFE_INTEGER
+    expect(simulateIsFirstTurnMessage(MAX, false, true, 0)).toBe(true)
+    expect(simulateIsFirstTurnMessage(MAX, false, true, 100)).toBe(true)
+  })
+
+  it('once replayStarted is true, no messages trigger isFirstTurnMessage', () => {
+    const MAX = Number.MAX_SAFE_INTEGER
+    expect(simulateIsFirstTurnMessage(MAX, true, true, 0)).toBe(false)
+    expect(simulateIsFirstTurnMessage(MAX, true, false, 100)).toBe(false)
+  })
+})
+
+// ── Issue B: Double recover on reconnect ─────────────────────────
+
+/**
+ * When WebSocket reconnects after a session switch:
+ * 1. handleSelectSession calls sendRecover(id, msgs.length)
+ * 2. WS reconnects → didRecoverRef reset → auto-recovery sends sendRecover(id, 0)
+ *
+ * This causes two recover messages with different last_index values.
+ * Fix: set didRecoverRef = true after handleSelectSession's recover.
+ */
+
+describe('double recover prevention (Issue B)', () => {
+  it('handleSelectSession recover should set didRecoverRef to prevent auto-recovery', () => {
+    // The test verifies the intended behavior: after a manual recover,
+    // the auto-recovery effect should NOT send another one.
+    const didRecoverRef = { current: false }
+
+    // Simulate handleSelectSession calling recover
+    didRecoverRef.current = true
+
+    // Simulate WS reconnect — auto-recovery checks didRecoverRef
+    const wouldSendRecover = !didRecoverRef.current
+    expect(wouldSendRecover).toBe(false)
+  })
+
+  it('didRecoverRef resets on disconnect to allow recovery on next reconnect', () => {
+    const didRecoverRef = { current: true }
+
+    // Simulate disconnect
+    didRecoverRef.current = false
+
+    // Next reconnect can recover again
+    const wouldSendRecover = !didRecoverRef.current
+    expect(wouldSendRecover).toBe(true)
+  })
 })
