@@ -222,13 +222,22 @@ function MainApp() {
             }
           }
           setSessionStateFor(activeSession, derivedState)
+          // Fetch live buffer state — may differ from persisted DB state
+          fetch(`/api/users/${userId}/sessions/${activeSession}/status`, { headers })
+            .then(resp => resp.json())
+            .then(status => {
+              if (status.state === 'running') {
+                setSessionStateFor(activeSession, 'running')
+              }
+            })
+            .catch(() => {})
         })
         .catch(() => {
           setMessages([])
           setSessionStateFor(activeSession, 'idle')
         })
     }
-  }, [userId])
+  }, [userId, authToken])
 
   const loadSessions = async () => {
     try {
@@ -446,6 +455,16 @@ function MainApp() {
         // After loading history, recover to catch up any live messages
         // from an active agent session (state may not yet be persisted)
         sendRecover(id, msgs.length)
+        // Fetch live buffer state — the buffer may have session_state_changed
+        // messages that haven't been flushed to DB yet (e.g., agent just started).
+        fetch(`/api/users/${userId}/sessions/${id}/status`, { headers })
+          .then(resp => resp.json())
+          .then(status => {
+            if (status.state === 'running') {
+              setSessionStateFor(id, 'running')
+            }
+          })
+          .catch(() => {})
       } else {
         setMessages([])
         setSessionStateFor(id, 'idle')

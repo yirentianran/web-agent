@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest'
+import { describe, it, expect, beforeEach, vi } from 'vitest'
 import type { Message } from './lib/types'
 
 /**
@@ -515,5 +515,160 @@ describe('message handling after recovery', () => {
       // Should still be 2 — dedup by index
       expect(handler.getMessages()).toHaveLength(2)
     })
+  })
+})
+
+// ── Session state from live buffer ─────────────────────────────────
+
+/**
+ * When an agent is actively running, the session_state_changed:running
+ * message may exist only in the in-memory buffer (not yet persisted to DB).
+ * Deriving state from DB history alone returns 'idle', losing the
+ * "Agent is working" UI. The fix: after loading history, also fetch
+ * /api/users/{userId}/sessions/{id}/status to get the live buffer state.
+ */
+
+interface StatusFetchArgs {
+  userId: string
+  sessionId: string
+  headers: Record<string, string>
+}
+
+/**
+ * Simulates the state derivation logic from handleSelectSession.
+ * BUGGY VERSION: derives state from DB history only, does NOT fetch
+ * live buffer state. This means 'running' state is lost when the
+ * session_state_changed message hasn't been persisted yet.
+ */
+function deriveSessionStateFromHistory_BUGGY(
+  msgs: Message[]
+): string {
+  let derivedState = 'idle'
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    const m = msgs[i]
+    if (m.type === 'system' && m.subtype === 'session_state_changed' && m.state) {
+      derivedState = m.state
+      break
+    }
+    if (m.type === 'result') {
+      derivedState = 'completed'
+      break
+    }
+  }
+  return derivedState
+}
+
+/**
+ * FIXED VERSION: after deriving from history, also fetches live buffer
+ * state from /status endpoint. If live state is 'running', overrides.
+ */
+function deriveSessionStateFromHistory(
+  msgs: Message[],
+  fetchLiveStatus: (args: StatusFetchArgs) => Promise<{ state?: string }>
+): Promise<string> {
+  // Step 1: derive from history
+  let derivedState = 'idle'
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    const m = msgs[i]
+    if (m.type === 'system' && m.subtype === 'session_state_changed' && m.state) {
+      derivedState = m.state
+      break
+    }
+    if (m.type === 'result') {
+      derivedState = 'completed'
+      break
+    }
+  }
+
+  // Step 2: fetch live buffer state
+  return fetchLiveStatus({ userId: 'test-user', sessionId: 'sess-1', headers: {} })
+    .then(status => {
+      if (status.state === 'running') {
+        return 'running'
+      }
+      return derivedState
+    })
+    .catch(() => derivedState)
+}
+
+describe('session state from live buffer', () => {
+  it('BUG: buggy version returns idle when DB history has no state message (agent is actually running)', () => {
+    // DB history: only user message (state not yet persisted)
+    const dbHistory: Message[] = [
+      { type: 'user', content: 'analyze data', index: 0 },
+    ]
+
+    // The buggy version doesn't fetch /status — it returns 'idle'
+    const state = deriveSessionStateFromHistory_BUGGY(dbHistory)
+
+    // This demonstrates the bug: agent IS running but we show 'idle'
+    expect(state).toBe('idle')
+  })
+
+  it('FIX: returns running when live buffer says running even if DB history has no state message', async () => {
+    // DB history: only user message (state not yet persisted)
+    const dbHistory: Message[] = [
+      { type: 'user', content: 'analyze data', index: 0 },
+    ]
+
+    // /status endpoint reports running
+    const fetchLiveStatus = vi.fn().mockResolvedValue({ state: 'running' })
+
+    const state = await deriveSessionStateFromHistory(dbHistory, fetchLiveStatus)
+
+    expect(state).toBe('running')
+    expect(fetchLiveStatus).toHaveBeenCalled()
+  })
+
+  it('returns idle when both DB history and live buffer say idle', async () => {
+    const dbHistory: Message[] = [
+      { type: 'user', content: 'hello', index: 0 },
+      { type: 'assistant', content: 'Hi!', index: 1 },
+    ]
+
+    const fetchLiveStatus = vi.fn().mockResolvedValue({ state: 'idle' })
+
+    const state = await deriveSessionStateFromHistory(dbHistory, fetchLiveStatus)
+
+    expect(state).toBe('idle')
+  })
+
+  it('returns completed from DB when live buffer also says completed', async () => {
+    const dbHistory: Message[] = [
+      { type: 'user', content: 'hello', index: 0 },
+      { type: 'result', content: '', index: 1 },
+    ]
+
+    const fetchLiveStatus = vi.fn().mockResolvedValue({ state: 'completed' })
+
+    const state = await deriveSessionStateFromHistory(dbHistory, fetchLiveStatus)
+
+    expect(state).toBe('completed')
+  })
+
+  it('prefers live running over DB completed (agent restarted without DB update)', async () => {
+    // Edge case: DB says completed but agent restarted and is now running
+    const dbHistory: Message[] = [
+      { type: 'user', content: 'hello', index: 0 },
+      { type: 'result', content: '', index: 1 },
+    ]
+
+    const fetchLiveStatus = vi.fn().mockResolvedValue({ state: 'running' })
+
+    const state = await deriveSessionStateFromHistory(dbHistory, fetchLiveStatus)
+
+    expect(state).toBe('running')
+  })
+
+  it('falls back to DB-derived state when live status fetch fails', async () => {
+    const dbHistory: Message[] = [
+      { type: 'user', content: 'hello', index: 0 },
+    ]
+
+    const fetchLiveStatus = vi.fn().mockRejectedValue(new Error('network error'))
+
+    const state = await deriveSessionStateFromHistory(dbHistory, fetchLiveStatus)
+
+    expect(state).toBe('idle')
   })
 })
