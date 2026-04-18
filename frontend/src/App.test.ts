@@ -672,3 +672,184 @@ describe('session state from live buffer', () => {
     expect(state).toBe('idle')
   })
 })
+
+// ── Cross-session message filtering ──────────────────────────────
+
+/**
+ * A single WebSocket connection receives messages from ALL sessions
+ * for the user. When the user switches from session A to session B,
+ * session A's messages must NOT be appended to the ChatArea showing
+ * session B. Only display messages for the active session.
+ *
+ * Invisible messages (heartbeat, session_state_changed) are still
+ * processed for state tracking but should not be filtered.
+ */
+
+function createMessageHandlerWithSessionFilter(opts?: {
+  activeSessionRef?: { current: string | null }
+  onSessionStateChange?: (sessionId: string, state: string) => void
+}) {
+  const activeSessionRef = opts?.activeSessionRef ?? { current: 'session-b' }
+  const { onSessionStateChange } = opts || {}
+  let messages: Message[] = []
+
+  function handleIncomingMessage(msg: Message) {
+    const isInvisibleMessage =
+      msg.type === 'heartbeat' ||
+      (msg.type === 'system' && msg.subtype === 'session_state_changed')
+
+    // Filter: skip messages (including invisible) from inactive sessions.
+    // Still update state for result/session_state_changed of inactive sessions.
+    if (msg.session_id && msg.session_id !== activeSessionRef.current) {
+      if (msg.type === 'system' && msg.subtype === 'session_state_changed') {
+        onSessionStateChange?.(msg.session_id, msg.state || msg.content || 'completed')
+      }
+      if (msg.type === 'result') {
+        onSessionStateChange?.(msg.session_id, 'completed')
+      }
+      return
+    }
+
+    // Invisible messages from active session (or without session_id) are fine
+    if (isInvisibleMessage) {
+      // Still track state changes
+      if (msg.type === 'system' && msg.subtype === 'session_state_changed' && msg.session_id) {
+        onSessionStateChange?.(msg.session_id, msg.state || msg.content || 'completed')
+      }
+      // Don't add heartbeats or state changes to display messages
+      return
+    }
+
+    // Index-based dedup
+    if (msg.replay && messages.some((m) => m.index === msg.index)) {
+      return
+    }
+    if (msg.type === 'user' && !msg.replay) {
+      if (messages.some((m) => m.type === 'user' && m.content === msg.content)) {
+        return
+      }
+    }
+    messages = [...messages, msg]
+
+    if (msg.type === 'system' && msg.subtype === 'session_state_changed' && msg.session_id) {
+      onSessionStateChange?.(msg.session_id, msg.state || msg.content || 'completed')
+    }
+    if (msg.type === 'result' && msg.session_id) {
+      onSessionStateChange?.(msg.session_id, 'completed')
+    }
+  }
+
+  return {
+    getMessages: () => [...messages],
+    handleIncomingMessage,
+  }
+}
+
+describe('cross-session message filtering', () => {
+  it('filters out messages from inactive session', () => {
+    const stateChanges: { sessionId: string; state: string }[] = []
+    const handler = createMessageHandlerWithSessionFilter({
+      activeSessionRef: { current: 'session-b' },
+      onSessionStateChange: (sessionId, state) => {
+        stateChanges.push({ sessionId, state })
+      },
+    })
+
+    // Active session B gets a message — should appear
+    handler.handleIncomingMessage({
+      type: 'assistant',
+      content: 'B response',
+      index: 0,
+      session_id: 'session-b',
+    })
+
+    // Inactive session A gets a message — should NOT appear
+    handler.handleIncomingMessage({
+      type: 'assistant',
+      content: 'A response',
+      index: 0,
+      session_id: 'session-a',
+    })
+
+    expect(handler.getMessages()).toHaveLength(1)
+    expect(handler.getMessages()[0].content).toBe('B response')
+    expect(handler.getMessages()[0].session_id).toBe('session-b')
+  })
+
+  it('still processes heartbeat for inactive session (no crash)', () => {
+    const handler = createMessageHandlerWithSessionFilter({
+      activeSessionRef: { current: 'session-b' },
+    })
+
+    // Heartbeat from session A — should not crash, not appended
+    handler.handleIncomingMessage({
+      type: 'heartbeat',
+      content: '',
+      index: 5,
+      session_id: 'session-a',
+    })
+
+    expect(handler.getMessages()).toHaveLength(0)
+  })
+
+  it('processes session_state_changed for inactive session (state tracking)', () => {
+    const stateChanges: { sessionId: string; state: string }[] = []
+    const handler = createMessageHandlerWithSessionFilter({
+      activeSessionRef: { current: 'session-b' },
+      onSessionStateChange: (sessionId, state) => {
+        stateChanges.push({ sessionId, state })
+      },
+    })
+
+    // session_state_changed from inactive session A
+    handler.handleIncomingMessage({
+      type: 'system',
+      subtype: 'session_state_changed',
+      state: 'completed',
+      content: 'completed',
+      index: 10,
+      session_id: 'session-a',
+    })
+
+    // State should be updated even though session A is not active
+    expect(stateChanges.some(c => c.sessionId === 'session-a' && c.state === 'completed')).toBe(true)
+    // But no display messages added
+    expect(handler.getMessages()).toHaveLength(0)
+  })
+
+  it('processes result message for inactive session (triggers state update)', () => {
+    const stateChanges: { sessionId: string; state: string }[] = []
+    const handler = createMessageHandlerWithSessionFilter({
+      activeSessionRef: { current: 'session-b' },
+      onSessionStateChange: (sessionId, state) => {
+        stateChanges.push({ sessionId, state })
+      },
+    })
+
+    // result from inactive session A
+    handler.handleIncomingMessage({
+      type: 'result',
+      content: '',
+      index: 10,
+      session_id: 'session-a',
+    })
+
+    expect(stateChanges.some(c => c.sessionId === 'session-a' && c.state === 'completed')).toBe(true)
+    expect(handler.getMessages()).toHaveLength(0)
+  })
+
+  it('messages without session_id are still appended (backward compat)', () => {
+    const handler = createMessageHandlerWithSessionFilter({
+      activeSessionRef: { current: 'session-b' },
+    })
+
+    // Message without session_id — should be appended
+    handler.handleIncomingMessage({
+      type: 'assistant',
+      content: 'no session id',
+      index: 0,
+    })
+
+    expect(handler.getMessages()).toHaveLength(1)
+  })
+})

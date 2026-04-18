@@ -266,18 +266,39 @@ function MainApp() {
   }
 
   const handleIncomingMessage = useCallback((msg: Message) => {
+    const isInvisibleMessage =
+      msg.type === 'heartbeat' ||
+      (msg.type === 'system' && msg.subtype === 'session_state_changed')
+
+    // Filter: skip messages from inactive sessions.
+    // A single WebSocket receives messages from ALL sessions for this user.
+    // Only display messages belonging to the currently active session.
+    // Still process state changes (session_state_changed, result) for all sessions.
+    if (msg.session_id && msg.session_id !== activeSessionRef.current) {
+      if (msg.type === 'system' && msg.subtype === 'session_state_changed') {
+        setSessionStateFor(msg.session_id, msg.state || msg.content || 'completed')
+      }
+      if (msg.type === 'result') {
+        setSessionStateFor(msg.session_id, 'completed')
+        loadSessions()
+      }
+      return
+    }
+
+    // Invisible messages from the active session: update state but don't append
+    if (isInvisibleMessage) {
+      if (msg.type === 'system' && msg.subtype === 'session_state_changed' && msg.session_id) {
+        setSessionStateFor(msg.session_id, msg.state || msg.content || 'completed')
+      }
+      return
+    }
+
     // Use a functional update so we always work with the latest `prev`.
     // This avoids stale-closure bugs and ensures dedup runs on every message.
     setMessages((prev) => {
-      // Determine if this is the first message of a new turn that should
-      // trigger clearing of old conversation history.
-      const isInvisibleMessage =
-        msg.type === 'heartbeat' ||
-        (msg.type === 'system' && msg.subtype === 'session_state_changed')
       const isFirstTurnMessage =
         !replayStartedRef.current &&
-        ((msg.replay) ||
-          (!msg.replay && !isInvisibleMessage && msg.index >= clearThresholdRef.current))
+        (msg.replay || msg.index >= clearThresholdRef.current)
 
       if (isFirstTurnMessage) {
         replayStartedRef.current = true
