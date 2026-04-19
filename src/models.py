@@ -76,11 +76,6 @@ class SkillInfo(BaseModel):
     created_by: str = ""  # "upload" | "skill-creator"
 
 
-class SkillCreate(BaseModel):
-    name: str
-    content: str
-    description: str = ""
-
 
 # ── Memory Models ───────────────────────────────────────────────────
 
@@ -158,6 +153,25 @@ class McpServerConfig(BaseModel):
     description: str = ""
     enabled: bool = True
     access: str = "all"  # all | admin
+
+
+class UserMcpServerCreate(BaseModel):
+    """Request model for creating a per-user MCP server."""
+    name: str
+    type: str = "stdio"
+    command: Optional[str] = None
+    args: list[str] = []
+    url: Optional[str] = None
+    env: dict[str, str] = {}
+    tools: list[str]
+    description: str = ""
+    enabled: bool = True
+
+    def model_post_init(self, __context: Any) -> None:
+        if self.type == "stdio" and not self.command:
+            raise ValueError("command is required for stdio servers")
+        if self.type == "http" and not self.url:
+            raise ValueError("url is required for http servers")
 
 
 class ToolToggle(BaseModel):

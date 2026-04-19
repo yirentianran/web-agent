@@ -191,3 +191,25 @@ class TestUploadZipValidation:
         zip_bytes = make_zip({"SKILL.md": b"# Test\n"})
         resp = upload_zip(client, "alice", "-bad.zip", zip_bytes)
         assert resp.status_code == 400
+
+
+# ── Legacy endpoint removed ─────────────────────────────────────
+
+class TestLegacyCreateSkillRemoved:
+    def test_post_skill_text_endpoint_removed(self, client: TestClient):
+        """The legacy text-based POST /api/users/{user_id}/skills endpoint should not exist."""
+        resp = client.post(
+            "/api/users/alice/skills",
+            json={"name": "test", "content": "# Test\n", "description": "test"},
+        )
+        # 405 = Method Not Allowed (route exists for GET/DELETE but not POST)
+        # 404 = Not Found (if no route matches at all)
+        # Either is acceptable — the point is POST should not create skills via text
+        assert resp.status_code in (404, 405)
+
+    def test_upload_zip_still_works(self, client: TestClient):
+        """Uploading a zip should still work — not affected by legacy removal."""
+        zip_bytes = make_zip({"SKILL.md": b"# My Skill\n"})
+        resp = upload_zip(client, "alice", "my-skill.zip", zip_bytes)
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "ok"

@@ -16,7 +16,7 @@ export default function SettingsPanel({ authToken, userId, onClose }: SettingsPa
               className="sp-tab active"
               disabled
             >
-              Settings
+              Skills Management
             </button>
           </div>
           <div className="sp-tab-content">

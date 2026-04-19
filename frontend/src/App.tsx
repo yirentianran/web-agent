@@ -6,6 +6,8 @@ import InputBar, { type InputBarHandle } from './components/InputBar'
 import SettingsPanel from './components/SettingsPanel'
 import FilesPanel from './components/FilesPanel'
 import FeedbackPage from './components/FeedbackPage'
+import EvolutionPanel from './components/EvolutionPanel'
+import MCPPage from './components/MCPPage'
 import DesignPreviewPage from './DesignPreviewPage'
 import SettingsPreviewPage from './SettingsPreviewPage'
 import TechPreviewPage from './TechPreviewPage'
@@ -157,6 +159,8 @@ function MainApp() {
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [filesOpen, setFilesOpen] = useState(false)
   const [showFeedback, setShowFeedback] = useState(false)
+  const [showEvolution, setShowEvolution] = useState(false)
+  const [showMCP, setShowMCP] = useState(false)
   const [fileCount, setFileCount] = useState<number>(0)
   const inputBarRef = useRef<InputBarHandle>(null)
   // Index threshold: messages with index >= this are "new turn" messages.
@@ -573,6 +577,16 @@ function MainApp() {
     return <FeedbackPage userId={userId} authToken={authToken} onBack={() => setShowFeedback(false)} />
   }
 
+  // Skill evolution review page
+  if (showEvolution) {
+    return <EvolutionPanel userId={userId} authToken={authToken} onBack={() => setShowEvolution(false)} />
+  }
+
+  // MCP servers management page
+  if (showMCP) {
+    return <MCPPage userId={userId} authToken={authToken} onBack={() => setShowMCP(false)} />
+  }
+
   return (
     <div className="app">
       {/* Header */}
@@ -581,6 +595,8 @@ function MainApp() {
         userId={userId}
         onOpenSettings={() => setSettingsOpen(true)}
         onOpenFeedback={() => setShowFeedback(true)}
+        onOpenEvolution={() => setShowEvolution(true)}
+        onOpenMCP={() => setShowMCP(true)}
         onLogout={handleLogout}
       />
 

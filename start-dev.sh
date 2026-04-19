@@ -15,6 +15,13 @@ if [ -f ".venv/bin/activate" ]; then
   source .venv/bin/activate
 fi
 
+# Load environment variables from .env
+if [ -f ".env" ]; then
+  set -a
+  source .env
+  set +a
+fi
+
 # Ensure frontend dependencies are installed
 if [ ! -d "frontend/node_modules" ]; then
   echo "Installing frontend dependencies..."

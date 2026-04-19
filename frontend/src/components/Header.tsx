@@ -5,10 +5,12 @@ interface HeaderProps {
   userId: string
   onOpenSettings: () => void
   onOpenFeedback: () => void
+  onOpenEvolution: () => void
+  onOpenMCP: () => void
   onLogout: () => void
 }
 
-export default function Header({ connected, userId, onOpenSettings, onOpenFeedback, onLogout }: HeaderProps) {
+export default function Header({ connected, userId, onOpenSettings, onOpenFeedback, onOpenEvolution, onOpenMCP, onLogout }: HeaderProps) {
   return (
     <header className="app-header">
       <div className="app-brand">
@@ -20,7 +22,7 @@ export default function Header({ connected, userId, onOpenSettings, onOpenFeedba
           <span className={`app-status-dot ${connected ? 'connected' : ''}`} />
           <span className="app-status-text">{connected ? 'Connected' : 'Disconnected'}</span>
         </div>
-        <UserMenu userId={userId} onOpenSettings={onOpenSettings} onOpenFeedback={onOpenFeedback} onLogout={onLogout} />
+        <UserMenu userId={userId} onOpenSettings={onOpenSettings} onOpenFeedback={onOpenFeedback} onOpenEvolution={onOpenEvolution} onOpenMCP={onOpenMCP} onLogout={onLogout} />
       </div>
     </header>
   )

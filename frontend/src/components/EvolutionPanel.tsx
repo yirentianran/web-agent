@@ -188,9 +188,9 @@ export default function EvolutionPanel({ userId: _userId, authToken, onBack }: E
   }
 
   return (
-    <div className="evolution-panel">
-      <div className="evolution-panel-header">
-        <button className="evolution-back-btn" onClick={onBack}>&larr; Back</button>
+    <div className="evolution-panel feedback-page">
+      <div className="evolution-panel-header feedback-header">
+        <button className="evolution-back-btn feedback-back-btn" onClick={onBack}>&larr; Back</button>
         <h2>Skill Evolution</h2>
       </div>
 

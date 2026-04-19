@@ -1,5 +1,5 @@
 import { useMemo, useRef, useCallback } from 'react'
-import type { Skill, SkillCreate } from '../lib/types'
+import type { Skill } from '../lib/types'
 
 export function useSkillsApi(authToken: string | null, userId: string) {
   const headersRef = useRef<HeadersInit>({})
@@ -23,8 +23,6 @@ export function useSkillsApi(authToken: string | null, userId: string) {
   return useMemo(() => ({
     listShared: (): Promise<Skill[]> => fetchJSON('/api/shared-skills'),
     listPersonal: (): Promise<Skill[]> => fetchJSON(`/api/users/${userId}/skills`),
-    create: (skill: SkillCreate): Promise<{ status: string }> =>
-      fetchJSON(`/api/users/${userId}/skills`, { method: 'POST', body: JSON.stringify(skill) }),
     delete: (name: string): Promise<{ status: string }> =>
       fetchJSON(`/api/users/${userId}/skills/${encodeURIComponent(name)}`, { method: 'DELETE' }),
     deleteShared: (name: string): Promise<{ status: string }> =>

@@ -4,10 +4,12 @@ interface UserMenuProps {
   userId: string
   onOpenSettings: () => void
   onOpenFeedback: () => void
+  onOpenEvolution: () => void
+  onOpenMCP: () => void
   onLogout: () => void
 }
 
-export default function UserMenu({ userId, onOpenSettings, onOpenFeedback, onLogout }: UserMenuProps) {
+export default function UserMenu({ userId, onOpenSettings, onOpenFeedback, onOpenEvolution, onOpenMCP, onLogout }: UserMenuProps) {
   const [open, setOpen] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
 
@@ -42,11 +44,19 @@ export default function UserMenu({ userId, onOpenSettings, onOpenFeedback, onLog
         <div className="user-menu-dropdown" role="menu">
           <button className="user-menu-item" role="menuitem" onClick={() => handleAction(onOpenSettings)} type="button">
             <span className="user-menu-item-icon">⚙</span>
-            Settings
+            Skills Management
+          </button>
+          <button className="user-menu-item" role="menuitem" onClick={() => handleAction(onOpenMCP)} type="button">
+            <span className="user-menu-item-icon">⚡</span>
+            MCP Servers
           </button>
           <button className="user-menu-item" role="menuitem" onClick={() => handleAction(onOpenFeedback)} type="button">
             <span className="user-menu-item-icon">💬</span>
-            Feedback
+            Feedback Management
+          </button>
+          <button className="user-menu-item" role="menuitem" onClick={() => handleAction(onOpenEvolution)} type="button">
+            <span className="user-menu-item-icon">🧬</span>
+            Skill Evolution
           </button>
           <button className="user-menu-item user-menu-item--logout" role="menuitem" onClick={() => handleAction(onLogout)} type="button">
             <span className="user-menu-item-icon">⏻</span>

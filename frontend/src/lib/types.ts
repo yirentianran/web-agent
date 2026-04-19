@@ -64,12 +64,6 @@ export interface Skill {
   created_by: string
 }
 
-export interface SkillCreate {
-  name: string
-  content: string
-  description: string
-}
-
 export interface TodoWriteTodo {
   content: string
   status: 'pending' | 'in_progress' | 'completed' | 'deleted'
@@ -78,4 +72,18 @@ export interface TodoWriteTodo {
 
 export interface TodoWriteInput {
   todos: TodoWriteTodo[]
+}
+
+export type McpServerType = 'stdio' | 'http'
+
+export interface McpServer {
+  name: string
+  type: McpServerType
+  command?: string
+  args?: string[]
+  url?: string
+  env?: Record<string, string>
+  tools: string[]
+  description: string
+  enabled: boolean
 }

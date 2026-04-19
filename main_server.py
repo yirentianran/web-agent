@@ -41,6 +41,7 @@ from src.models import (
     SessionStatusResponse,
     SkillInfo,
     SkillSource,
+    UserMcpServerCreate,
 )
 
 if TYPE_CHECKING:
@@ -3091,6 +3092,100 @@ async def toggle_mcp_server(
         registry["mcpServers"][server_name]["enabled"] = enabled
         save_mcp_config(registry)
     return {"status": "ok"}
+
+
+# ── Per-User MCP Servers ────────────────────────────────────────
+
+
+def _require_user(user_id: str, authorization: str | None) -> str:
+    """Verify the authenticated user matches the path user_id."""
+    from src.auth import require_user_match
+    token_user = _get_user_id_from_header(authorization)
+    return require_user_match(user_id, token_user)
+
+
+@app.get("/api/users/{user_id}/mcp-servers")
+async def list_user_mcp_servers(
+    user_id: str,
+    authorization: str | None = Header(None),
+) -> list[dict[str, Any]]:
+    """List MCP servers for a specific user."""
+    _require_user(user_id, authorization)
+    from src.user_mcp_manager import UserMcpManager
+    mgr = UserMcpManager(user_id, DATA_ROOT)
+    return mgr.list_servers()
+
+
+@app.post("/api/users/{user_id}/mcp-servers")
+async def create_user_mcp_server(
+    user_id: str,
+    server: UserMcpServerCreate,
+    authorization: str | None = Header(None),
+) -> dict[str, str]:
+    """Create a new MCP server for a user."""
+    _require_user(user_id, authorization)
+    from src.user_mcp_manager import UserMcpManager
+    mgr = UserMcpManager(user_id, DATA_ROOT)
+    try:
+        mgr.create_server(server.model_dump())
+        return {"status": "ok"}
+    except ValueError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+
+
+@app.put("/api/users/{user_id}/mcp-servers/{server_name}")
+async def update_user_mcp_server(
+    user_id: str,
+    server_name: str,
+    server: UserMcpServerCreate,
+    authorization: str | None = Header(None),
+) -> dict[str, str]:
+    """Update an existing MCP server for a user."""
+    _require_user(user_id, authorization)
+    from src.user_mcp_manager import UserMcpManager
+    mgr = UserMcpManager(user_id, DATA_ROOT)
+    try:
+        mgr.update_server(server_name, server.model_dump())
+        return {"status": "ok"}
+    except ValueError as e:
+        if "not found" in str(e).lower():
+            raise HTTPException(status_code=404, detail=str(e))
+        raise HTTPException(status_code=422, detail=str(e))
+
+
+@app.delete("/api/users/{user_id}/mcp-servers/{server_name}")
+async def delete_user_mcp_server(
+    user_id: str,
+    server_name: str,
+    authorization: str | None = Header(None),
+) -> dict[str, str]:
+    """Delete an MCP server for a user."""
+    _require_user(user_id, authorization)
+    from src.user_mcp_manager import UserMcpManager
+    mgr = UserMcpManager(user_id, DATA_ROOT)
+    try:
+        mgr.delete_server(server_name)
+        return {"status": "ok"}
+    except ValueError:
+        raise HTTPException(status_code=404, detail=f"Server '{server_name}' not found")
+
+
+@app.patch("/api/users/{user_id}/mcp-servers/{server_name}/toggle")
+async def toggle_user_mcp_server(
+    user_id: str,
+    server_name: str,
+    enabled: bool,
+    authorization: str | None = Header(None),
+) -> dict[str, str]:
+    """Enable/disable an MCP server for a user."""
+    _require_user(user_id, authorization)
+    from src.user_mcp_manager import UserMcpManager
+    mgr = UserMcpManager(user_id, DATA_ROOT)
+    try:
+        mgr.toggle_server(server_name, enabled)
+        return {"status": "ok"}
+    except ValueError:
+        raise HTTPException(status_code=404, detail=f"Server '{server_name}' not found")
 
 
 # ── Feedback API ─────────────────────────────────────────────────

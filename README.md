@@ -150,7 +150,7 @@ Key endpoints:
 | `POST` | `/api/users/{user_id}/upload` | Upload a file |
 | `GET` | `/api/users/{user_id}/generated-files` | List generated output files |
 | `GET` | `/api/users/{user_id}/download/{path}` | Download a file |
-| `POST` | `/api/users/{user_id}/skills` | Create a skill |
+| `POST` | `/api/users/{user_id}/skills/upload` | Upload a skill (ZIP) |
 | `GET` | `/api/users/{user_id}/skills` | List skills |
 | `PUT` | `/api/users/{user_id}/memory` | Update user memory |
 | `GET` | `/api/users/{user_id}/memory` | Get user memory |
