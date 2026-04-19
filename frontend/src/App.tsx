@@ -13,6 +13,7 @@ import SettingsPreviewPage from './SettingsPreviewPage'
 import TechPreviewPage from './TechPreviewPage'
 import { useWebSocket } from './hooks/useWebSocket'
 import type { Message, SessionItem } from './lib/types'
+import { mergeSessionStates, computeRecoverIndex } from './lib/session-state'
 
 const logger = {
   error: (message: string, err: unknown) => {
@@ -171,6 +172,14 @@ function MainApp() {
   // If replay sends messages, we don't clear (replay already handles ordering).
   const replayStartedRef = useRef(false)
 
+  // Pending user messages per session — tracks messages sent via WebSocket
+  // but not yet confirmed by the backend. When switching sessions, pending
+  // messages are preserved so they survive the setMessages() replacement.
+  // When switching back to a session with pending messages, they are restored
+  // immediately so the user sees their message even if the backend hasn't
+  // received the WebSocket message yet.
+  const pendingUserMsgsRef = useRef<Map<string, Message>>(new Map())
+
   // Click a file in a message bubble to reference it in the input
   const handleFileClick = useCallback((filename: string) => {
     inputBarRef.current?.insertText(`@${filename} `)
@@ -278,6 +287,15 @@ function MainApp() {
       msg.type === 'heartbeat' ||
       (msg.type === 'system' && msg.subtype === 'session_state_changed')
 
+    // Backend confirmed user message echo: clear pending for this session.
+    // This means the backend has received and buffered the message.
+    if (msg.type === 'user' && !msg.replay && msg.session_id) {
+      const pending = pendingUserMsgsRef.current.get(msg.session_id)
+      if (pending && pending.content === msg.content) {
+        pendingUserMsgsRef.current.delete(msg.session_id)
+      }
+    }
+
     // Filter: skip messages from inactive sessions.
     // A single WebSocket receives messages from ALL sessions for this user.
     // Only display messages belonging to the currently active session.
@@ -328,6 +346,13 @@ function MainApp() {
       // a different index. Skip the server copy if content matches.
       if (msg.type === 'user' && !msg.replay) {
         if (prev.some((m) => m.type === 'user' && m.content === msg.content)) {
+          return prev
+        }
+      }
+      // Live dedup for non-user messages: dedup by index to prevent
+      // duplicates when messages arrive via both recovery and subscribe paths.
+      if (!msg.replay && msg.type !== 'user') {
+        if (msg.index != null && prev.some((m) => m.index === msg.index)) {
           return prev
         }
       }
@@ -421,6 +446,12 @@ function MainApp() {
         index: lastBackendIndex - 1,
         data: fileMetadata,
       }
+      // Track pending message — survives session switches so it can be
+      // restored when switching back, even if the backend hasn't received
+      // the WebSocket message yet.
+      if (sessionId) {
+        pendingUserMsgsRef.current.set(sessionId, optimisticMsg)
+      }
       setMessages((prev) => [...prev, optimisticMsg])
       setSessionStateFor(sessionId!, 'running')
 
@@ -452,6 +483,16 @@ function MainApp() {
     clearThresholdRef.current = Number.MAX_SAFE_INTEGER
     replayStartedRef.current = false
 
+    // Restore pending message for this session so the user sees their
+    // message immediately, even if the backend hasn't received the
+    // WebSocket message yet (rapid session switch scenario).
+    const pending = pendingUserMsgsRef.current.get(id)
+    if (pending) {
+      setMessages([pending])
+    } else {
+      setMessages([])
+    }
+
     // Load historical messages from backend
     try {
       const headers: Record<string, string> = {}
@@ -464,10 +505,23 @@ function MainApp() {
           index: m.index ?? -1,
           session_id: id,
         }))
-        setMessages(msgs)
+
+        // If backend hasn't confirmed the pending message yet (history
+        // doesn't contain it), restore it after loading history so the
+        // user's message isn't lost during the gap between ws.send() and
+        // backend receipt.
+        if (pending && !msgs.some((m: Message) => m.type === 'user' && m.content === pending.content)) {
+          setMessages([pending, ...msgs])
+        } else {
+          setMessages(msgs)
+          // Backend confirmed — clear pending
+          pendingUserMsgsRef.current.delete(id)
+        }
+
         // Restore first user message for title
         const firstUser = msgs.find((m: Message) => m.type === 'user')
         if (firstUser) firstMessageRef.current = firstUser.content.slice(0, 50)
+
         // Derive sessionState from the last session_state_changed message,
         // or fall back to 'idle' if none found.
         let derivedState = 'idle'
@@ -482,27 +536,46 @@ function MainApp() {
             break
           }
         }
-        setSessionStateFor(id, derivedState)
+
+        // Fetch live buffer state BEFORE setting the derived state —
+        // the buffer may have session_state_changed messages that haven't
+        // been flushed to DB yet (e.g., agent just started). Merge the
+        // two states, preferring the more "active" one.
+        let bufferState: string | undefined
+        try {
+          const statusResp = await fetch(`/api/users/${userId}/sessions/${id}/status`, { headers })
+          if (statusResp.ok) {
+            const status = await statusResp.json()
+            bufferState = status.state
+          }
+        } catch {
+          // Status endpoint unavailable — fall back to DB-derived state
+        }
+
+        const finalState = mergeSessionStates(bufferState, derivedState)
+        setSessionStateFor(id, finalState)
+
         // After loading history, recover to catch up any live messages
-        // from an active agent session (state may not yet be persisted)
-        sendRecover(id, msgs.length)
+        // from an active agent session. Use the max message index so
+        // we don't miss or duplicate messages.
+        sendRecover(id, computeRecoverIndex(msgs))
         didRecoverRef.current = true  // Prevent auto-recovery from sending duplicate recover
-        // Fetch live buffer state — the buffer may have session_state_changed
-        // messages that haven't been flushed to DB yet (e.g., agent just started).
-        fetch(`/api/users/${userId}/sessions/${id}/status`, { headers })
-          .then(resp => resp.json())
-          .then(status => {
-            if (status.state === 'running') {
-              setSessionStateFor(id, 'running')
-            }
-          })
-          .catch(() => {})
       } else {
-        setMessages([])
+        // History fetch failed — restore pending if available
+        if (pending) {
+          setMessages([pending])
+        } else {
+          setMessages([])
+        }
         setSessionStateFor(id, 'idle')
       }
     } catch {
-      setMessages([])
+      // History fetch failed — restore pending if available
+      if (pending) {
+        setMessages([pending])
+      } else {
+        setMessages([])
+      }
       setSessionStateFor(id, 'idle')
     }
   }, [userId, authToken, setSessionStateFor, sendRecover])

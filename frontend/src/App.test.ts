@@ -54,6 +54,13 @@ function createMessageHandler(opts?: {
           return prev
         }
       }
+      // Live dedup for non-user messages: dedup by index to prevent
+      // duplicates when messages arrive via both recovery and subscribe paths.
+      if (!msg.replay && msg.type !== 'user') {
+        if (msg.index != null && prev.some((m) => m.index === msg.index)) {
+          return prev
+        }
+      }
       return [...prev, msg]
     })
 
@@ -302,6 +309,101 @@ describe('message handling after recovery', () => {
       })
 
       expect(handler.getMessages()).toHaveLength(2)
+    })
+  })
+
+  describe('live non-user message dedup', () => {
+    it('dedups live assistant messages by index to prevent duplicates', () => {
+      // Simulate session with some history
+      handler.simulateReplay([
+        { type: 'user', content: 'hello', index: 0 },
+        { type: 'assistant', content: 'Hi!', index: 1 },
+      ])
+
+      // Live assistant message arrives
+      handler.simulateLiveMessage({
+        type: 'assistant',
+        content: 'Here is the answer...',
+        index: 2,
+      })
+      expect(handler.getMessages()).toHaveLength(3)
+
+      // Same message arrives again (e.g., via both recovery + subscribe paths)
+      // Should be deduped by index
+      handler.simulateLiveMessage({
+        type: 'assistant',
+        content: 'Here is the answer...',
+        index: 2,
+      })
+      expect(handler.getMessages()).toHaveLength(3)
+    })
+
+    it('dedups live tool_use messages by index', () => {
+      handler.handleSend('run code')
+
+      // Tool use message arrives
+      handler.simulateLiveMessage({
+        type: 'tool_use',
+        content: 'print(1)',
+        index: 0,
+        name: 'python',
+      })
+      expect(handler.getMessages()).toHaveLength(2)
+
+      // Same tool_use arrives again — should be deduped
+      handler.simulateLiveMessage({
+        type: 'tool_use',
+        content: 'print(1)',
+        index: 0,
+        name: 'python',
+      })
+      expect(handler.getMessages()).toHaveLength(2)
+    })
+
+    it('dedups live result messages by index', () => {
+      handler.simulateReplay([
+        { type: 'user', content: 'query', index: 0 },
+      ])
+
+      // Result message arrives
+      handler.simulateLiveMessage({
+        type: 'result',
+        content: '',
+        index: 1,
+      })
+      expect(handler.getMessages()).toHaveLength(2)
+
+      // Same result arrives again — should be deduped
+      handler.simulateLiveMessage({
+        type: 'result',
+        content: '',
+        index: 1,
+      })
+      expect(handler.getMessages()).toHaveLength(2)
+    })
+
+    it('allows different-index messages through (not over-aggressive dedup)', () => {
+      handler.simulateReplay([
+        { type: 'user', content: 'hello', index: 0 },
+      ])
+
+      // First assistant message
+      handler.simulateLiveMessage({
+        type: 'assistant',
+        content: 'part 1',
+        index: 1,
+      })
+
+      // Second assistant message (different index)
+      handler.simulateLiveMessage({
+        type: 'assistant',
+        content: 'part 2',
+        index: 2,
+      })
+
+      expect(handler.getMessages()).toHaveLength(3)
+      expect(handler.getMessages()[1].content).toBe('part 1')
+      expect(handler.getMessages()[2].content).toBe('part 2')
     })
   })
 
@@ -729,6 +831,12 @@ function createMessageHandlerWithSessionFilter(opts?: {
         return
       }
     }
+    // Live dedup for non-user messages
+    if (!msg.replay && msg.type !== 'user') {
+      if (msg.index != null && messages.some((m) => m.index === msg.index)) {
+        return
+      }
+    }
     messages = [...messages, msg]
 
     if (msg.type === 'system' && msg.subtype === 'session_state_changed' && msg.session_id) {
@@ -962,5 +1070,349 @@ describe('double recover prevention (Issue B)', () => {
     // Next reconnect can recover again
     const wouldSendRecover = !didRecoverRef.current
     expect(wouldSendRecover).toBe(true)
+  })
+})
+
+// ── Pending message tracking (rapid session switch) ──────────────
+
+/**
+ * When user sends a message and rapidly switches sessions:
+ * 1. Optimistic user message is added to display
+ * 2. WebSocket send() is called (fire-and-forget)
+ * 3. User switches session → setMessages replaces all messages
+ * 4. The optimistic message is lost from the display
+ * 5. When user switches back, REST + recover may return empty
+ *    (backend hasn't received the WS message yet)
+ *
+ * Fix: track pending user messages per session. When switching back
+ * to a session with pending messages, restore them immediately so
+ * the user sees their message even before the backend confirms.
+ */
+
+function createMessageHandlerWithPendingTracking(opts?: {
+  activeSessionRef?: { current: string | null }
+}) {
+  const activeSessionRef = opts?.activeSessionRef ?? { current: 'session-a' }
+  let messages: Message[] = []
+  const pendingUserMsgs = new Map<string, Message>()
+
+  function handleSend(message: string, sessionId: string) {
+    // Track pending message
+    const pendingMsg: Message = {
+      type: 'user',
+      content: message,
+      index: messages.length - 1,
+    }
+    pendingUserMsgs.set(sessionId, pendingMsg)
+    messages = [...messages, pendingMsg]
+  }
+
+  function handleSelectSession(id: string) {
+    // If switching back to a session with pending messages,
+    // restore them into the display
+    const pending = pendingUserMsgs.get(id)
+    if (pending) {
+      messages = [pending]
+    } else {
+      messages = []
+    }
+    activeSessionRef.current = id
+  }
+
+  function handleIncomingMessage(msg: Message) {
+    // If this is a user message echo (confirmation from backend),
+    // clear the pending message for this session
+    if (msg.type === 'user' && !msg.replay && msg.session_id) {
+      const pending = pendingUserMsgs.get(msg.session_id)
+      if (pending && pending.content === msg.content) {
+        pendingUserMsgs.delete(msg.session_id)
+      }
+    }
+
+    // Cross-session filtering
+    if (msg.session_id && msg.session_id !== activeSessionRef.current) {
+      return
+    }
+
+    // Dedup
+    if (msg.replay && messages.some((m) => m.index === msg.index)) {
+      return
+    }
+    if (msg.type === 'user' && !msg.replay) {
+      if (messages.some((m) => m.type === 'user' && m.content === msg.content)) {
+        return
+      }
+    }
+    if (!msg.replay && msg.type !== 'user') {
+      if (msg.index != null && messages.some((m) => m.index === msg.index)) {
+        return
+      }
+    }
+    messages = [...messages, msg]
+  }
+
+  return {
+    getMessages: () => [...messages],
+    getPendingMsgs: () => new Map(pendingUserMsgs),
+    handleSend,
+    handleSelectSession,
+    handleIncomingMessage,
+  }
+}
+
+describe('pending message tracking', () => {
+  it('tracks pending message when user sends', () => {
+    const handler = createMessageHandlerWithPendingTracking({
+      activeSessionRef: { current: 'session-a' },
+    })
+
+    handler.handleSend('hello world', 'session-a')
+
+    expect(handler.getPendingMsgs().has('session-a')).toBe(true)
+    expect(handler.getPendingMsgs().get('session-a')?.content).toBe('hello world')
+    expect(handler.getMessages()).toHaveLength(1)
+    expect(handler.getMessages()[0].content).toBe('hello world')
+  })
+
+  it('removes pending message when backend echoes', () => {
+    const handler = createMessageHandlerWithPendingTracking({
+      activeSessionRef: { current: 'session-a' },
+    })
+
+    handler.handleSend('hello', 'session-a')
+    expect(handler.getPendingMsgs().has('session-a')).toBe(true)
+
+    // Backend echoes the user message
+    handler.handleIncomingMessage({
+      type: 'user',
+      content: 'hello',
+      index: 5,
+      session_id: 'session-a',
+    })
+
+    // Pending should be cleared
+    expect(handler.getPendingMsgs().has('session-a')).toBe(false)
+  })
+
+  it('restores pending messages when switching back to session', () => {
+    const activeSessionRef = { current: 'session-a' }
+    const handler = createMessageHandlerWithPendingTracking({
+      activeSessionRef,
+    })
+
+    // Send message in session A
+    handler.handleSend('lost message', 'session-a')
+    expect(handler.getMessages()).toHaveLength(1)
+
+    // Switch to session B — clears display
+    handler.handleSelectSession('session-b')
+    expect(handler.getMessages()).toHaveLength(0)
+
+    // Switch back to session A — pending message restored
+    handler.handleSelectSession('session-a')
+    expect(handler.getMessages()).toHaveLength(1)
+    expect(handler.getMessages()[0].content).toBe('lost message')
+  })
+
+  it('replaces restored pending with backend echo', () => {
+    const activeSessionRef = { current: 'session-b' }
+    const handler = createMessageHandlerWithPendingTracking({
+      activeSessionRef,
+    })
+
+    // Send in session A, then switch to B
+    handler.handleSend('my message', 'session-a')
+    handler.handleSelectSession('session-b')
+
+    // Switch back to session A
+    handler.handleSelectSession('session-a')
+    activeSessionRef.current = 'session-a'
+    expect(handler.getMessages()).toHaveLength(1)
+    expect(handler.getMessages()[0].content).toBe('my message')
+
+    // Backend echoes the user message (with real index)
+    handler.handleIncomingMessage({
+      type: 'user',
+      content: 'my message',
+      index: 10,
+      session_id: 'session-a',
+    })
+
+    // Should dedup the pending message and replace with confirmed
+    // Since content matches, the pending should be replaced
+    expect(handler.getMessages()).toHaveLength(1)
+  })
+
+  it('does not track pending for messages that already have backend confirmation', () => {
+    const handler = createMessageHandlerWithPendingTracking({
+      activeSessionRef: { current: 'session-a' },
+    })
+
+    // Backend already has history (replay)
+    handler.handleIncomingMessage({
+      type: 'user',
+      content: 'confirmed message',
+      index: 0,
+      session_id: 'session-a',
+      replay: true,
+    })
+    expect(handler.getMessages()).toHaveLength(1)
+
+    // No pending should exist for this session
+    expect(handler.getPendingMsgs().has('session-a')).toBe(false)
+  })
+
+  it('handles multiple sessions with independent pending messages', () => {
+    const handler = createMessageHandlerWithPendingTracking({
+      activeSessionRef: { current: 'session-a' },
+    })
+
+    handler.handleSend('message A', 'session-a')
+    handler.handleSend('message B', 'session-b')
+
+    expect(handler.getPendingMsgs().size).toBe(2)
+    expect(handler.getPendingMsgs().get('session-a')?.content).toBe('message A')
+    expect(handler.getPendingMsgs().get('session-b')?.content).toBe('message B')
+
+    // Switch to session B restores only B's pending
+    handler.handleSelectSession('session-b')
+    expect(handler.getMessages()).toHaveLength(1)
+    expect(handler.getMessages()[0].content).toBe('message B')
+  })
+})
+
+// ── Rapid session switch integration test ────────────────────────
+
+/**
+ * Simulates the full rapid session switch flow:
+ * 1. Send message in Session A
+ * 2. Immediately switch to Session B (before backend receives WS message)
+ * 3. Switch back to Session A (history is empty — backend hasn't received message)
+ * 4. Pending message should still be visible
+ * 5. Backend finally receives message → echoes user message → pending cleared
+ * 6. History now contains the message → future switches show it from history
+ */
+
+function createFullSessionSwitchSimulation() {
+  const activeSessionRef = { current: 'session-a' as string | null }
+  const pendingUserMsgs = new Map<string, Message>()
+  let messages: Message[] = []
+
+  // Simulate handleSend
+  function handleSend(message: string, sessionId: string) {
+    const msg: Message = {
+      type: 'user',
+      content: message,
+      index: messages.length - 1,
+    }
+    pendingUserMsgs.set(sessionId, msg)
+    messages = [...messages, msg]
+  }
+
+  // Simulate handleSelectSession with history fetch
+  function handleSelectSession(id: string, history: Message[]) {
+    activeSessionRef.current = id
+
+    // Restore pending immediately
+    const pending = pendingUserMsgs.get(id)
+    if (pending) {
+      messages = [pending]
+    } else {
+      messages = []
+    }
+
+    // Simulate async history fetch
+    if (history.length > 0) {
+      // Check if pending is confirmed by history
+      if (pending && history.some(m => m.type === 'user' && m.content === pending.content)) {
+        pendingUserMsgs.delete(id)
+        messages = history
+      } else {
+        // Pending not confirmed — keep it
+        messages = [pending, ...history].filter(Boolean) as Message[]
+      }
+    } else if (pending) {
+      // History empty, pending exists — keep pending
+      messages = [pending]
+    }
+  }
+
+  // Simulate backend confirming user message
+  function backendConfirmsMessage(sessionId: string, _content: string) {
+    pendingUserMsgs.delete(sessionId)
+  }
+
+  return {
+    getMessages: () => [...messages],
+    getPending: () => new Map(pendingUserMsgs),
+    handleSend,
+    handleSelectSession,
+    backendConfirmsMessage,
+  }
+}
+
+describe('rapid session switch integration', () => {
+  it('preserves message when switching away before backend receives it', () => {
+    const sim = createFullSessionSwitchSimulation()
+
+    // Step 1: Send message in Session A
+    sim.handleSend('hello from A', 'session-a')
+    expect(sim.getMessages()).toHaveLength(1)
+    expect(sim.getPending().has('session-a')).toBe(true)
+
+    // Step 2: Switch to Session B (backend hasn't received WS message)
+    sim.handleSelectSession('session-b', [])
+    expect(sim.getMessages()).toHaveLength(0)
+
+    // Step 3: Switch back to Session A (history still empty)
+    sim.handleSelectSession('session-a', [])
+    // Pending message should be restored
+    expect(sim.getMessages()).toHaveLength(1)
+    expect(sim.getMessages()[0].content).toBe('hello from A')
+    expect(sim.getPending().has('session-a')).toBe(true)
+  })
+
+  it('replaces pending with backend history once confirmed', () => {
+    const sim = createFullSessionSwitchSimulation()
+
+    // Send in Session A
+    sim.handleSend('my question', 'session-a')
+    expect(sim.getMessages()).toHaveLength(1)
+
+    // Switch to B
+    sim.handleSelectSession('session-b', [])
+
+    // Backend receives the WS message for Session A
+    sim.backendConfirmsMessage('session-a', 'my question')
+
+    // Switch back to A — history now contains the message
+    const history: Message[] = [
+      { type: 'user', content: 'my question', index: 0 },
+      { type: 'assistant', content: 'Here is the answer', index: 1 },
+    ]
+    sim.handleSelectSession('session-a', history)
+
+    // Should show history (not pending)
+    expect(sim.getMessages()).toHaveLength(2)
+    expect(sim.getMessages()[0].content).toBe('my question')
+    expect(sim.getMessages()[1].content).toBe('Here is the answer')
+    expect(sim.getPending().has('session-a')).toBe(false)
+  })
+
+  it('keeps pending when history is empty (backend still processing)', () => {
+    const sim = createFullSessionSwitchSimulation()
+
+    sim.handleSend('long running query', 'session-a')
+    sim.handleSelectSession('session-b', [])
+
+    // Multiple rapid switches back and forth
+    sim.handleSelectSession('session-a', [])
+    expect(sim.getMessages()).toHaveLength(1)
+    expect(sim.getMessages()[0].content).toBe('long running query')
+
+    sim.handleSelectSession('session-b', [])
+    sim.handleSelectSession('session-a', [])
+    expect(sim.getMessages()).toHaveLength(1)
+    expect(sim.getMessages()[0].content).toBe('long running query')
   })
 })

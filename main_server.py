@@ -120,6 +120,7 @@ buffer = MessageBuffer(base_dir=DATA_ROOT / ".msg-buffer")
 session_store: SessionStore | None = None  # Initialized at startup if DATA_DB_PATH set
 active_tasks: dict[str, asyncio.Task] = {}
 pending_answers: dict[str, asyncio.Future] = {}
+_task_locks: dict[str, asyncio.Lock] = {}
 
 
 async def cleanup_session_client(session_id: str) -> None:
@@ -1331,46 +1332,50 @@ async def handle_ws(websocket: WebSocket) -> None:
 
             # ── Chat: start or reuse agent task ──────────────────────────────
             task_key = f"task_{session_id}"
-            task_is_new = task_key not in active_tasks or active_tasks[task_key].done()
-            if task_is_new:
-                # Check if this is a continuation (has prior history)
-                buf_state = buffer.sessions.get(session_id)
-                has_history = buf_state and len(buf_state.get("messages", [])) > 0
-                is_continuation = has_history
+            if task_key not in _task_locks:
+                _task_locks[task_key] = asyncio.Lock()
 
-                if buf_state:
-                    buf_state["done"] = False
-                    buf_state["state"] = "running"
+            async with _task_locks[task_key]:
+                task_is_new = task_key not in active_tasks or active_tasks[task_key].done()
+                if task_is_new:
+                    # Check if this is a continuation (has prior history)
+                    buf_state = buffer.sessions.get(session_id)
+                    has_history = buf_state and len(buf_state.get("messages", [])) > 0
+                    is_continuation = has_history
 
-                # Buffer user message BEFORE agent task starts — ensures recovery
-                # includes the user message even during the race window before
-                # run_agent_task reaches its add_message call.
-                user_msg_buf: dict[str, Any] = {"type": "user", "content": user_message}
-                if attached_files:
-                    user_msg_buf["data"] = [{"filename": f} for f in attached_files]
-                buffer.add_message(session_id, user_msg_buf)
+                    if buf_state:
+                        buf_state["done"] = False
+                        buf_state["state"] = "running"
 
-                # Broadcast running state to frontend via WebSocket
-                buffer.add_message(session_id, {
-                    "type": "system",
-                    "subtype": "session_state_changed",
-                    "state": "running",
-                })
+                    # Buffer user message BEFORE agent task starts — ensures recovery
+                    # includes the user message even during the race window before
+                    # run_agent_task reaches its add_message call.
+                    user_msg_buf: dict[str, Any] = {"type": "user", "content": user_message}
+                    if attached_files:
+                        user_msg_buf["data"] = [{"filename": f} for f in attached_files]
+                    buffer.add_message(session_id, user_msg_buf)
 
-                task = asyncio.create_task(
-                    run_agent_task(
-                        user_id, session_id, user_message,
-                        is_continuation=is_continuation,
-                        attached_files=attached_files,
+                    # Broadcast running state to frontend via WebSocket
+                    buffer.add_message(session_id, {
+                        "type": "system",
+                        "subtype": "session_state_changed",
+                        "state": "running",
+                    })
+
+                    task = asyncio.create_task(
+                        run_agent_task(
+                            user_id, session_id, user_message,
+                            is_continuation=is_continuation,
+                            attached_files=attached_files,
+                        )
                     )
-                )
-                active_tasks[task_key] = task
-                logger.info(
-                    "WS: created new task for session %s (continuation=%s)",
-                    session_id, is_continuation,
-                )
-            else:
-                logger.debug("WS: reusing existing task for session %s", session_id)
+                    active_tasks[task_key] = task
+                    logger.info(
+                        "WS: created new task for session %s (continuation=%s)",
+                        session_id, is_continuation,
+                    )
+                else:
+                    logger.debug("WS: reusing existing task for session %s", session_id)
 
             # Subscribe to real-time messages
             current_session_id = session_id

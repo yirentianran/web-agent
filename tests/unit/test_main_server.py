@@ -1428,3 +1428,41 @@ class TestRecoverCheckOrderInSubscribeLoop:
             pytest.fail(
                 "Recover check order violation in handle_ws:\n" + "\n".join(failures)
             )
+
+
+# ── Atomic agent task creation ─────────────────────────────────────
+
+
+class TestAtomicTaskCreation:
+    """Agent task creation must be atomic to prevent duplicate
+    concurrent tasks for the same session when rapid messages arrive."""
+
+    def test_task_locks_exist_in_source(self) -> None:
+        """main_server should have a _task_locks dict for per-session locking."""
+        import inspect
+        source = inspect.getsource(main_server)
+        assert "_task_locks" in source, (
+            "No _task_locks found — task creation is not atomic. "
+            "Two rapid messages for the same session could create duplicate tasks."
+        )
+
+    def test_task_lock_used_around_creation(self) -> None:
+        """The check-and-create for agent tasks must happen inside an
+        async context manager using the session's lock."""
+        import inspect
+        source = inspect.getsource(main_server.handle_ws)
+        # Look for async with pattern around task creation
+        assert "async with" in source and "_task_locks" in source, (
+            "Task creation not protected by async lock. "
+            "Use 'async with _task_locks[task_key]:' around the check-and-create."
+        )
+
+    def test_task_lock_initialized_per_session(self) -> None:
+        """Locks should be created on-demand for new sessions."""
+        import inspect
+        source = inspect.getsource(main_server.handle_ws)
+        # Look for pattern: if key not in locks: locks[key] = Lock()
+        assert "_task_locks[" in source and "asyncio.Lock()" in source, (
+            "Task locks not initialized per session. "
+            "Add: if task_key not in _task_locks: _task_locks[task_key] = asyncio.Lock()"
+        )
