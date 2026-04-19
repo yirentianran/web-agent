@@ -1,11 +1,11 @@
 import { useState } from 'react'
 
 interface SkillFeedbackWidgetProps {
-  skillName?: string
-  onSubmit: (rating: number, comment: string, userEdits: string) => Promise<void>
+  skillNames?: string[]
+  onSubmit: (rating: number, comment: string, userEdits: string, skillName: string) => Promise<void>
 }
 
-export default function SkillFeedbackWidget({ skillName, onSubmit }: SkillFeedbackWidgetProps) {
+export default function SkillFeedbackWidget({ skillNames, onSubmit }: SkillFeedbackWidgetProps) {
   const [rating, setRating] = useState(0)
   const [comment, setComment] = useState('')
   const [userEdits, setUserEdits] = useState('')
@@ -15,12 +15,28 @@ export default function SkillFeedbackWidget({ skillName, onSubmit }: SkillFeedba
   const [error, setError] = useState<string | null>(null)
   const [showEdits, setShowEdits] = useState(false)
 
+  // Derive the effective skill name for display and submission.
+  // When multiple skills exist, the user selects which one to rate.
+  const [selectedSkill, setSelectedSkill] = useState(
+    skillNames && skillNames.length === 1 ? skillNames[0] : skillNames?.[0] ?? '',
+  )
+
+  // Sync selectedSkill when skillNames prop changes (e.g. messages update)
+  const effectiveSkillNames = skillNames && skillNames.length > 0 ? skillNames : null
+  const displaySkillName = effectiveSkillNames && effectiveSkillNames.length === 1
+    ? effectiveSkillNames[0]
+    : selectedSkill
+
   const handleSubmit = async () => {
     if (rating === 0) return
+    if (!selectedSkill && effectiveSkillNames) return
     setLoading(true)
     setError(null)
     try {
-      await onSubmit(rating, comment, userEdits)
+      const skillName = effectiveSkillNames && effectiveSkillNames.length === 1
+        ? effectiveSkillNames[0]
+        : selectedSkill || 'general'
+      await onSubmit(rating, comment, userEdits, skillName)
       setSubmitted(true)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to submit feedback. Please try again.')
@@ -61,7 +77,7 @@ export default function SkillFeedbackWidget({ skillName, onSubmit }: SkillFeedba
         <>
           <div className="feedback-header">
             <span className="feedback-label">
-              {skillName ? `Rate ${skillName}` : 'Rate this result'}
+              {displaySkillName ? `Rate ${displaySkillName}` : 'Rate this result'}
             </span>
             <button
               className="feedback-close"
@@ -72,6 +88,18 @@ export default function SkillFeedbackWidget({ skillName, onSubmit }: SkillFeedba
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M18 6 6 18M6 6l12 12" /></svg>
             </button>
           </div>
+          {effectiveSkillNames && effectiveSkillNames.length > 1 && (
+            <select
+              className="feedback-skill-select"
+              value={selectedSkill}
+              onChange={(e) => setSelectedSkill(e.target.value)}
+              aria-label="Select skill to rate"
+            >
+              {effectiveSkillNames.map((name) => (
+                <option key={name} value={name}>{name}</option>
+              ))}
+            </select>
+          )}
           <div className="feedback-stars">
             {[1, 2, 3, 4, 5].map((star) => (
               <button

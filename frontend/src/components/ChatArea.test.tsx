@@ -557,22 +557,20 @@ describe('Skill name derivation', () => {
     ]
 
     const { container } = renderChatArea(messages, { sessionState: 'completed' })
-    // Feedback widget should show the derived skill name
     expect(container.querySelector('.feedback-widget')).toBeInTheDocument()
   })
 
-  it('falls back to "general" when no tool_use messages exist', () => {
+  it('shows widget when no tool_use messages exist', () => {
     const messages: Message[] = [
       { type: 'user', content: 'Hello', index: 0 },
       { type: 'assistant', content: 'Hi!', index: 1 },
     ]
 
     const { container } = renderChatArea(messages, { sessionState: 'completed' })
-    // Feedback widget should still be shown (with "general" skill name)
     expect(container.querySelector('.feedback-widget')).toBeInTheDocument()
   })
 
-  it('falls back to "general" when multiple tool_use skills exist', () => {
+  it('passes all unique skill names when multiple tool_use skills exist', () => {
     const messages: Message[] = [
       { type: 'user', content: 'Do both', index: 0 },
       { type: 'tool_use', name: 'audit-pdf', content: '', index: 1 },
@@ -581,8 +579,13 @@ describe('Skill name derivation', () => {
     ]
 
     const { container } = renderChatArea(messages, { sessionState: 'completed' })
-    // Feedback widget shown with "general" since multiple skills used
+    // Expand the feedback widget to reveal the skill selector
+    const trigger = container.querySelector('.feedback-trigger')
+    expect(trigger).not.toBeNull()
+    if (trigger) fireEvent.click(trigger)
+    // Widget should show a skill selector for multiple skills
     expect(container.querySelector('.feedback-widget')).toBeInTheDocument()
+    expect(container.querySelector('.feedback-skill-select')).toBeInTheDocument()
   })
 
   it('deduplicates tool_use skill names', () => {
@@ -595,7 +598,12 @@ describe('Skill name derivation', () => {
     ]
 
     const { container } = renderChatArea(messages, { sessionState: 'completed' })
-    // Only one unique skill, so should use "audit-pdf" (not "general")
+    // Only one unique skill, no selector needed
     expect(container.querySelector('.feedback-widget')).toBeInTheDocument()
+    // Expand the widget to verify no selector is shown
+    const trigger = container.querySelector('.feedback-trigger')
+    expect(trigger).not.toBeNull()
+    if (trigger) fireEvent.click(trigger)
+    expect(container.querySelector('.feedback-skill-select')).not.toBeInTheDocument()
   })
 })

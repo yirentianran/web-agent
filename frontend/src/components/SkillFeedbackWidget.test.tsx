@@ -5,9 +5,10 @@ import SkillFeedbackWidget from '../components/SkillFeedbackWidget'
 import ChatArea from '../components/ChatArea'
 import type { Message } from '../lib/types'
 
-function renderWidget(props?: { onSubmit?: (r: number, c: string) => Promise<void> }) {
+function renderWidget(props?: { skillNames?: string[]; onSubmit?: (r: number, c: string, e: string, s: string) => Promise<void> }) {
   return render(
     <SkillFeedbackWidget
+      skillNames={props?.skillNames}
       onSubmit={props?.onSubmit ?? (async () => {})}
     />,
   )
@@ -105,7 +106,7 @@ describe('SkillFeedbackWidget - rating interaction', () => {
 
   it('calls onSubmit with correct rating and comment', async () => {
     const onSubmit = vi.fn().mockResolvedValue(undefined)
-    renderWidget({ onSubmit })
+    renderWidget({ skillNames: ['audit-pdf'], onSubmit })
 
     fireEvent.click(screen.getByRole('button', { name: /show feedback/i }))
     fireEvent.click(screen.getByRole('button', { name: '4 stars' }))
@@ -115,7 +116,23 @@ describe('SkillFeedbackWidget - rating interaction', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /submit feedback/i }))
 
-    expect(onSubmit).toHaveBeenCalledWith(4, 'Good but slow', '')
+    expect(onSubmit).toHaveBeenCalledWith(4, 'Good but slow', '', 'audit-pdf')
+  })
+
+  it('calls onSubmit with selected skill when multiple skills provided', async () => {
+    const onSubmit = vi.fn().mockResolvedValue(undefined)
+    renderWidget({ skillNames: ['audit-pdf', 'format-doc'], onSubmit })
+
+    fireEvent.click(screen.getByRole('button', { name: /show feedback/i }))
+
+    // Select the second skill from the dropdown
+    const select = screen.getByRole('combobox', { name: /select skill/i })
+    fireEvent.change(select, { target: { value: 'format-doc' } })
+
+    fireEvent.click(screen.getByRole('button', { name: '4 stars' }))
+    fireEvent.click(screen.getByRole('button', { name: /submit feedback/i }))
+
+    expect(onSubmit).toHaveBeenCalledWith(4, '', '', 'format-doc')
   })
 })
 
@@ -230,7 +247,7 @@ describe('SkillFeedbackWidget - error handling', () => {
 describe('SkillFeedbackWidget - user_edits', () => {
   it('calls onSubmit with user_edits when provided', async () => {
     const onSubmit = vi.fn().mockResolvedValue(undefined)
-    const { container } = renderWidget({ onSubmit })
+    const { container } = renderWidget({ skillNames: ['audit-pdf'], onSubmit })
 
     fireEvent.click(screen.getByRole('button', { name: /show feedback/i }))
     fireEvent.click(screen.getByRole('button', { name: '5 stars' }))
@@ -248,6 +265,6 @@ describe('SkillFeedbackWidget - user_edits', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /submit feedback/i }))
 
-    expect(onSubmit).toHaveBeenCalledWith(5, 'Great!', 'Fixed formatting')
+    expect(onSubmit).toHaveBeenCalledWith(5, 'Great!', 'Fixed formatting', 'audit-pdf')
   })
 })

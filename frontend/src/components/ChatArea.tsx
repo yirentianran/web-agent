@@ -225,16 +225,16 @@ export default function ChatArea({ messages, sessionId, sessionState, onAnswer, 
     })
   }, [messages])
 
-  // Derive skill name from tool_use messages for feedback endpoint.
-  // If exactly one skill was used, use its name; otherwise fallback to "general".
-  const feedbackSkillName = useMemo(() => {
+  // Derive skill names from tool_use messages for feedback endpoint.
+  // Collect all unique skill names; the widget handles single vs multi-skill display.
+  const feedbackSkillNames = useMemo(() => {
     const skillTools = new Set<string>()
     for (const msg of messages) {
       if (msg.type === 'tool_use' && msg.name) {
         skillTools.add(msg.name)
       }
     }
-    return skillTools.size === 1 ? skillTools.values().next().value : 'general'
+    return Array.from(skillTools)
   }, [messages])
 
   return (
@@ -279,11 +279,11 @@ export default function ChatArea({ messages, sessionId, sessionState, onAnswer, 
 
       {sessionState === 'completed' && (
         <SkillFeedbackWidget
-          skillName={feedbackSkillName}
-          onSubmit={async (rating, comment, userEdits) => {
+          skillNames={feedbackSkillNames.length > 0 ? feedbackSkillNames : undefined}
+          onSubmit={async (rating, comment, userEdits, skillName) => {
             const headers: Record<string, string> = { 'Content-Type': 'application/json' }
             if (authToken) headers['Authorization'] = `Bearer ${authToken}`
-            await fetch(`/api/skills/${feedbackSkillName}/feedback`, {
+            await fetch(`/api/skills/${skillName}/feedback`, {
               method: 'POST',
               headers,
               body: JSON.stringify({ rating, comment, user_edits: userEdits, session_id: sessionId }),

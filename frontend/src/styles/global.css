@@ -1089,6 +1089,18 @@ body {
   color: var(--color-text);
 }
 
+.feedback-skill-select {
+  width: 100%;
+  padding: 6px 8px;
+  font-size: 13px;
+  border: 1px solid var(--color-border, #e2e8f0);
+  border-radius: var(--radius-sm, 6px);
+  background: var(--color-surface, #fff);
+  color: var(--color-text, #1e293b);
+  margin-top: 4px;
+  margin-bottom: 8px;
+}
+
 .feedback-close {
   background: none;
   border: none;
