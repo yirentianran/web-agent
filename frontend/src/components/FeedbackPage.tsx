@@ -46,7 +46,7 @@ function formatDate(ts: number): string {
   })
 }
 
-export default function FeedbackPage({ userId, authToken, onBack }: FeedbackPageProps) {
+export default function FeedbackPage({ userId: _userId, authToken, onBack }: FeedbackPageProps) {
   const [data, setData] = useState<FeedbackData | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
@@ -55,7 +55,7 @@ export default function FeedbackPage({ userId, authToken, onBack }: FeedbackPage
     const headers: Record<string, string> = {}
     if (authToken) headers['Authorization'] = `Bearer ${authToken}`
 
-    fetch(`/api/users/${userId}/feedback`, { headers })
+    fetch('/api/admin/feedback', { headers })
       .then(res => {
         if (!res.ok) throw new Error(`HTTP ${res.status}`)
         return res.json()
@@ -65,7 +65,7 @@ export default function FeedbackPage({ userId, authToken, onBack }: FeedbackPage
         setError(err instanceof Error ? err.message : 'Failed to load feedback')
       })
       .finally(() => setLoading(false))
-  }, [userId, authToken])
+  }, [authToken])
 
   if (loading) {
     return (

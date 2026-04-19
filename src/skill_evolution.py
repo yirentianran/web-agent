@@ -12,6 +12,7 @@ import os
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 DATA_ROOT = Path(os.environ.get("DATA_ROOT", "data")).resolve()
 
@@ -36,8 +37,9 @@ class EvolutionCandidate:
 
 
 class SkillEvolutionManager:
-    def __init__(self, data_root: Path = DATA_ROOT) -> None:
+    def __init__(self, data_root: Path = DATA_ROOT, db: Any = None) -> None:
         self.data_root = data_root
+        self.db = db
         self.feedback_dir = data_root / "training" / "skill-feedback"
         self.skills_dir = data_root / "skills"
 
@@ -129,84 +131,6 @@ class SkillEvolutionManager:
             and stats.average_rating < SHOULD_EVOLVE_MAX_RATING
         )
 
-    def generate_improved_skill(
-        self,
-        skill_name: str,
-        *,
-        anthropic_api_key: str | None = None,
-        model: str = "claude-sonnet-4-6",
-    ) -> str | None:
-        """Use the Anthropic API to generate an improved SKILL.md.
-
-        Reads high-quality feedback entries (rating >= 4) and the current
-        SKILL.md, then asks the model to produce an improved version.
-        Returns the new version path, or None if generation failed.
-        """
-        import anthropic
-
-        self._ensure_dirs()
-
-        # Load current SKILL.md
-        skill_file = self.skills_dir / skill_name / "SKILL.md"
-        if not skill_file.exists():
-            return None
-        current_content = skill_file.read_text()
-
-        # Gather high-quality feedback for context
-        entries = self._load_feedback(skill_name)
-        high_quality = [e for e in entries if e.get("rating", 0) >= HIGH_QUALITY_MIN_RATING]
-        low_rated = [e for e in entries if e.get("rating", 0) <= 2 and e.get("comment")]
-
-        if not high_quality and not low_rated:
-            return None
-
-        # Build context from feedback
-        feedback_context = ""
-        if high_quality:
-            feedback_context += "\n### What users liked (rating >= 4):\n"
-            for e in high_quality[:10]:
-                if e.get("comment"):
-                    feedback_context += f"- {e['comment']}\n"
-        if low_rated:
-            feedback_context += "\n### What users disliked (rating <= 2):\n"
-            for e in low_rated[:10]:
-                feedback_context += f"- {e['comment']}\n"
-
-        api_key = anthropic_api_key or os.environ.get("ANTHROPIC_API_KEY", "")
-        if not api_key:
-            return None
-
-        client = anthropic.Anthropic(api_key=api_key)
-
-        prompt = (
-            f"You are improving a skill prompt for an AI agent.\n\n"
-            f"Current SKILL.md:\n```markdown\n{current_content}\n```\n\n"
-            f"User feedback:\n{feedback_context}\n\n"
-            f"Rewrite the SKILL.md to address the negative feedback while preserving "
-            f"what users found helpful. Return ONLY the new markdown content."
-        )
-
-        try:
-            response = client.messages.create(
-                model=model,
-                max_tokens=4096,
-                system="You are a skill prompt optimizer. Return only markdown content.",
-                messages=[{"role": "user", "content": prompt}],
-            )
-            new_content = ""
-            for block in response.content:
-                if hasattr(block, "text"):
-                    new_content += block.text
-
-            # Determine next version number
-            existing_versions = list((self.skills_dir / skill_name).glob("SKILL_v*.md"))
-            next_ver = len(existing_versions) + 1
-            version_path = self.skills_dir / skill_name / f"SKILL_v{next_ver}.md"
-            version_path.write_text(new_content)
-            return str(version_path)
-        except Exception:
-            return None
-
     def get_evolution_candidates(self) -> list[EvolutionCandidate]:
         """Return all skills that should evolve, sorted by avg_rating ASC."""
         self._ensure_dirs()
@@ -226,6 +150,86 @@ class SkillEvolutionManager:
         candidates.sort(key=lambda c: c.stats.average_rating)
         return candidates
 
+    # ── Async DB-backed methods ──────────────────────────────────────
+
+    async def db_get_feedback_stats(self, skill_name: str) -> FeedbackStats:
+        """Compute stats from SQLite. Falls back to file-based if DB not set."""
+        if self.db is None:
+            return self.get_feedback_stats(skill_name)
+
+        from src.skill_feedback import DBSkillFeedbackManager
+        db_mgr = DBSkillFeedbackManager(db=self.db)
+        analytics = await db_mgr.get_analytics(skill_name)
+        dist = analytics.get("rating_distribution", {})
+        return FeedbackStats(
+            count=analytics["total_feedbacks"],
+            average_rating=analytics["average_rating"],
+            high_quality_count=sum(
+                v for k, v in dist.items() if int(k) >= HIGH_QUALITY_MIN_RATING
+            ),
+            rating_distribution={str(k): v for k, v in sorted(dist.items(), key=lambda x: int(x[0]))},
+            versions=[],
+        )
+
+    async def db_should_evolve(self, skill_name: str) -> bool:
+        """Check evolution criteria using DB data."""
+        stats = await self.db_get_feedback_stats(skill_name)
+        return (
+            stats.count >= SHOULD_EVOLVE_MIN_COUNT
+            and stats.average_rating < SHOULD_EVOLVE_MAX_RATING
+        )
+
+    async def db_get_evolution_candidates(self) -> list[EvolutionCandidate]:
+        """Find evolution candidates from SQLite."""
+        if self.db is None:
+            return self.get_evolution_candidates()
+
+        from src.skill_feedback import DBSkillFeedbackManager
+        db_mgr = DBSkillFeedbackManager(db=self.db)
+        candidates_data = await db_mgr.get_evolution_candidates()
+
+        candidates: list[EvolutionCandidate] = []
+        for c in candidates_data:
+            stats = await self.db_get_feedback_stats(c["skill_name"])
+            candidates.append(EvolutionCandidate(skill_name=c["skill_name"], stats=stats))
+
+        candidates.sort(key=lambda c: c.stats.average_rating)
+        return candidates
+
+    async def db_activate_version(
+        self,
+        skill_name: str,
+        version_number: int,
+        *,
+        skills_dir: Path | None = None,
+    ) -> dict[str, Any] | None:
+        """Activate a specific pending version."""
+        from src.skill_feedback import DBSkillFeedbackManager
+        db_mgr = DBSkillFeedbackManager(db=self.db)
+
+        resolved = skills_dir or self.skills_dir or self.data_root / "skills"
+        return await db_mgr.activate_version(
+            skill_name,
+            version_number=version_number,
+            skills_dir=resolved,
+        )
+
+    async def db_rollback_version(
+        self,
+        skill_name: str,
+        *,
+        skills_dir: Path | None = None,
+    ) -> dict[str, Any] | None:
+        """Rollback to the most recent backup version."""
+        from src.skill_feedback import DBSkillFeedbackManager
+        db_mgr = DBSkillFeedbackManager(db=self.db)
+
+        resolved = skills_dir or self.skills_dir or self.data_root / "skills"
+        return await db_mgr.rollback_version(
+            skill_name,
+            skills_dir=resolved,
+        )
+
 
 # Module-level convenience functions (for backwards compat, use manager for testing)
 _mgr = SkillEvolutionManager()
@@ -233,5 +237,4 @@ _mgr = SkillEvolutionManager()
 collect_feedback = _mgr.collect_feedback
 get_feedback_stats = _mgr.get_feedback_stats
 should_evolve = _mgr.should_evolve
-generate_improved_skill = _mgr.generate_improved_skill
 get_evolution_candidates = _mgr.get_evolution_candidates

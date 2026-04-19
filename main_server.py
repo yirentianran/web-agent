@@ -28,7 +28,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Iterator
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File, HTTPException
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File, HTTPException, Header
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -39,7 +39,6 @@ from src.models import (
     McpServerConfig,
     MemoryUpdate,
     SessionStatusResponse,
-    SkillCreate,
     SkillInfo,
     SkillSource,
 )
@@ -69,11 +68,25 @@ if not logger.handlers:
     logger.addHandler(_stream)
     logger.addHandler(_file)
 
-# Also capture uvicorn logs to the same file
+# Also capture uvicorn and skill_feedback logs to the same file
 for _uv_name in ("uvicorn", "uvicorn.access", "uvicorn.error"):
     _uv_logger = logging.getLogger(_uv_name)
     if _uv_logger and not _uv_logger.handlers:
         _uv_logger.addHandler(logging.FileHandler(LOG_FILE))
+
+# Ensure skill_feedback logger outputs at INFO level with console + file
+_skill_feedback_logger = logging.getLogger("src.skill_feedback")
+_skill_feedback_logger.setLevel(logging.INFO)
+if not _skill_feedback_logger.handlers:
+    _sf_fmt = logging.Formatter("%(asctime)s %(name)s:%(lineno)d %(levelname)s %(message)s")
+    _sf_stream = logging.StreamHandler()
+    _sf_stream.setFormatter(_sf_fmt)
+    _sf_file = logging.handlers.RotatingFileHandler(
+        LOG_FILE, maxBytes=10 * 1024 * 1024, backupCount=3,
+    )
+    _sf_file.setFormatter(_sf_fmt)
+    _skill_feedback_logger.addHandler(_sf_stream)
+    _skill_feedback_logger.addHandler(_sf_file)
 
 # Resolve DATA_ROOT relative to this file's directory, not CWD
 _DATA_ROOT_ENV = os.getenv("DATA_ROOT", "/data")
@@ -2098,19 +2111,6 @@ async def upload_shared_skill(file: UploadFile = File(...)) -> dict[str, Any]:
     return {"status": "ok", "skill_name": skill_name, "files": extracted}
 
 
-@app.post("/api/users/{user_id}/skills")
-async def create_skill(user_id: str, skill: SkillCreate) -> dict[str, str]:
-    """Create a personal skill (legacy — use /upload for zip-based creation)."""
-    skill_dir = user_data_dir(user_id) / "workspace" / ".claude" / "skills" / skill.name
-    skill_dir.mkdir(parents=True, exist_ok=True)
-    (skill_dir / "SKILL.md").write_text(skill.content)
-    (skill_dir / "skill-meta.json").write_text(json.dumps({
-        "source": "api",
-        "created_at": datetime.now(timezone.utc).isoformat(),
-    }, indent=2))
-    return {"status": "ok"}
-
-
 @app.delete("/api/shared-skills/{skill_name}")
 async def delete_shared_skill(skill_name: str) -> dict[str, str]:
     """Delete a shared skill."""
@@ -2311,7 +2311,7 @@ class SkillFeedbackRequest(BaseModel):
 async def submit_skill_feedback(
     skill_name: str,
     req: SkillFeedbackRequest,
-    authorization: str | None = None,
+    authorization: str | None = Header(None),
 ) -> dict[str, Any]:
     """Submit feedback for a skill."""
     user_id = _get_user_id_from_header(authorization)
@@ -2356,7 +2356,7 @@ async def get_skill_analytics(skill_name: str) -> dict[str, Any]:
 
 @app.get("/api/admin/skills/analytics")
 async def get_all_skills_analytics(
-    authorization: str | None = None,
+    authorization: str | None = Header(None),
 ) -> dict[str, dict[str, Any]]:
     """Get analytics for all skills. Admin only."""
     current_user = _get_user_id_from_header(authorization)
@@ -2377,9 +2377,98 @@ async def get_skill_suggestions(skill_name: str) -> dict[str, list[str]]:
 # ── Skill Evolution & A/B Testing ────────────────────────────────
 
 
-class SkillEvolveRequest(BaseModel):
-    anthropic_api_key: str | None = None
+def build_evolution_prompt(
+    *,
+    skill_name: str,
+    skill_path: Path,
+    version_dir: Path,
+    skill_content: str,
+    skill_files: list[str],
+    feedback: dict[str, list[dict[str, Any]]],
+) -> str:
+    """Build a system prompt for the evolution agent session.
+
+    The prompt gives the LLM full context about the current skill and
+    user feedback, but does NOT prescribe HOW to improve it. The LLM
+    decides autonomously which tools, skills, and files to use.
+    """
+    high_quality = feedback.get("high_quality", [])
+    low_rated = feedback.get("low_rated", [])
+    user_edits = feedback.get("user_edits", [])
+
+    feedback_context = ""
+    if high_quality:
+        feedback_context += "\n### What users liked (rating >= 4):\n"
+        for e in high_quality[:10]:
+            if e.get("comment"):
+                feedback_context += f"- {e['comment']}\n"
+    if low_rated:
+        feedback_context += "\n### What users found issues with (rating <= 2):\n"
+        for e in low_rated[:10]:
+            if e.get("comment"):
+                feedback_context += f"- {e['comment']}\n"
+    if user_edits:
+        feedback_context += "\n### What users manually changed:\n"
+        for e in user_edits[:10]:
+            if e.get("user_edits"):
+                feedback_context += f"- {e['user_edits']}\n"
+
+    files_listing = "\n".join(f"  - {f}" for f in skill_files) if skill_files else "  (none)"
+
+    return (
+        f"You are improving an existing skill based on user feedback.\n\n"
+        f"## Current Skill\n"
+        f"Name: {skill_name}\n"
+        f"Location: {skill_path}/\n"
+        f"Output directory (write all changes here): {version_dir}/\n\n"
+        f"## Current SKILL.md\n"
+        f"```markdown\n{skill_content}\n```\n\n"
+        f"## Current Skill Directory Structure\n"
+        f"{files_listing}\n\n"
+        f"## User Feedback\n"
+        f"{feedback_context}\n\n"
+        f"## Your Task\n"
+        f"Analyze the current skill and the feedback. Improve the skill to better\n"
+        f"address user needs.\n\n"
+        f"You have full autonomy in HOW you improve this skill. You may:\n"
+        f"- Rewrite SKILL.md entirely\n"
+        f"- Add, modify, or delete any files\n"
+        f"- Create new scripts/, references/, or assets/ directories\n"
+        f"- Delete files that are no longer needed\n"
+        f"- Use any available skills (including skill-creator) as reference\n"
+        f"- Run scripts or tools to help with your work\n\n"
+        f"IMPORTANT: The SKILL.md YAML frontmatter (between --- delimiters)\n"
+        f"must be preserved with the same name and description fields.\n\n"
+        f"The ONLY requirement is that the final result is a valid skill directory\n"
+        f"at the output path. When done, print: EVOLUTION_COMPLETE"
+    )
+
+
+def next_version_number(versions_dir: Path) -> int:
+    """Return the next version number based on existing version directories.
+
+    Uses max(existing_versions) + 1 rather than len(existing_versions) + 1
+    to avoid collisions when versions are deleted.
+    """
+    if not versions_dir.exists():
+        return 1
+    max_ver = 0
+    for entry in versions_dir.iterdir():
+        if entry.is_dir() and entry.name.startswith("v"):
+            try:
+                ver = int(entry.name[1:])
+                max_ver = max(max_ver, ver)
+            except ValueError:
+                continue
+    return max_ver + 1
+
+
+class SkillEvolveAgentRequest(BaseModel):
     model: str = "claude-sonnet-4-6"
+
+
+class SkillActivateRequest(BaseModel):
+    version_number: int
 
 
 class ABTestCreateRequest(BaseModel):
@@ -2393,45 +2482,398 @@ class ABTestRecordRequest(BaseModel):
     rating: int
 
 
-@app.post("/api/skills/{skill_name}/evolve")
-async def trigger_skill_evolution(
+@app.post("/api/skills/{skill_name}/activate-version")
+async def activate_skill_version(
     skill_name: str,
-    req: SkillEvolveRequest,
-    authorization: str | None = None,
+    req: SkillActivateRequest,
+    authorization: str | None = Header(None),
 ) -> dict[str, Any]:
-    """Trigger LLM-based skill evolution. Admin only."""
+    """Activate a specific pending version. Admin only."""
     current_user = _get_user_id_from_header(authorization)
     require_admin(current_user)
     from src.skill_evolution import SkillEvolutionManager
 
-    mgr = SkillEvolutionManager()
-    if not mgr.should_evolve(skill_name):
-        stats = mgr.get_feedback_stats(skill_name)
+    mgr = SkillEvolutionManager(db=_db)
+    result = await mgr.db_activate_version(skill_name, version_number=req.version_number)
+    if result:
         return {
-            "status": "skipped",
-            "reason": f"Skill does not meet evolution threshold (count={stats.count}, avg={stats.average_rating})",
+            "status": "ok",
+            "activated": True,
+            "version_number": result["version_number"],
+            "backup": result.get("backup"),
         }
-    new_path = mgr.generate_improved_skill(
-        skill_name,
-        anthropic_api_key=req.anthropic_api_key,
-        model=req.model,
+    return {"status": "failed", "reason": f"Version {req.version_number} not found"}
+
+
+@app.post("/api/skills/{skill_name}/rollback")
+async def rollback_skill(
+    skill_name: str,
+    authorization: str | None = Header(None),
+) -> dict[str, Any]:
+    """Rollback to the most recent backup version. Admin only."""
+    current_user = _get_user_id_from_header(authorization)
+    require_admin(current_user)
+    from src.skill_evolution import SkillEvolutionManager
+
+    mgr = SkillEvolutionManager(db=_db)
+    result = await mgr.db_rollback_version(skill_name)
+    if result:
+        return {
+            "status": "ok",
+            "rolled_back": True,
+            "restored_version": result["restored_version"],
+        }
+    return {"status": "info", "message": "No backup version found to restore"}
+
+
+# ── Agent-Driven Skill Evolution ─────────────────────────────────
+
+
+async def run_evolution_agent(
+    skill_name: str,
+    user_id: str,
+    version_dir: Path,
+    task_id: str,
+    *,
+    model: str = "claude-sonnet-4-6",
+) -> dict[str, Any]:
+    """Launch an Agent session to evolve a skill based on feedback.
+
+    Unlike the old preview_evolution (which calls `claude --print` for a
+    single text rewrite), this starts a full Agent session with access to
+    all tools (Read, Write, Edit, Bash, Glob, Grep, WebFetch, WebSearch,
+    Agent, Skill) and all available skills (including skill-creator).
+
+    The LLM autonomously decides HOW to improve the skill — whether to
+    rewrite SKILL.md, add scripts/references/assets, use skill-creator,
+    or any other approach.
+
+    Returns:
+        dict with task_id, status, and optionally files/summary on completion.
+    """
+    from src.skill_evolution import SkillEvolutionManager
+
+    mgr = SkillEvolutionManager(db=_db)
+
+    # Gather feedback data
+    feedback = await mgr.get_feedback_for_evolution(skill_name)
+
+    # Resolve skill directory
+    skill_dir = DATA_ROOT / "skills" / skill_name
+    if _db is not None:
+        # DB-backed skills live in DATA_ROOT / "skills"
+        skill_dir = DATA_ROOT / "skills" / skill_name
+    skill_file = skill_dir / "SKILL.md"
+
+    if not skill_file.exists():
+        return {"task_id": "", "status": "failed", "reason": "SKILL.md not found"}
+
+    skill_content = skill_file.read_text()
+
+    # List existing skill files
+    skill_files = []
+    for f in skill_dir.rglob("*"):
+        if f.is_file() and f.name != "skill-meta.json":
+            skill_files.append(str(f.relative_to(skill_dir)))
+
+    # Create version output directory
+    version_dir.mkdir(parents=True, exist_ok=True)
+
+    # Build system prompt
+    system_prompt = build_evolution_prompt(
+        skill_name=skill_name,
+        skill_path=skill_dir,
+        version_dir=version_dir,
+        skill_content=skill_content,
+        skill_files=skill_files,
+        feedback=feedback,
     )
-    if new_path:
-        return {"status": "ok", "new_version": new_path}
-    return {"status": "failed", "reason": "No API key or SKILL.md not found"}
+
+    # Build SDK options — reuse the normal session config but with
+    # cwd pointing to the version directory
+    options = _build_evolution_sdk_options(
+        user_id=user_id,
+        version_dir=version_dir,
+        system_prompt=system_prompt,
+        model=model,
+    )
+
+    # Create and run the Agent session
+    client = ClaudeSDKClient(options)
+
+    try:
+        await client.connect()
+        await client.query(system_prompt)
+
+        # Collect agent output
+        async for msg in client.receive_response():
+            # Stream messages to the buffer for real-time monitoring
+            msg_dict = _message_to_dict_if_serializable(msg)
+            if msg_dict:
+                buffer.add_message(task_id, msg_dict)
+
+        # Scan the version directory for generated files
+        generated_files = []
+        for f in version_dir.rglob("*"):
+            if f.is_file():
+                generated_files.append({
+                    "path": str(f.relative_to(version_dir)),
+                    "size": f.stat().st_size,
+                })
+
+        return {
+            "task_id": task_id,
+            "status": "complete",
+            "files": generated_files,
+            "summary": f"Generated {len(generated_files)} files in {version_dir}",
+        }
+    except Exception as e:
+        logger.error("run_evolution_agent failed for %s: %s", skill_name, e)
+        buffer.add_message(task_id, {
+            "type": "error",
+            "message": str(e),
+        })
+        return {"task_id": task_id, "status": "failed", "reason": str(e)}
 
 
+def _build_evolution_sdk_options(
+    *,
+    user_id: str,
+    version_dir: Path,
+    system_prompt: str,
+    model: str,
+) -> "ClaudeAgentOptions":
+    """Build ClaudeAgentOptions for an evolution agent session.
+
+    Similar to build_sdk_options but with:
+    - cwd pointing to the version output directory
+    - custom system prompt with evolution context
+    - all normal tools and skills available
+    """
+    skills = load_skills(user_id)
+    max_turns = int(os.getenv("MAX_TURNS", "200"))
+
+    # Ensure version_dir has a .claude/skills directory so the
+    # Agent can discover and use all available skills (including skill-creator)
+    version_skills = version_dir / ".claude" / "skills"
+    version_skills.mkdir(parents=True, exist_ok=True)
+
+    # Symlink shared skills into version_dir
+    shared_src = DATA_ROOT / "shared-skills"
+    if shared_src.exists():
+        for skill_dir in shared_src.iterdir():
+            if skill_dir.is_dir():
+                link = version_skills / skill_dir.name
+                if link.is_symlink():
+                    link.unlink()
+                link.symlink_to(skill_dir.resolve())
+
+    # Also copy personal skills (can't symlink across all setups)
+    user_workspace = user_data_dir(user_id) / "workspace"
+    user_skills = user_workspace / ".claude" / "skills"
+    if user_skills.exists():
+        for skill_dir in user_skills.iterdir():
+            if skill_dir.is_dir() and not skill_dir.is_symlink():
+                dest = version_skills / skill_dir.name
+                if dest.exists() or dest.is_symlink():
+                    if dest.is_symlink():
+                        dest.unlink()
+                    elif dest.is_dir():
+                        shutil.rmtree(dest)
+                shutil.copytree(skill_dir, dest)
+
+    return ClaudeAgentOptions(
+        model=model,
+        cwd=str(version_dir),
+        system_prompt=system_prompt,
+        allowed_tools=build_allowed_tools(load_mcp_config()),
+        max_turns=max_turns,
+        permission_mode="acceptEdits",
+    )
+
+
+def _message_to_dict_if_serializable(msg: Any) -> dict[str, Any] | None:
+    """Convert a Claude SDK message to a dict for broadcasting."""
+    try:
+        # Use the existing message_to_dicts generator
+        dicts = list(message_to_dicts(msg))
+        if dicts:
+            return dicts[0]  # Return first dict for simplicity
+        return None
+    except Exception:
+        return None
+
+
+@app.post("/api/skills/{skill_name}/evolve-agent")
+async def trigger_skill_evolution_agent(
+    skill_name: str,
+    req: SkillEvolveAgentRequest,
+    authorization: str | None = Header(None),
+) -> dict[str, Any]:
+    """Launch an Agent session to evolve a skill. Admin only.
+
+    Unlike /evolve (which does a single LLM text rewrite), this starts
+    a full Agent session with all tools and skills available. The LLM
+    autonomously decides HOW to improve the skill.
+    """
+    current_user = _get_user_id_from_header(authorization)
+    require_admin(current_user)
+
+    # Resolve skills directory
+    skills_dir = DATA_ROOT / "skills"
+
+    if not (skills_dir / skill_name / "SKILL.md").exists():
+        return {"status": "failed", "reason": f"SKILL.md not found for {skill_name}"}
+
+    # Create version output directory
+    versions_dir = skills_dir / skill_name / "versions"
+    version_num = next_version_number(versions_dir)
+    version_dir = versions_dir / f"v{version_num}"
+
+    # Launch the agent session asynchronously
+    import threading
+
+    result_holder: dict[str, Any] = {}
+
+    def _run_in_thread() -> None:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        task_id = f"evolve-{skill_name}-v{version_num}"
+        try:
+            result_holder["result"] = loop.run_until_complete(
+                run_evolution_agent(
+                    skill_name=skill_name,
+                    user_id=current_user,
+                    version_dir=version_dir,
+                    task_id=task_id,
+                    model=req.model,
+                )
+            )
+        finally:
+            loop.close()
+
+    thread = threading.Thread(target=_run_in_thread, daemon=True)
+    thread.start()
+
+    return {
+        "status": "ok",
+        "task_id": f"evolve-{skill_name}-v{version_num}",
+        "version_number": version_num,
+        "version_path": str(version_dir),
+        "message": "Agent evolution started. Poll /evolve-status for progress.",
+    }
+
+
+@app.get("/api/skills/{skill_name}/evolve-status/{task_id}")
+async def get_evolution_status(
+    skill_name: str,
+    task_id: str,
+    authorization: str | None = Header(None),
+) -> dict[str, Any]:
+    """Get the status of an evolution task. Admin only."""
+    current_user = _get_user_id_from_header(authorization)
+    require_admin(current_user)
+
+    # Check if the task is in the active tasks map
+    if task_id in active_tasks:
+        return {"status": "running", "task_id": task_id}
+
+    # Check the message buffer for completion
+    history = buffer.get_history(task_id, after_index=0)
+    is_error = any(m.get("type") == "error" for m in history)
+    is_done = any(
+        m.get("type") == "result" or "EVOLUTION_COMPLETE" in str(m.get("content", ""))
+        for m in history
+    )
+
+    if is_error:
+        return {"status": "failed", "task_id": task_id, "messages": history[-5:]}
+    if is_done:
+        # Scan for generated files
+        skills_dir = DATA_ROOT / "skills"
+        # Extract version from task_id (e.g., "evolve-pdf-editor-v3")
+        version_match = re.search(r"v(\d+)$", task_id)
+        if version_match:
+            version_num = int(version_match.group(1))
+            version_dir = skills_dir / skill_name / "versions" / f"v{version_num}"
+            if version_dir.exists():
+                files = []
+                for f in version_dir.rglob("*"):
+                    if f.is_file():
+                        files.append({
+                            "path": str(f.relative_to(version_dir)),
+                            "size": f.stat().st_size,
+                        })
+                return {"status": "complete", "task_id": task_id, "files": files}
+
+    return {"status": "running", "task_id": task_id}
+
+
+@app.get("/api/skills/{skill_name}/version-files/{version_number}")
+async def get_version_files(
+    skill_name: str,
+    version_number: int,
+    authorization: str | None = Header(None),
+) -> dict[str, Any]:
+    """Get the list of files in a specific version. Admin only."""
+    current_user = _get_user_id_from_header(authorization)
+    require_admin(current_user)
+
+    skills_dir = DATA_ROOT / "skills"
+    version_dir = skills_dir / skill_name / "versions" / f"v{version_number}"
+
+    if not version_dir.exists():
+        return {"status": "failed", "reason": f"Version v{version_number} not found"}
+
+    files = []
+    for f in version_dir.rglob("*"):
+        if f.is_file():
+            rel = str(f.relative_to(version_dir))
+            files.append({
+                "path": rel,
+                "size": f.stat().st_size,
+                "is_skill_md": rel == "SKILL.md",
+            })
+
+    return {"status": "ok", "version": version_number, "files": files}
+
+
+@app.get("/api/skills/{skill_name}/version-file/{version_number}", response_model=None)
+async def get_version_file_content(
+    skill_name: str,
+    version_number: int,
+    file_path: str,
+    authorization: str | None = Header(None),
+) -> FileResponse | dict[str, Any]:
+    """Get content of a specific file in a version. Admin only."""
+    current_user = _get_user_id_from_header(authorization)
+    require_admin(current_user)
+
+    skills_dir = DATA_ROOT / "skills"
+    version_dir = skills_dir / skill_name / "versions" / f"v{version_number}"
+    target = (version_dir / file_path).resolve()
+
+    if not target.exists() or not str(target).startswith(str(version_dir.resolve())):
+        raise HTTPException(status_code=404, detail="File not found")
+
+    return FileResponse(str(target))
+
+
+# ── Legacy: Evolution Candidates (still used by EvolutionPanel) ──
 @app.get("/api/admin/skills/evolution-candidates")
 async def list_evolution_candidates(
-    authorization: str | None = None,
+    authorization: str | None = Header(None),
 ) -> dict[str, list[dict[str, Any]]]:
     """List skills that should evolve. Admin only."""
     current_user = _get_user_id_from_header(authorization)
     require_admin(current_user)
     from src.skill_evolution import SkillEvolutionManager
 
-    mgr = SkillEvolutionManager()
-    candidates = mgr.get_evolution_candidates()
+    mgr = SkillEvolutionManager(db=_db)
+    if _db is not None:
+        candidates = await mgr.db_get_evolution_candidates()
+    else:
+        candidates = mgr.get_evolution_candidates()
     return {
         "candidates": [
             {
@@ -2445,11 +2887,47 @@ async def list_evolution_candidates(
     }
 
 
+@app.get("/api/admin/feedback")
+async def list_all_feedback(
+    authorization: str | None = Header(None),
+) -> dict[str, Any]:
+    """Get all feedback entries across all users. Admin only."""
+    current_user = _get_user_id_from_header(authorization)
+    require_admin(current_user)
+
+    if _db is not None:
+        from src.skill_feedback import DBSkillFeedbackManager
+        mgr = DBSkillFeedbackManager(db=_db)
+        items = await mgr.get_all_feedback()
+
+        # Compute stats grouped by skill
+        stats_map: dict[str, dict[str, Any]] = {}
+        for item in items:
+            name = item["skill_name"]
+            if name not in stats_map:
+                stats_map[name] = {"skill_name": name, "count": 0, "total_rating": 0}
+            stats_map[name]["count"] += 1
+            stats_map[name]["total_rating"] += item["rating"]
+
+        stats = []
+        for s in stats_map.values():
+            stats.append({
+                "skill_name": s["skill_name"],
+                "count": s["count"],
+                "avg_rating": round(s["total_rating"] / s["count"], 2),
+            })
+
+        return {"stats": stats, "items": items, "total_count": len(items)}
+
+    # Fallback: empty response when no DB available
+    return {"stats": [], "items": [], "total_count": 0}
+
+
 @app.post("/api/skills/{skill_name}/ab-test")
 async def create_ab_test(
     skill_name: str,
     req: ABTestCreateRequest,
-    authorization: str | None = None,
+    authorization: str | None = Header(None),
 ) -> dict[str, Any]:
     """Create a new A/B test between two skill versions. Admin only."""
     current_user = _get_user_id_from_header(authorization)
@@ -2483,7 +2961,7 @@ async def record_ab_test_result(
 @app.get("/api/skills/{skill_name}/ab-test/results")
 async def get_ab_test_results(
     skill_name: str,
-    authorization: str | None = None,
+    authorization: str | None = Header(None),
 ) -> dict[str, Any]:
     """Get A/B test results. Admin only."""
     current_user = _get_user_id_from_header(authorization)
@@ -2506,8 +2984,11 @@ async def get_skill_versions(skill_name: str) -> dict[str, Any]:
     """Get all versions of a skill."""
     from src.skill_evolution import SkillEvolutionManager
 
-    mgr = SkillEvolutionManager()
-    stats = mgr.get_feedback_stats(skill_name)
+    mgr = SkillEvolutionManager(db=_db)
+    if _db is not None:
+        stats = await mgr.db_get_feedback_stats(skill_name)
+    else:
+        stats = mgr.get_feedback_stats(skill_name)
     skill_file = mgr.skills_dir / skill_name / "SKILL.md"
     current_exists = skill_file.exists()
 
@@ -2529,6 +3010,25 @@ async def get_skill_versions(skill_name: str) -> dict[str, Any]:
     }
 
 
+@app.get("/api/skills/{skill_name}/version/{version_name}")
+async def get_skill_version_content(
+    skill_name: str,
+    version_name: str,
+) -> dict[str, Any]:
+    """Get the content of a specific skill version."""
+    from src.skill_evolution import SkillEvolutionManager
+
+    mgr = SkillEvolutionManager(db=_db)
+    version_file = mgr.skills_dir / skill_name / f"{version_name}.md"
+    if not version_file.exists():
+        return {"status": "not_found", "reason": f"Version {version_name} not found"}
+    content = version_file.read_text()
+    return {
+        "content": content,
+        "name": version_name,
+    }
+
+
 # ── MCP Registry ─────────────────────────────────────────────────
 
 
@@ -2540,7 +3040,7 @@ def save_mcp_config(config: dict[str, Any]) -> None:
 
 @app.get("/api/admin/mcp-servers")
 async def list_mcp_servers(
-    authorization: str | None = None,
+    authorization: str | None = Header(None),
 ) -> dict[str, Any]:
     """List all registered MCP servers. Admin only."""
     user_id = _get_user_id_from_header(authorization)
@@ -2552,7 +3052,7 @@ async def list_mcp_servers(
 @app.post("/api/admin/mcp-servers")
 async def register_mcp_server(
     server: McpServerConfig,
-    authorization: str | None = None,
+    authorization: str | None = Header(None),
 ) -> dict[str, str]:
     """Register a new MCP server. Admin only."""
     user_id = _get_user_id_from_header(authorization)
@@ -2566,7 +3066,7 @@ async def register_mcp_server(
 @app.delete("/api/admin/mcp-servers/{server_name}")
 async def unregister_mcp_server(
     server_name: str,
-    authorization: str | None = None,
+    authorization: str | None = Header(None),
 ) -> dict[str, str]:
     """Unregister an MCP server. Admin only."""
     user_id = _get_user_id_from_header(authorization)
@@ -2581,7 +3081,7 @@ async def unregister_mcp_server(
 async def toggle_mcp_server(
     server_name: str,
     enabled: bool,
-    authorization: str | None = None,
+    authorization: str | None = Header(None),
 ) -> dict[str, str]:
     """Enable/disable an MCP server. Admin only."""
     user_id = _get_user_id_from_header(authorization)
@@ -2638,9 +3138,9 @@ class TokenRequest(BaseModel):
 
 def _get_user_id_from_header(authorization: str | None = None) -> str:
     """Extract user_id from Bearer token for admin endpoints."""
-    if not authorization or not authorization.startswith("Bearer "):
-        from src.auth import ENFORCE_AUTH
+    from src.auth import ENFORCE_AUTH
 
+    if not authorization or not authorization.startswith("Bearer "):
         if ENFORCE_AUTH:
             from fastapi import HTTPException, status
 
@@ -2650,7 +3150,12 @@ def _get_user_id_from_header(authorization: str | None = None) -> str:
             )
         return "default"
     token = authorization.split(" ", 1)[1]
-    return verify_token(token)
+    try:
+        return verify_token(token)
+    except Exception:
+        if not ENFORCE_AUTH:
+            return "default"
+        raise
 
 
 @app.post("/api/auth/token")
@@ -2665,7 +3170,7 @@ async def get_auth_token(req: TokenRequest) -> dict[str, str]:
 
 @app.get("/api/admin/containers")
 async def list_containers(
-    authorization: str | None = None,
+    authorization: str | None = Header(None),
 ) -> JSONResponse:
     """List all running user containers. Admin only."""
     user_id = _get_user_id_from_header(authorization)
@@ -2716,7 +3221,7 @@ async def destroy_container_endpoint(user_id: str) -> JSONResponse:
 
 @app.get("/api/admin/resources")
 async def get_all_resources(
-    authorization: str | None = None,
+    authorization: str | None = Header(None),
 ) -> JSONResponse:
     """Get resource stats for all active containers. Admin only."""
     user_id = _get_user_id_from_header(authorization)
@@ -2747,7 +3252,7 @@ async def query_audit_logs(
     date: str | None = None,
     user_id: str | None = None,
     action: str | None = None,
-    authorization: str | None = None,
+    authorization: str | None = Header(None),
 ) -> list[dict[str, Any]]:
     """Query audit log entries. Admin only."""
     current_user = _get_user_id_from_header(authorization)
@@ -2764,7 +3269,7 @@ async def query_audit_logs(
 
 @app.post("/api/admin/logs/cleanup")
 async def trigger_log_cleanup(
-    authorization: str | None = None,
+    authorization: str | None = Header(None),
 ) -> dict[str, int]:
     """Manually trigger log retention cleanup. Admin only."""
     current_user = _get_user_id_from_header(authorization)
