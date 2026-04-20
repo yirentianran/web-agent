@@ -1,7 +1,7 @@
 import { useMemo, useRef, useCallback } from 'react'
 import type { McpServer } from '../lib/types'
 
-export function useMCPServers(authToken: string | null, userId: string) {
+export function useMCPServers(authToken: string | null) {
   const headersRef = useRef<HeadersInit>({})
   headersRef.current = authToken ? { Authorization: `Bearer ${authToken}` } : {}
 
@@ -23,7 +23,7 @@ export function useMCPServers(authToken: string | null, userId: string) {
     return resp.json()
   }, [])
 
-  const baseUrl = `/api/users/${encodeURIComponent(userId)}/mcp-servers`
+  const baseUrl = '/api/admin/mcp-servers'
 
   return useMemo(() => ({
     listServers: (): Promise<McpServer[]> => fetchJSON(baseUrl),
@@ -35,5 +35,5 @@ export function useMCPServers(authToken: string | null, userId: string) {
       fetchJSON(`${baseUrl}/${encodeURIComponent(name)}`, { method: 'DELETE' }),
     toggleServer: (name: string, enabled: boolean): Promise<{ status: string }> =>
       fetchJSON(`${baseUrl}/${encodeURIComponent(name)}/toggle?enabled=${enabled}`, { method: 'PATCH' }),
-  }), [userId, fetchJSON, baseUrl])
+  }), [fetchJSON, baseUrl])
 }

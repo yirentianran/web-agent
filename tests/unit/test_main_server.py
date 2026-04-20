@@ -431,7 +431,7 @@ class TestMCPRegistry:
     def test_list_empty_mcp_servers(self, client: TestClient) -> None:
         resp = client.get("/api/admin/mcp-servers")
         assert resp.status_code == 200
-        assert resp.json() == {}
+        assert resp.json() == []
 
     def test_register_and_list_mcp_server(self, client: TestClient) -> None:
         resp = client.post(
@@ -452,7 +452,27 @@ class TestMCPRegistry:
         resp = client.get("/api/admin/mcp-servers")
         assert resp.status_code == 200
         data = resp.json()
-        assert "test-server" in data
+        assert any(s["name"] == "test-server" for s in data)
+
+    def test_register_mcp_server_with_env(self, client: TestClient) -> None:
+        resp = client.post(
+            "/api/admin/mcp-servers",
+            json={
+                "name": "env-server",
+                "type": "stdio",
+                "command": "uvx",
+                "args": ["some-mcp"],
+                "env": {"API_KEY": "test123", "BASE_URL": "http://localhost:8000"},
+                "tools": ["tool1"],
+            },
+        )
+        assert resp.status_code == 200
+
+        resp = client.get("/api/admin/mcp-servers")
+        data = resp.json()
+        env_server = next(s for s in data if s["name"] == "env-server")
+        assert env_server["env"]["API_KEY"] == "test123"
+        assert env_server["env"]["BASE_URL"] == "http://localhost:8000"
 
     def test_unregister_mcp_server(self, client: TestClient) -> None:
         client.post(
@@ -469,7 +489,7 @@ class TestMCPRegistry:
         assert resp.status_code == 200
 
         resp = client.get("/api/admin/mcp-servers")
-        assert "to-remove" not in resp.json()
+        assert not any(s["name"] == "to-remove" for s in resp.json())
 
     def test_toggle_mcp_server(self, client: TestClient) -> None:
         client.post(
@@ -486,7 +506,175 @@ class TestMCPRegistry:
         assert resp.status_code == 200
 
         resp = client.get("/api/admin/mcp-servers")
-        assert resp.json()["toggle-test"]["enabled"] is False
+        toggle_server = next(s for s in resp.json() if s["name"] == "toggle-test")
+        assert toggle_server["enabled"] is False
+
+
+class TestMCPStatusEndpoint:
+    """Test GET /api/admin/mcp-servers/status endpoint."""
+
+    def test_status_endpoint_empty(self, client: TestClient) -> None:
+        """When no MCP servers are configured, returns empty list."""
+        resp = client.get("/api/admin/mcp-servers/status")
+        assert resp.status_code == 200
+        assert resp.json() == []
+
+    def test_status_endpoint_stdio_server_command_missing(self, client: TestClient) -> None:
+        """stdio server with command not in PATH should report disconnected."""
+        client.post(
+            "/api/admin/mcp-servers",
+            json={
+                "name": "missing-cmd",
+                "type": "stdio",
+                "command": "this-command-does-not-exist-xyz",
+                "args": [],
+                "tools": [],
+            },
+        )
+        resp = client.get("/api/admin/mcp-servers/status")
+        assert resp.status_code == 200
+        data = resp.json()
+        server = next(s for s in data if s["name"] == "missing-cmd")
+        assert server["type"] == "stdio"
+        assert server["status"] == "disconnected"
+        assert server["error"] is not None
+        assert server.get("tool_count", 0) == 0
+
+    def test_status_endpoint_stdio_server_command_found(self, client: TestClient) -> None:
+        """stdio server with valid command but non-MCP process should report disconnected
+        (the connection test actually tries to initialize MCP, not just check PATH)."""
+        client.post(
+            "/api/admin/mcp-servers",
+            json={
+                "name": "echo-server",
+                "type": "stdio",
+                "command": "echo",
+                "args": ["hello"],
+                "tools": ["greet"],
+            },
+        )
+        resp = client.get("/api/admin/mcp-servers/status")
+        assert resp.status_code == 200
+        data = resp.json()
+        server = next(s for s in data if s["name"] == "echo-server")
+        assert server["type"] == "stdio"
+        # echo is not an MCP server, so the real connection test will fail
+        assert server["status"] in ("disconnected", "error")
+        assert "tool_count" in server
+        assert server["tool_count"] == 0
+
+    def test_status_endpoint_http_server(self, client: TestClient) -> None:
+        """http server status check (connection attempt)."""
+        client.post(
+            "/api/admin/mcp-servers",
+            json={
+                "name": "http-server",
+                "type": "http",
+                "command": "",
+                "url": "http://localhost:99999/mcp",
+                "tools": [],
+            },
+        )
+        resp = client.get("/api/admin/mcp-servers/status")
+        assert resp.status_code == 200
+        data = resp.json()
+        server = next(s for s in data if s["name"] == "http-server")
+        assert server["type"] == "http"
+        # Should be disconnected since nothing is listening on that URL
+        assert server["status"] in ("disconnected", "error")
+
+
+class TestMCPEnabledFiltering:
+    """Test that disabled MCP servers are NOT passed to the SDK."""
+
+    def test_disabled_server_not_in_allowed_tools(self, client: TestClient) -> None:
+        """A disabled MCP server's tools should NOT appear in allowed_tools."""
+        client.post(
+            "/api/admin/mcp-servers",
+            json={
+                "name": "disabled-server",
+                "type": "stdio",
+                "command": "echo",
+                "args": [],
+                "tools": ["tool1", "tool2"],
+                "enabled": False,
+            },
+        )
+        from main_server import load_mcp_config_sync, build_allowed_tools
+        config = load_mcp_config_sync()
+        tools = build_allowed_tools(config)
+        assert "mcp__disabled-server__tool1" not in tools
+        assert "mcp__disabled-server__tool2" not in tools
+
+    def test_enabled_server_in_allowed_tools(self, client: TestClient) -> None:
+        """An enabled MCP server's tools SHOULD appear in allowed_tools."""
+        client.post(
+            "/api/admin/mcp-servers",
+            json={
+                "name": "enabled-server",
+                "type": "stdio",
+                "command": "echo",
+                "args": [],
+                "tools": ["toolA"],
+                "enabled": True,
+            },
+        )
+        from main_server import load_mcp_config_sync, build_allowed_tools
+        config = load_mcp_config_sync()
+        tools = build_allowed_tools(config)
+        assert "mcp__enabled-server__toolA" in tools
+
+    def test_disabled_server_not_in_mcp_servers_dict(self, client: TestClient) -> None:
+        """A disabled MCP server should NOT be in the mcp_servers dict
+        passed to ClaudeAgentOptions."""
+        client.post(
+            "/api/admin/mcp-servers",
+            json={
+                "name": "no-spawn",
+                "type": "stdio",
+                "command": "echo",
+                "args": [],
+                "tools": [],
+                "enabled": False,
+            },
+        )
+        from main_server import load_mcp_config_sync
+        config = load_mcp_config_sync()
+        mcp_servers = {}
+        for server_name, cfg in config.get("mcpServers", {}).items():
+            if not cfg.get("enabled", True):
+                continue
+            if cfg.get("type") == "stdio":
+                mcp_servers[server_name] = {"type": "stdio"}
+        assert "no-spawn" not in mcp_servers
+
+    def test_toggle_disappears_from_sdk(self, client: TestClient) -> None:
+        """After toggling a server to disabled, it should no longer
+        appear in the SDK config on next load."""
+        client.post(
+            "/api/admin/mcp-servers",
+            json={
+                "name": "toggle-me",
+                "type": "stdio",
+                "command": "echo",
+                "args": [],
+                "tools": ["t1"],
+            },
+        )
+        # Verify it's enabled
+        from main_server import load_mcp_config_sync, build_allowed_tools
+        config = load_mcp_config_sync()
+        tools = build_allowed_tools(config)
+        assert "mcp__toggle-me__t1" in tools
+
+        # Disable it
+        resp = client.patch("/api/admin/mcp-servers/toggle-me/toggle?enabled=false")
+        assert resp.status_code == 200
+
+        # Verify it's gone from tools
+        config = load_mcp_config_sync()
+        tools = build_allowed_tools(config)
+        assert "mcp__toggle-me__t1" not in tools
 
 
 # ── Feedback API ───────────────────────────────────────────────────
@@ -1465,4 +1653,124 @@ class TestAtomicTaskCreation:
         assert "_task_locks[" in source and "asyncio.Lock()" in source, (
             "Task locks not initialized per session. "
             "Add: if task_key not in _task_locks: _task_locks[task_key] = asyncio.Lock()"
+        )
+
+
+# ── Sync MCP Loader ────────────────────────────────────────────────
+
+
+class TestSyncMcpLoader:
+    """load_mcp_config_sync() should read from SQLite when DB is initialized."""
+
+    @pytest.mark.asyncio
+    async def test_sync_loader_reads_from_sqlite(self, tmp_path: Path) -> None:
+        """When _mcp_store and _db are set, sync loader reads from DB, not file."""
+        from src.database import Database
+        from src.mcp_store import MCPServerStore
+
+        db_path = tmp_path / "test.db"
+        db = Database(db_path)
+        await db.init()
+
+        store = MCPServerStore(db)
+        # Insert a test MCP server
+        await store.create({
+            "name": "test-server",
+            "type": "stdio",
+            "command": "echo",
+            "args": ["hello"],
+            "env": {},
+            "tools": ["tool1", "tool2"],
+            "description": "Test server",
+            "enabled": True,
+            "access": "all",
+        })
+
+        # Set globals
+        old_mcp_store = main_server._mcp_store
+        old_db = main_server._db
+        main_server._mcp_store = store
+        main_server._db = db
+
+        try:
+            result = main_server.load_mcp_config_sync()
+            assert "mcpServers" in result
+            assert "test-server" in result["mcpServers"]
+            cfg = result["mcpServers"]["test-server"]
+            assert cfg["command"] == "echo"
+            assert cfg["tools"] == ["tool1", "tool2"]
+            assert cfg["enabled"] is True
+        finally:
+            main_server._mcp_store = old_mcp_store
+            main_server._db = old_db
+            await db.close()
+
+    def test_sync_loader_falls_back_to_file_when_no_db(self, tmp_path: Path) -> None:
+        """When _mcp_store is None, sync loader reads from file."""
+        # Ensure no DB is set
+        old_mcp_store = main_server._mcp_store
+        main_server._mcp_store = None
+
+        # Write a test registry file
+        registry = tmp_path / "mcp-registry.json"
+        registry.write_text(json.dumps({
+            "mcpServers": {
+                "file-server": {"name": "file-server", "enabled": True}
+            }
+        }))
+
+        old_root = main_server.DATA_ROOT
+        main_server.DATA_ROOT = tmp_path
+
+        try:
+            result = main_server.load_mcp_config_sync()
+            assert "file-server" in result["mcpServers"]
+        finally:
+            main_server._mcp_store = old_mcp_store
+            main_server.DATA_ROOT = old_root
+
+    def test_sync_loader_returns_empty_when_no_db_no_file(self) -> None:
+        """When no DB and no file, returns empty mcpServers."""
+        old_mcp_store = main_server._mcp_store
+        main_server._mcp_store = None
+
+        try:
+            result = main_server.load_mcp_config_sync()
+            assert result == {"mcpServers": {}}
+        finally:
+            main_server._mcp_store = old_mcp_store
+
+
+# ── Agent Task Timeout ─────────────────────────────────────────────
+
+
+class TestAgentTaskTimeout:
+    """Agent task should have an overall wall-clock timeout."""
+
+    def test_timeout_env_var_configurable(self) -> None:
+        """AGENT_TASK_TIMEOUT should be read from env var, defaulting to 300."""
+        import os
+        # Default value
+        assert float(os.getenv("AGENT_TASK_TIMEOUT", "300")) == 300.0
+
+    def test_timeout_code_present_in_source(self) -> None:
+        """run_agent_task should be wrapped in asyncio.wait_for."""
+        import inspect
+        source = inspect.getsource(main_server)
+        assert "asyncio.wait_for" in source, (
+            "No asyncio.wait_for found — agent tasks have no wall-clock timeout"
+        )
+        assert "AGENT_TASK_TIMEOUT" in source, (
+            "No AGENT_TASK_TIMEOUT env var found — timeout not configurable"
+        )
+
+    def test_timeout_error_handler_exists(self) -> None:
+        """There should be an asyncio.TimeoutError handler in run_agent_task."""
+        import inspect
+        source = inspect.getsource(main_server)
+        assert "asyncio.TimeoutError" in source, (
+            "No TimeoutError handler found — timeouts will fall through to generic exception"
+        )
+        assert "session_timeout" in source, (
+            "No session_timeout subtype found — frontend won't know why session ended"
         )

@@ -41,11 +41,11 @@ from src.models import (
     SessionStatusResponse,
     SkillInfo,
     SkillSource,
-    UserMcpServerCreate,
 )
 
 if TYPE_CHECKING:
     from src.database import Database
+    from src.mcp_store import MCPServerStore
     from src.session_store import SessionStore
 
 # ── Configuration ────────────────────────────────────────────────
@@ -116,6 +116,7 @@ if not PROD:
 
 # Global state
 _db: Database | None = None  # SQLite database
+_mcp_store: MCPServerStore | None = None  # MCP server DB store
 buffer = MessageBuffer(base_dir=DATA_ROOT / ".msg-buffer")
 session_store: SessionStore | None = None  # Initialized at startup if DATA_DB_PATH set
 active_tasks: dict[str, asyncio.Task] = {}
@@ -451,7 +452,52 @@ def build_system_prompt(user_id: str, skills: dict[str, dict[str, Any]], workspa
     return "\n".join(parts)
 
 
-def load_mcp_config() -> dict[str, Any]:
+async def load_mcp_config() -> dict[str, Any]:
+    """Load MCP server config from DB (primary) or file (fallback)."""
+    global _mcp_store
+    if _mcp_store is not None:
+        servers = await _mcp_store.list_all()
+        mcp_servers = {s["name"]: s for s in servers}
+        return {"mcpServers": mcp_servers}
+    # File fallback
+    registry_file = DATA_ROOT / "mcp-registry.json"
+    if registry_file.exists():
+        return json.loads(registry_file.read_text())
+    return {"mcpServers": {}}
+
+
+def load_mcp_config_sync() -> dict[str, Any]:
+    """Synchronous fallback for contexts where async is not available.
+
+    Used by build_sdk_options which is called from sync context.
+    Reads from SQLite database (primary) or file (fallback).
+    """
+    global _mcp_store, _db
+    if _mcp_store is not None and _db is not None:
+        # Read directly from SQLite using a sync connection
+        import sqlite3
+        conn = sqlite3.connect(str(_db.db_path))
+        try:
+            cursor = conn.execute(
+                "SELECT id, name, type, command, args, url, env, tools, "
+                "description, enabled, access, created_at, updated_at "
+                "FROM mcp_servers ORDER BY name"
+            )
+            rows = cursor.fetchall()
+            mcp_servers: dict[str, Any] = {}
+            for row in rows:
+                mcp_servers[row[1]] = {
+                    "id": row[0], "name": row[1], "type": row[2],
+                    "command": row[3], "args": json.loads(row[4]),
+                    "url": row[5], "env": json.loads(row[6]),
+                    "tools": json.loads(row[7]), "description": row[8],
+                    "enabled": bool(row[9]), "access": row[10],
+                    "created_at": row[11], "updated_at": row[12],
+                }
+            return {"mcpServers": mcp_servers}
+        finally:
+            conn.close()
+    # File fallback (only if DB not initialized)
     registry_file = DATA_ROOT / "mcp-registry.json"
     if registry_file.exists():
         return json.loads(registry_file.read_text())
@@ -459,12 +505,16 @@ def load_mcp_config() -> dict[str, Any]:
 
 
 def build_allowed_tools(mcp_config: dict[str, Any]) -> list[str]:
-    """Expand all MCP tool names to their fully-qualified form."""
+    """Expand all MCP tool names to their fully-qualified form.
+
+    Only includes tools from servers where enabled is True (default True).
+    """
     tools = ["Read", "Edit", "Write", "Glob", "Grep", "Bash",
              "WebFetch", "WebSearch", "Agent", "Skill"]
-    for server_name in mcp_config.get("mcpServers", {}):
-        cfg = mcp_config["mcpServers"][server_name]
-        for tool_name in cfg.get("enabled_tools", []):
+    for server_name, cfg in mcp_config.get("mcpServers", {}).items():
+        if not cfg.get("enabled", True):
+            continue
+        for tool_name in cfg.get("tools", []):
             tools.append(f"mcp__{server_name}__{tool_name}")
     return tools
 
@@ -474,13 +524,15 @@ def build_sdk_options(
     can_use_tool_callback=None,
 ) -> ClaudeAgentOptions:
     """Build ClaudeAgentOptions with full configuration."""
-    mcp_config = load_mcp_config()
+    mcp_config = load_mcp_config_sync()
     skills = load_skills(user_id)
     max_turns = int(os.getenv("MAX_TURNS", "200"))
 
-    # Build MCP servers dict in SDK format
+    # Build MCP servers dict in SDK format (only enabled servers)
     mcp_servers: dict[str, Any] = {}
     for server_name, cfg in mcp_config.get("mcpServers", {}).items():
+        if not cfg.get("enabled", True):
+            continue
         if cfg.get("type") == "stdio":
             mcp_servers[server_name] = {
                 "type": "stdio",
@@ -1107,6 +1159,19 @@ async def run_agent_task(
         duration_ms = (time.time() - start_time) * 1000
         agent_log.end_session(session_id, status="completed")
 
+    except asyncio.TimeoutError:
+        buffer.add_message(session_id, {
+            "type": "system",
+            "subtype": "session_timeout",
+            "message": "Agent task timed out. The agent may be stuck processing a file.",
+        })
+        buffer.add_message(session_id, {
+            "type": "system",
+            "subtype": "session_state_changed",
+            "state": "error",
+        })
+        buffer.mark_done(session_id)
+        agent_log.end_session(session_id, status="timeout")
     except asyncio.CancelledError:
         buffer.add_message(session_id, {
             "type": "system",
@@ -1363,10 +1428,13 @@ async def handle_ws(websocket: WebSocket) -> None:
                     })
 
                     task = asyncio.create_task(
-                        run_agent_task(
-                            user_id, session_id, user_message,
-                            is_continuation=is_continuation,
-                            attached_files=attached_files,
+                        asyncio.wait_for(
+                            run_agent_task(
+                                user_id, session_id, user_message,
+                                is_continuation=is_continuation,
+                                attached_files=attached_files,
+                            ),
+                            timeout=float(os.getenv("AGENT_TASK_TIMEOUT", "300")),
                         )
                     )
                     active_tasks[task_key] = task
@@ -2142,36 +2210,29 @@ async def delete_skill(user_id: str, skill_name: str) -> dict[str, str]:
 
 @app.get("/api/users/{user_id}/memory")
 async def get_memory(user_id: str) -> dict[str, Any]:
-    """Get user's platform memory (L1)."""
-    mem_file = user_data_dir(user_id) / "memory.json"
-    if mem_file.exists():
-        return json.loads(mem_file.read_text())
-    return {"user_id": user_id}
+    """Get user's platform memory (L1). Uses DB with file fallback."""
+    from src.memory import MemoryManager
+
+    mgr = MemoryManager(user_id=user_id, data_root=DATA_ROOT, db=_db)
+    return mgr.read()
 
 
 @app.put("/api/users/{user_id}/memory")
 async def update_memory(user_id: str, update: MemoryUpdate) -> dict[str, str]:
-    """Update user's platform memory (deep merge)."""
-    mem_file = user_data_dir(user_id) / "memory.json"
-    if mem_file.exists():
-        memory = json.loads(mem_file.read_text())
-    else:
-        memory = {"user_id": user_id}
+    """Update user's platform memory (deep merge). Uses DB with file fallback."""
+    from src.memory import MemoryManager
 
-    # Deep merge
+    mgr = MemoryManager(user_id=user_id, data_root=DATA_ROOT, db=_db)
+    patch: dict[str, Any] = {}
     if update.preferences:
-        memory.setdefault("preferences", {}).update(update.preferences)
+        patch["preferences"] = update.preferences
     if update.entity_memory:
-        memory.setdefault("entity_memory", {}).update(update.entity_memory)
+        patch["entity_memory"] = update.entity_memory
     if update.audit_context:
-        memory.setdefault("audit_context", {}).update(update.audit_context)
+        patch["audit_context"] = update.audit_context
     if update.file_memory:
-        memory.setdefault("file_memory", []).extend(update.file_memory)
-
-    import datetime
-
-    memory["updated_at"] = datetime.datetime.now(timezone.utc).isoformat()
-    mem_file.write_text(json.dumps(memory, ensure_ascii=False, indent=2))
+        patch["file_memory"] = update.file_memory
+    mgr.update(patch)
     return {"status": "ok"}
 
 
@@ -2239,8 +2300,8 @@ async def create_task(
     """Create a new sub-agent task."""
     from src.sub_agent import SubAgentManager
 
-    mgr = SubAgentManager(user_id=user_id)
-    task_id = mgr.create_task(
+    mgr = SubAgentManager(user_id=user_id, db=_db)
+    task_id = await mgr.create_task(
         subject=req.subject,
         description=req.description,
         active_form=req.active_form,
@@ -2257,7 +2318,7 @@ async def list_tasks(
     """List all tasks for the user, optionally filtered by status."""
     from src.sub_agent import SubAgentManager
 
-    return SubAgentManager(user_id=user_id).list_tasks(status=status)
+    return await SubAgentManager(user_id=user_id, db=_db).list_tasks(status=status)
 
 
 @app.get("/api/users/{user_id}/tasks/{task_id}")
@@ -2265,7 +2326,7 @@ async def get_task(user_id: str, task_id: str) -> JSONResponse:
     """Get a single task by ID."""
     from src.sub_agent import SubAgentManager
 
-    task = SubAgentManager(user_id=user_id).get_task(task_id)
+    task = await SubAgentManager(user_id=user_id, db=_db).get_task(task_id)
     if task is None:
         return JSONResponse({"error": "task not found"}, status_code=404)
     return JSONResponse(task)
@@ -2278,8 +2339,8 @@ async def update_task(
     """Update a task's status or fields."""
     from src.sub_agent import SubAgentManager
 
-    mgr = SubAgentManager(user_id=user_id)
-    updated = mgr.update_task(
+    mgr = SubAgentManager(user_id=user_id, db=_db)
+    updated = await mgr.update_task(
         task_id,
         status=req.status,
         subject=req.subject,
@@ -2297,7 +2358,7 @@ async def delete_task_endpoint(user_id: str, task_id: str) -> dict[str, str]:
     """Delete a task."""
     from src.sub_agent import SubAgentManager
 
-    deleted = SubAgentManager(user_id=user_id).delete_task(task_id)
+    deleted = await SubAgentManager(user_id=user_id, db=_db).delete_task(task_id)
     if not deleted:
         return {"status": "not_found"}
     return {"status": "ok"}
@@ -3038,21 +3099,24 @@ async def get_skill_version_content(
 # ── MCP Registry ─────────────────────────────────────────────────
 
 
-def save_mcp_config(config: dict[str, Any]) -> None:
-    registry_file = DATA_ROOT / "mcp-registry.json"
-    DATA_ROOT.mkdir(parents=True, exist_ok=True)
-    registry_file.write_text(json.dumps(config, indent=2))
+async def _load_mcp_servers() -> list[dict[str, Any]]:
+    """Load MCP servers from DB (primary) or file (fallback)."""
+    global _mcp_store
+    if _mcp_store is not None:
+        return await _mcp_store.list_all()
+    # File fallback
+    config = load_mcp_config_sync()
+    return [{"name": name, **cfg} for name, cfg in config.get("mcpServers", {}).items()]
 
 
 @app.get("/api/admin/mcp-servers")
 async def list_mcp_servers(
     authorization: str | None = Header(None),
-) -> dict[str, Any]:
+) -> list[dict[str, Any]]:
     """List all registered MCP servers. Admin only."""
     user_id = _get_user_id_from_header(authorization)
     require_admin(user_id)
-    registry = load_mcp_config()
-    return registry.get("mcpServers", {})
+    return await _load_mcp_servers()
 
 
 @app.post("/api/admin/mcp-servers")
@@ -3061,12 +3125,99 @@ async def register_mcp_server(
     authorization: str | None = Header(None),
 ) -> dict[str, str]:
     """Register a new MCP server. Admin only."""
+    global _mcp_store
     user_id = _get_user_id_from_header(authorization)
     require_admin(user_id)
-    registry = load_mcp_config()
-    registry["mcpServers"][server.name] = server.model_dump()
-    save_mcp_config(registry)
+    server_dict = server.model_dump()
+
+    # Auto-discover tools for stdio servers when not explicitly provided
+    if server_dict.get("type") == "stdio" and not server_dict.get("tools"):
+        status, _error, tool_names = await _check_stdio_mcp(server_dict)
+        if status == "connected" and tool_names:
+            server_dict["tools"] = tool_names
+
+    if _mcp_store is not None:
+        await _mcp_store.create(server_dict)
+    else:
+        registry = load_mcp_config_sync()
+        registry["mcpServers"][server.name] = server_dict
+        save_mcp_config(registry)
     return {"status": "ok"}
+
+
+@app.put("/api/admin/mcp-servers/{server_name}")
+async def update_mcp_server(
+    server_name: str,
+    server: McpServerConfig,
+    authorization: str | None = Header(None),
+) -> dict[str, str]:
+    """Update an existing MCP server. Admin only."""
+    global _mcp_store
+    user_id = _get_user_id_from_header(authorization)
+    require_admin(user_id)
+    server_dict = server.model_dump()
+
+    # Auto-discover tools for stdio servers when not explicitly provided
+    if server_dict.get("type") == "stdio" and not server_dict.get("tools"):
+        status, _error, tool_names = await _check_stdio_mcp(server_dict)
+        if status == "connected" and tool_names:
+            server_dict["tools"] = tool_names
+
+    if _mcp_store is not None:
+        result = await _mcp_store.update(server_name, server_dict)
+        if result is None:
+            raise HTTPException(status_code=404, detail=f"Server '{server_name}' not found")
+    else:
+        registry = load_mcp_config_sync()
+        if server_name not in registry.get("mcpServers", {}):
+            raise HTTPException(status_code=404, detail=f"Server '{server_name}' not found")
+        registry["mcpServers"][server.name] = server_dict
+        if server.name != server_name:
+            registry["mcpServers"].pop(server_name, None)
+        save_mcp_config(registry)
+    return {"status": "ok"}
+
+
+@app.post("/api/admin/mcp-servers/{server_name}/discover-tools")
+async def discover_mcp_tools(
+    server_name: str,
+    authorization: str | None = Header(None),
+) -> dict[str, Any]:
+    """Force-refresh the tool list for an MCP server by reconnecting. Admin only."""
+    global _mcp_store
+    user_id = _get_user_id_from_header(authorization)
+    require_admin(user_id)
+
+    # Load server config
+    if _mcp_store is not None:
+        server = await _mcp_store.get_by_name(server_name)
+    else:
+        registry = load_mcp_config_sync()
+        server = registry.get("mcpServers", {}).get(server_name)
+
+    if server is None:
+        raise HTTPException(status_code=404, detail=f"Server '{server_name}' not found")
+
+    if server.get("type") != "stdio":
+        raise HTTPException(status_code=400, detail="Tool discovery only supported for stdio servers")
+
+    status, error, tool_names = await _check_stdio_mcp(server)
+
+    # Update config with discovered tools
+    server["tools"] = tool_names
+    if _mcp_store is not None:
+        await _mcp_store.update(server_name, server)
+    else:
+        registry = load_mcp_config_sync()
+        registry["mcpServers"][server_name] = server
+        save_mcp_config(registry)
+
+    return {
+        "status": status,
+        "error": error,
+        "tools": tool_names,
+        "tool_count": len(tool_names),
+    }
 
 
 @app.delete("/api/admin/mcp-servers/{server_name}")
@@ -3075,11 +3226,15 @@ async def unregister_mcp_server(
     authorization: str | None = Header(None),
 ) -> dict[str, str]:
     """Unregister an MCP server. Admin only."""
+    global _mcp_store
     user_id = _get_user_id_from_header(authorization)
     require_admin(user_id)
-    registry = load_mcp_config()
-    registry["mcpServers"].pop(server_name, None)
-    save_mcp_config(registry)
+    if _mcp_store is not None:
+        await _mcp_store.delete(server_name)
+    else:
+        registry = load_mcp_config_sync()
+        registry["mcpServers"].pop(server_name, None)
+        save_mcp_config(registry)
     return {"status": "ok"}
 
 
@@ -3090,107 +3245,156 @@ async def toggle_mcp_server(
     authorization: str | None = Header(None),
 ) -> dict[str, str]:
     """Enable/disable an MCP server. Admin only."""
+    global _mcp_store
     user_id = _get_user_id_from_header(authorization)
     require_admin(user_id)
-    registry = load_mcp_config()
-    if server_name in registry["mcpServers"]:
-        registry["mcpServers"][server_name]["enabled"] = enabled
-        save_mcp_config(registry)
+    if _mcp_store is not None:
+        await _mcp_store.toggle(server_name, enabled)
+    else:
+        registry = load_mcp_config_sync()
+        if server_name in registry.get("mcpServers", {}):
+            registry["mcpServers"][server_name]["enabled"] = enabled
+            save_mcp_config(registry)
     return {"status": "ok"}
 
 
-# ── Per-User MCP Servers ────────────────────────────────────────
+async def _check_stdio_mcp(cfg: dict[str, Any]) -> tuple[str, str | None, list[str]]:
+    """Actually connect to a stdio MCP server and verify it works.
+
+    Returns (status, error_message_or_None, tool_names_list).
+    Uses a 30-second timeout to prevent hanging on slow servers
+    (e.g. uvx downloading packages on first run).
+    """
+    from mcp import ClientSession
+    from mcp.client.stdio import StdioServerParameters, stdio_client
+
+    params = StdioServerParameters(
+        command=cfg.get("command", ""),
+        args=cfg.get("args", []),
+        env={k: v for k, v in (cfg.get("env") or {}).items()},
+    )
+
+    try:
+        async with asyncio.timeout(30):
+            async with stdio_client(params, errlog=open(os.devnull, 'w')) as (read, write):
+                async with ClientSession(read, write) as session:
+                    await session.initialize()
+                    tools_result = await session.list_tools()
+                    tool_names = [t.name for t in tools_result.tools] if tools_result.tools else []
+                    return ("connected", None, tool_names)
+    except TimeoutError:
+        return ("disconnected", "Connection timed out (30s)", [])
+    except Exception as e:
+        error_msg = str(e)
+        if len(error_msg) > 500:
+            error_msg = error_msg[:500] + "..."
+        return ("disconnected", error_msg, [])
 
 
-def _require_user(user_id: str, authorization: str | None) -> str:
-    """Verify the authenticated user matches the path user_id."""
-    from src.auth import require_user_match
-    token_user = _get_user_id_from_header(authorization)
-    return require_user_match(user_id, token_user)
-
-
-@app.get("/api/users/{user_id}/mcp-servers")
-async def list_user_mcp_servers(
-    user_id: str,
+@app.get("/api/admin/mcp-servers/status")
+async def get_mcp_servers_status(
     authorization: str | None = Header(None),
 ) -> list[dict[str, Any]]:
-    """List MCP servers for a specific user."""
-    _require_user(user_id, authorization)
-    from src.user_mcp_manager import UserMcpManager
-    mgr = UserMcpManager(user_id, DATA_ROOT)
-    return mgr.list_servers()
+    """Check the connection status of all MCP servers. Admin only."""
+    user_id = _get_user_id_from_header(authorization)
+    require_admin(user_id)
+
+    servers = await _load_mcp_servers()
+    results: list[dict[str, Any]] = []
+
+    for cfg in servers:
+        server_name = cfg["name"]
+        server_type = cfg.get("type", "stdio")
+        enabled = cfg.get("enabled", True)
+
+        if not enabled:
+            results.append({
+                "name": server_name,
+                "type": server_type,
+                "enabled": False,
+                "status": "disabled",
+                "error": None,
+                "tool_count": 0,
+            })
+            continue
+
+        if server_type == "stdio":
+            command = cfg.get("command", "")
+            if not command:
+                results.append({
+                    "name": server_name,
+                    "type": server_type,
+                    "enabled": True,
+                    "status": "error",
+                    "error": "No command specified",
+                    "tool_count": 0,
+                })
+            else:
+                status, error, tool_names = await _check_stdio_mcp(cfg)
+                results.append({
+                    "name": server_name,
+                    "type": server_type,
+                    "enabled": True,
+                    "status": status,
+                    "error": error,
+                    "tool_count": len(tool_names),
+                })
+        elif server_type == "http":
+            url = cfg.get("url", "")
+            if not url:
+                results.append({
+                    "name": server_name,
+                    "type": server_type,
+                    "enabled": True,
+                    "status": "error",
+                    "error": "No URL specified",
+                })
+            else:
+                try:
+                    import httpx
+                    async with httpx.AsyncClient() as client:
+                        resp = await client.get(url, timeout=3.0)
+                        if resp.status_code < 500:
+                            results.append({
+                                "name": server_name,
+                                "type": server_type,
+                                "enabled": True,
+                                "status": "connected",
+                                "error": None,
+                            })
+                        else:
+                            results.append({
+                                "name": server_name,
+                                "type": server_type,
+                                "enabled": True,
+                                "status": "disconnected",
+                                "error": f"HTTP {resp.status_code}",
+                            })
+                except Exception as e:
+                    results.append({
+                        "name": server_name,
+                        "type": server_type,
+                        "enabled": True,
+                        "status": "disconnected",
+                        "error": str(e),
+                    })
+        else:
+            results.append({
+                "name": server_name,
+                "type": server_type,
+                "enabled": enabled,
+                "status": "error",
+                "error": f"Unknown server type: {server_type}",
+            })
+
+    return results
 
 
-@app.post("/api/users/{user_id}/mcp-servers")
-async def create_user_mcp_server(
-    user_id: str,
-    server: UserMcpServerCreate,
-    authorization: str | None = Header(None),
-) -> dict[str, str]:
-    """Create a new MCP server for a user."""
-    _require_user(user_id, authorization)
-    from src.user_mcp_manager import UserMcpManager
-    mgr = UserMcpManager(user_id, DATA_ROOT)
-    try:
-        mgr.create_server(server.model_dump())
-        return {"status": "ok"}
-    except ValueError as e:
-        raise HTTPException(status_code=409, detail=str(e))
-
-
-@app.put("/api/users/{user_id}/mcp-servers/{server_name}")
-async def update_user_mcp_server(
-    user_id: str,
-    server_name: str,
-    server: UserMcpServerCreate,
-    authorization: str | None = Header(None),
-) -> dict[str, str]:
-    """Update an existing MCP server for a user."""
-    _require_user(user_id, authorization)
-    from src.user_mcp_manager import UserMcpManager
-    mgr = UserMcpManager(user_id, DATA_ROOT)
-    try:
-        mgr.update_server(server_name, server.model_dump())
-        return {"status": "ok"}
-    except ValueError as e:
-        if "not found" in str(e).lower():
-            raise HTTPException(status_code=404, detail=str(e))
-        raise HTTPException(status_code=422, detail=str(e))
-
-
-@app.delete("/api/users/{user_id}/mcp-servers/{server_name}")
-async def delete_user_mcp_server(
-    user_id: str,
-    server_name: str,
-    authorization: str | None = Header(None),
-) -> dict[str, str]:
-    """Delete an MCP server for a user."""
-    _require_user(user_id, authorization)
-    from src.user_mcp_manager import UserMcpManager
-    mgr = UserMcpManager(user_id, DATA_ROOT)
-    try:
-        mgr.delete_server(server_name)
-        return {"status": "ok"}
-    except ValueError:
-        raise HTTPException(status_code=404, detail=f"Server '{server_name}' not found")
-
-
-@app.patch("/api/users/{user_id}/mcp-servers/{server_name}/toggle")
-async def toggle_user_mcp_server(
-    user_id: str,
-    server_name: str,
-    enabled: bool,
-    authorization: str | None = Header(None),
-) -> dict[str, str]:
-    """Enable/disable an MCP server for a user."""
-    _require_user(user_id, authorization)
-    from src.user_mcp_manager import UserMcpManager
-    mgr = UserMcpManager(user_id, DATA_ROOT)
-    try:
-        mgr.toggle_server(server_name, enabled)
-        return {"status": "ok"}
-    except ValueError:
-        raise HTTPException(status_code=404, detail=f"Server '{server_name}' not found")
+def save_mcp_config(config: dict[str, Any]) -> None:
+    """File-based fallback — kept for pre-migration compatibility."""
+    registry_file = DATA_ROOT / "mcp-registry.json"
+    DATA_ROOT.mkdir(parents=True, exist_ok=True)
+    registry_file.write_text(json.dumps(config, indent=2))
 
 
 # ── Feedback API ─────────────────────────────────────────────────
@@ -3396,7 +3600,7 @@ async def startup() -> None:
         (DATA_ROOT / subdir).mkdir(parents=True, exist_ok=True)
 
     # Initialize SQLite + SessionStore if DATA_DB_PATH is set
-    global _db, buffer, session_store
+    global _db, _mcp_store, buffer, session_store
     db_path_env = os.getenv("DATA_DB_PATH", "")
     if db_path_env:
         db_path = Path(db_path_env)
@@ -3405,12 +3609,26 @@ async def startup() -> None:
         else:
             db_path = Path(__file__).parent / db_path_env
         from src.database import Database
+        from src.mcp_store import MCPServerStore, migrate_from_file
         from src.session_store import SessionStore
         _db = Database(db_path=db_path)
         await _db.init()
         buffer.db = _db  # Wire DB into message buffer
         session_store = SessionStore(db=_db, msg_buffer_dir=DATA_ROOT / ".msg-buffer")
         logger.info("SQLite initialized: %s (%.2f MB)", db_path, db_path.stat().st_size / (1024 * 1024))
+
+        # Initialize MCP store and migrate from file if needed
+        _mcp_store = MCPServerStore(db=_db)
+        try:
+            registry_file = DATA_ROOT / "mcp-registry.json"
+            migrated = await migrate_from_file(registry_file, _mcp_store)
+            if migrated > 0:
+                logger.info("Migrated %d MCP server entries from file to SQLite", migrated)
+                # Backup the original file
+                registry_file.rename(registry_file.with_suffix(".json.bak"))
+        except Exception:
+            logger.exception("MCP migration failed, falling back to file storage")
+            _mcp_store = None
 
         # Migrate any existing JSONL feedback files to SQLite
         try:

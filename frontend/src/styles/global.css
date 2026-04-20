@@ -3349,6 +3349,7 @@ body {
   align-items: center;
   gap: 8px;
   font-weight: 500;
+  flex-wrap: wrap;
 }
 
 .mcp-type-tag {
@@ -3612,3 +3613,40 @@ body {
   cursor: pointer;
 }
 
+/* JSON textarea for MCP server config */
+.mcp-json-textarea {
+  font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 0.8125rem;
+  line-height: 1.5;
+  resize: vertical;
+  min-height: 300px;
+  tab-size: 2;
+}
+
+/* Format button + preview bar */
+.mcp-form-actions-secondary {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.mcp-btn-format {
+  padding: 4px 10px;
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--color-text-secondary);
+  font-size: 0.75rem;
+  cursor: pointer;
+}
+
+.mcp-btn-format:hover {
+  background: var(--color-surface-hover);
+}
+
+.mcp-preview {
+  font-size: 0.75rem;
+  color: var(--color-text-secondary);
+  font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
+}

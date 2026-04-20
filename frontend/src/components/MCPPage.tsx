@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, type FormEvent } from 'react'
+import { useState, useEffect, useCallback, type FormEvent, useMemo } from 'react'
 import { useMCPServers } from '../hooks/useMCPServers'
 import type { McpServer, McpServerType } from '../lib/types'
 
@@ -12,6 +12,7 @@ interface ModalState {
   open: boolean
   mode: 'add' | 'edit'
   server: McpServer
+  jsonText: string
   error: string
 }
 
@@ -29,12 +30,106 @@ function emptyServer(): McpServer {
   }
 }
 
-export default function MCPPage({ userId, authToken, onBack }: MCPPageProps) {
-  const api = useMCPServers(authToken ?? null, userId)
+function serverToJson(server: McpServer): string {
+  const { name, type, command, args, url, env, tools, description } = server
+  const obj: Record<string, unknown> = { name, type }
+  if (type === 'stdio') {
+    if (command) obj.command = command
+    if (args?.length) obj.args = args
+  } else {
+    if (url) obj.url = url
+  }
+  if (env && Object.keys(env).length > 0) obj.env = env
+  if (tools.length > 0) obj.tools = tools
+  if (description) obj.description = description
+  return JSON.stringify(obj, null, 2)
+}
+
+function jsonToServer(text: string): McpServer {
+  const parsed = JSON.parse(text)
+
+  // Support MCP config format: {"mcpServers": {"name": {config...}}}
+  if (parsed.mcpServers && typeof parsed.mcpServers === 'object') {
+    const entries = Object.entries(parsed.mcpServers)
+    if (entries.length === 0) {
+      return emptyServer()
+    }
+    const [name, config] = entries[0]
+    const srv = config as Record<string, unknown>
+    return {
+      name,
+      type: ((srv.type as string) ?? 'stdio') as McpServerType,
+      command: srv.command as string | undefined,
+      args: Array.isArray(srv.args) ? srv.args as string[] : [],
+      url: srv.url as string | undefined,
+      env: (srv.env as Record<string, string>) ?? {},
+      tools: Array.isArray(srv.tools) ? srv.tools as string[] : [],
+      description: (srv.description as string) ?? '',
+      enabled: true,
+    }
+  }
+
+  // Single server format: {"name": "...", "type": "stdio", ...}
+  return {
+    name: parsed.name ?? '',
+    type: (parsed.type ?? 'stdio') as McpServerType,
+    command: parsed.command,
+    args: parsed.args ?? [],
+    url: parsed.url,
+    env: parsed.env ?? {},
+    tools: parsed.tools ?? [],
+    description: parsed.description ?? '',
+    enabled: true,
+  }
+}
+
+function formatJsonText(text: string): string | null {
+  try {
+    const obj = JSON.parse(text)
+    return JSON.stringify(obj, null, 2)
+  } catch {
+    return null
+  }
+}
+
+function getPreviewText(text: string): string | null {
+  try {
+    const obj = JSON.parse(text)
+    let target: Record<string, unknown> = obj
+
+    // Unwrap MCP config format
+    if (obj.mcpServers && typeof obj.mcpServers === 'object') {
+      const entries = Object.entries(obj.mcpServers)
+      if (entries.length > 0) {
+        target = entries[0][1] as Record<string, unknown>
+        if (!target.name) target = { name: entries[0][0], ...target }
+      }
+    }
+
+    const parts: string[] = []
+    if (target.name) parts.push(`name: ${target.name}`)
+    if (target.type) parts.push(`type: ${target.type}`)
+    if (target.command) parts.push(`command: ${target.command}`)
+    else if (target.url) parts.push(`url: ${target.url}`)
+    if (target.tools) parts.push(`${Array.isArray(target.tools) ? target.tools.length : 0} tools`)
+    return parts.length > 0 ? parts.join(' | ') : null
+  } catch {
+    return null
+  }
+}
+
+export default function MCPPage({ userId: _userId, authToken, onBack }: MCPPageProps) {
+  const api = useMCPServers(authToken ?? null)
   const [servers, setServers] = useState<McpServer[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
-  const [modal, setModal] = useState<ModalState>({ open: false, mode: 'add', server: emptyServer(), error: '' })
+  const [modal, setModal] = useState<ModalState>({
+    open: false,
+    mode: 'add',
+    server: emptyServer(),
+    jsonText: '{}',
+    error: '',
+  })
   const [actionLoading, setActionLoading] = useState<string | null>(null)
 
   const loadServers = useCallback(async () => {
@@ -51,11 +146,11 @@ export default function MCPPage({ userId, authToken, onBack }: MCPPageProps) {
   useEffect(() => { loadServers() }, [loadServers])
 
   const openAddModal = () => {
-    setModal({ open: true, mode: 'add', server: emptyServer(), error: '' })
+    setModal({ open: true, mode: 'add', server: emptyServer(), jsonText: '{}', error: '' })
   }
 
   const openEditModal = (server: McpServer) => {
-    setModal({ open: true, mode: 'edit', server: { ...server }, error: '' })
+    setModal({ open: true, mode: 'edit', server: { ...server }, jsonText: serverToJson(server), error: '' })
   }
 
   const closeModal = () => {
@@ -65,12 +160,28 @@ export default function MCPPage({ userId, authToken, onBack }: MCPPageProps) {
   const handleSave = async (e: FormEvent) => {
     e.preventDefault()
     setActionLoading('save')
-    setModal(prev => ({ ...prev, error: '' }))
+
+    // Parse and validate JSON
+    let parsed: McpServer
+    try {
+      parsed = jsonToServer(modal.jsonText)
+    } catch {
+      setModal(prev => ({ ...prev, error: 'Invalid JSON' }))
+      setActionLoading(null)
+      return
+    }
+
+    if (!parsed.name) {
+      setModal(prev => ({ ...prev, error: 'Missing required field: name' }))
+      setActionLoading(null)
+      return
+    }
+
     try {
       if (modal.mode === 'add') {
-        await api.createServer(modal.server)
+        await api.createServer(parsed)
       } else {
-        await api.updateServer(modal.server.name, modal.server)
+        await api.updateServer(modal.server.name, parsed)
       }
       closeModal()
       await loadServers()
@@ -95,34 +206,22 @@ export default function MCPPage({ userId, authToken, onBack }: MCPPageProps) {
   }
 
   const handleToggle = async (name: string, enabled: boolean) => {
-    // Optimistic update
     setServers(prev => prev.map(s => s.name === name ? { ...s, enabled } : s))
     try {
       await api.toggleServer(name, enabled)
     } catch {
-      // Rollback on failure
       await loadServers()
     }
   }
 
-  const updateModalServer = (updates: Partial<McpServer>) => {
-    setModal(prev => ({ ...prev, server: { ...prev.server, ...updates } }))
+  const handleFormat = () => {
+    const formatted = formatJsonText(modal.jsonText)
+    if (formatted) {
+      setModal(prev => ({ ...prev, jsonText: formatted, error: '' }))
+    }
   }
 
-  const addTool = () => {
-    setModal(prev => ({ ...prev, server: { ...prev.server, tools: [...prev.server.tools, ''] } }))
-  }
-
-  const updateTool = (index: number, value: string) => {
-    setModal(prev => ({
-      ...prev,
-      server: { ...prev.server, tools: prev.server.tools.map((t, i) => i === index ? value : t) }
-    }))
-  }
-
-  const removeTool = (index: number) => {
-    setModal(prev => ({ ...prev, server: { ...prev.server, tools: prev.server.tools.filter((_, i) => i !== index) } }))
-  }
+  const preview = useMemo(() => getPreviewText(modal.jsonText), [modal.jsonText])
 
   if (loading) {
     return (
@@ -213,93 +312,21 @@ export default function MCPPage({ userId, authToken, onBack }: MCPPageProps) {
               {modal.error && <div className="mcp-form-error">{modal.error}</div>}
 
               <div className="mcp-form-field">
-                <label>Name *</label>
-                <input
-                  type="text"
-                  value={modal.server.name}
-                  onChange={(e) => updateModalServer({ name: e.target.value })}
-                  required
-                  placeholder="e.g. filesystem"
+                <label htmlFor="mcp-json-input">MCP Server Config (JSON) *</label>
+                <textarea
+                  id="mcp-json-input"
+                  className="mcp-json-textarea"
+                  value={modal.jsonText}
+                  onChange={(e) => setModal(prev => ({ ...prev, jsonText: e.target.value, error: '' }))}
+                  rows={16}
+                  spellCheck={false}
+                  placeholder={'{\n  "name": "mineru",\n  "type": "stdio",\n  "command": "uvx",\n  "args": ["mineru-mcp"],\n  "tools": ["parse_pdf"]\n}'}
                 />
               </div>
 
-              <div className="mcp-form-field">
-                <label>Type *</label>
-                <div className="mcp-radio-group">
-                  {(['stdio', 'http'] as McpServerType[]).map(type => (
-                    <label key={type}>
-                      <input
-                        type="radio"
-                        name="server-type"
-                        checked={modal.server.type === type}
-                        onChange={() => updateModalServer({ type })}
-                      />
-                      {type}
-                    </label>
-                  ))}
-                </div>
-              </div>
-
-              {modal.server.type === 'stdio' ? (
-                <>
-                  <div className="mcp-form-field">
-                    <label>Command *</label>
-                    <input
-                      type="text"
-                      value={modal.server.command || ''}
-                      onChange={(e) => updateModalServer({ command: e.target.value })}
-                      required={modal.server.type === 'stdio'}
-                      placeholder="e.g. npx, uv, python"
-                    />
-                  </div>
-                  <div className="mcp-form-field">
-                    <label>Args (one per line)</label>
-                    <textarea
-                      value={(modal.server.args || []).join('\n')}
-                      onChange={(e) => updateModalServer({ args: e.target.value.split('\n').filter(Boolean) })}
-                      rows={2}
-                      placeholder="-y&#10;@modelcontextprotocol/server-fs&#10;/tmp"
-                    />
-                  </div>
-                </>
-              ) : (
-                <div className="mcp-form-field">
-                  <label>URL *</label>
-                  <input
-                    type="url"
-                    value={modal.server.url || ''}
-                    onChange={(e) => updateModalServer({ url: e.target.value })}
-                    required={modal.server.type === 'http'}
-                    placeholder="https://mcp.example.com/server"
-                  />
-                </div>
-              )}
-
-              <div className="mcp-form-field">
-                <label>Description</label>
-                <input
-                  type="text"
-                  value={modal.server.description}
-                  onChange={(e) => updateModalServer({ description: e.target.value })}
-                  placeholder="Optional description"
-                />
-              </div>
-
-              <div className="mcp-form-field">
-                <label>Tools *</label>
-                {(modal.server.tools || []).map((tool, i) => (
-                  <div key={i} className="mcp-tool-row">
-                    <input
-                      type="text"
-                      value={tool}
-                      onChange={(e) => updateTool(i, e.target.value)}
-                      placeholder="tool name"
-                      required
-                    />
-                    <button type="button" className="mcp-remove-btn" onClick={() => removeTool(i)}>&times;</button>
-                  </div>
-                ))}
-                <button type="button" className="mcp-add-btn-sm" onClick={addTool}>+ Add Tool</button>
+              <div className="mcp-form-actions-secondary">
+                <button type="button" className="mcp-btn-format" onClick={handleFormat}>Format</button>
+                {preview && <span className="mcp-preview">{preview}</span>}
               </div>
 
               <div className="mcp-form-actions">
