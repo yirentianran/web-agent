@@ -16,7 +16,7 @@ ALLOWED_EXTENSIONS = {
 }
 
 # Maximum upload size in bytes (50 MB default)
-MAX_UPLOAD_BYTES = int(os.getenv("MAX_UPLOAD_BYTES", str(50 * 1024 * 1024)))
+MAX_UPLOAD_BYTES = int(os.getenv("MAX_UPLOAD_BYTES", str(200 * 1024 * 1024)))
 
 
 def validate_extension(filename: str) -> str | None:
