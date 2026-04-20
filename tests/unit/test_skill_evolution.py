@@ -166,6 +166,31 @@ class TestDBBackedEvolution:
             loop = asyncio.get_event_loop()
             loop.run_until_complete(db.close())
 
+    def test_db_get_feedback_for_evolution(self, tmp_path: Path) -> None:
+        """SkillEvolutionManager should delegate get_feedback_for_evolution to DBSkillFeedbackManager."""
+        db = self._init_db(tmp_path)
+        try:
+            from src.skill_feedback import DBSkillFeedbackManager
+            db_mgr = DBSkillFeedbackManager(db=db)
+            loop = asyncio.get_event_loop()
+            loop.run_until_complete(
+                db_mgr.submit_feedback("test", user_id="alice", rating=5, comment="Great!")
+            )
+            loop.run_until_complete(
+                db_mgr.submit_feedback("test", user_id="bob", rating=1, comment="Broken", user_edits="Fixed the bug")
+            )
+
+            mgr = SkillEvolutionManager(db=db)
+            feedback = loop.run_until_complete(mgr.db_get_feedback_for_evolution("test"))
+            assert len(feedback["high_quality"]) == 1
+            assert len(feedback["low_rated"]) == 1
+            assert feedback["low_rated"][0]["comment"] == "Broken"
+            assert len(feedback["user_edits"]) == 1
+            assert feedback["user_edits"][0]["user_edits"] == "Fixed the bug"
+        finally:
+            loop = asyncio.get_event_loop()
+            loop.run_until_complete(db.close())
+
     def test_db_get_evolution_candidates(self, tmp_path: Path) -> None:
         db = self._init_db(tmp_path)
         try:

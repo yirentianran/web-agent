@@ -196,6 +196,14 @@ class SkillEvolutionManager:
         candidates.sort(key=lambda c: c.stats.average_rating)
         return candidates
 
+    async def db_get_feedback_for_evolution(
+        self, skill_name: str
+    ) -> dict[str, list[dict[str, Any]]]:
+        """Retrieve feedback for skill evolution using DB-backed manager."""
+        from src.skill_feedback import DBSkillFeedbackManager
+        db_mgr = DBSkillFeedbackManager(db=self.db)
+        return await db_mgr.get_feedback_for_evolution(skill_name)
+
     async def db_activate_version(
         self,
         skill_name: str,

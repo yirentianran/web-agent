@@ -58,6 +58,26 @@ def client() -> TestClient:
 class TestRunEvolutionAgent:
     """Test the run_evolution_agent function."""
 
+    def test_run_evolution_agent_calls_db_get_feedback_for_evolution(
+        self, tmp_path: Path
+    ) -> None:
+        """run_evolution_agent should call mgr.db_get_feedback_for_evolution, not get_feedback_for_evolution."""
+        import inspect
+        source = inspect.getsource(main_server.run_evolution_agent)
+
+        # Must NOT call get_feedback_for_evolution directly on SkillEvolutionManager
+        assert "mgr.get_feedback_for_evolution" not in source, (
+            "run_evolution_agent calls get_feedback_for_evolution on SkillEvolutionManager, "
+            "which doesn't have this method. It should call db_get_feedback_for_evolution "
+            "which delegates to DBSkillFeedbackManager."
+        )
+
+        # Must call the delegated method
+        assert "db_get_feedback_for_evolution" in source, (
+            "run_evolution_agent should call mgr.db_get_feedback_for_evolution "
+            "to delegate to DBSkillFeedbackManager."
+        )
+
     def test_evolution_prompt_contains_feedback(self) -> None:
         """The evolution prompt should include high-quality and low-rated feedback."""
         from main_server import build_evolution_prompt

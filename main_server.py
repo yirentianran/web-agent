@@ -2562,7 +2562,7 @@ async def run_evolution_agent(
     mgr = SkillEvolutionManager(db=_db)
 
     # Gather feedback data
-    feedback = await mgr.get_feedback_for_evolution(skill_name)
+    feedback = await mgr.db_get_feedback_for_evolution(skill_name)
 
     # Resolve skill directory
     skill_dir = DATA_ROOT / "skills" / skill_name
