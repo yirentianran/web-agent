@@ -2028,6 +2028,7 @@ async def get_session_status(user_id: str, session_id: str) -> SessionStatusResp
         state=state["state"],
         cost_usd=state["cost_usd"],
         last_active=state["last_active"],
+        buffer_age=state.get("buffer_age", 0.0),
     )
 
 

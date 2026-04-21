@@ -4,17 +4,76 @@
  * Handles accumulation of text from content_block_delta stream events
  * and cleanup when the complete assistant message arrives.
  */
+import type { Message } from "../lib/types";
 
 export interface StreamingTextState {
-  accumulatedText: string
-  streamingMessageId: number | null
+  accumulatedText: string;
+  streamingMessageId: number | null;
+}
+
+/** Narrowed shape of a content_block_delta stream event. */
+interface TextDelta {
+  type: "text_delta";
+  text: string;
+}
+
+interface ContentBlockDelta {
+  type: "content_block_delta";
+  delta?: TextDelta | { type: string; [key: string]: unknown };
+}
+
+interface MessageStopEvent {
+  type: "message_stop";
+}
+
+type StreamEvent =
+  | ContentBlockDelta
+  | MessageStopEvent
+  | { type: string; [key: string]: unknown };
+
+function isStreamEvent(
+  msg: unknown,
+): msg is Message & { type: "stream_event"; event?: StreamEvent } {
+  return (
+    typeof msg === "object" &&
+    msg !== null &&
+    (msg as Record<string, unknown>).type === "stream_event"
+  );
+}
+
+function isTextDelta(
+  event: StreamEvent | undefined,
+): event is ContentBlockDelta {
+  return event?.type === "content_block_delta" && "delta" in event;
+}
+
+function isMessageStop(event: StreamEvent | undefined): boolean {
+  return event?.type === "message_stop";
+}
+
+function isAssistantMessage(
+  msg: unknown,
+): msg is Message & { type: "assistant"; content?: string } {
+  return (
+    typeof msg === "object" &&
+    msg !== null &&
+    (msg as Record<string, unknown>).type === "assistant"
+  );
+}
+
+function isResultMessage(msg: unknown): msg is Message & { type: "result" } {
+  return (
+    typeof msg === "object" &&
+    msg !== null &&
+    (msg as Record<string, unknown>).type === "result"
+  );
 }
 
 export interface UseStreamingText {
-  getState: () => StreamingTextState
-  setState: (state: StreamingTextState) => void
-  processMessage: (msg: any) => void
-  reset: () => void
+  getState: () => StreamingTextState;
+  setState: (state: StreamingTextState) => void;
+  processMessage: (msg: unknown) => void;
+  reset: () => void;
 }
 
 /**
@@ -22,9 +81,9 @@ export interface UseStreamingText {
  */
 export function createInitialState(): StreamingTextState {
   return {
-    accumulatedText: '',
+    accumulatedText: "",
     streamingMessageId: null,
-  }
+  };
 }
 
 /**
@@ -35,49 +94,42 @@ export function createInitialState(): StreamingTextState {
  */
 export function processMessage(
   state: StreamingTextState,
-  msg: any
+  msg: unknown,
 ): StreamingTextState {
-  // Debug log for stream_event
-  if (msg.type === 'stream_event') {
-    console.log('[STREAM_DEBUG] useStreamingText received:', msg.event?.type)
-  }
-
   // Handle stream_event.content_block_delta - accumulate text
-  if (msg.type === 'stream_event' && msg.event?.type === 'content_block_delta') {
-    const delta = msg.event.delta
-    if (delta?.type === 'text_delta' && delta.text) {
-      console.log('[STREAM_DEBUG] Accumulating text:', delta.text.length, 'chars, total:', state.accumulatedText.length + delta.text.length)
+  if (isStreamEvent(msg) && isTextDelta(msg.event)) {
+    const delta = msg.event.delta;
+    if (delta?.type === "text_delta" && delta.text) {
       return {
         accumulatedText: state.accumulatedText + delta.text,
-        streamingMessageId: state.streamingMessageId, // Keep existing
-      }
+        streamingMessageId: state.streamingMessageId,
+      };
     }
   }
 
-  // Clear streaming text when message stops or assistant message completes
-  // message_stop event signals end of streaming for this response
-  if (msg.type === 'stream_event' && msg.event?.type === 'message_stop') {
-    return createInitialState()
+  // Clear streaming text when message_stop event arrives
+  if (isStreamEvent(msg) && isMessageStop(msg.event)) {
+    return createInitialState();
   }
 
   // Clear when assistant message arrives (complete, not streaming)
-  if (msg.type === 'assistant' && msg.content) {
-    return createInitialState()
+  if (isAssistantMessage(msg) && msg.content) {
+    return createInitialState();
   }
 
   // Clear when result message arrives (agent finished)
-  if (msg.type === 'result') {
-    return createInitialState()
+  if (isResultMessage(msg)) {
+    return createInitialState();
   }
 
-  return state
+  return state;
 }
 
 /**
  * Reset streaming text state to initial values.
  */
-export function reset(state: StreamingTextState): StreamingTextState {
-  return createInitialState()
+export function reset(): StreamingTextState {
+  return createInitialState();
 }
 
 /**
@@ -87,4 +139,4 @@ export const useStreamingText = {
   createInitialState,
   processMessage,
   reset,
-}
+};

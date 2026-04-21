@@ -309,6 +309,7 @@ class MessageBuffer:
             "state": buf.get("state", "idle"),
             "cost_usd": round(buf.get("cost_usd", 0), 4),
             "last_active": last_active,
+            "buffer_age": round(elapsed, 1),
             "is_stale": is_stale,
             "stale_seconds": round(elapsed, 1) if is_stale else 0,
         }
