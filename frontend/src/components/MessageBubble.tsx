@@ -147,6 +147,18 @@ export default function MessageBubble({ message, sessionId, onAnswer, onFileClic
     const handleFileClick = onFileClick
       ? (filename: string) => { onFileClick(filename) }
       : undefined
+
+    // Send state indicator
+    const sendStateIcon = message.sendState === 'sending'
+      ? <span className="send-state send-state--sending" title="Sending..." aria-label="Sending">◌</span>
+      : message.sendState === 'sent'
+      ? <span className="send-state send-state--sent" title="Sent" aria-label="Sent">✓</span>
+      : message.sendState === 'failed'
+      ? <span className="send-state send-state--failed" title="Send failed" aria-label="Send failed">✗</span>
+      : message.sendState === 'timeout'
+      ? <span className="send-state send-state--timeout" title="Send timed out" aria-label="Send timed out">⏱</span>
+      : null
+
     return (
       <>
         {files.length > 0 && files.map((f, i) => (
@@ -162,6 +174,7 @@ export default function MessageBubble({ message, sessionId, onAnswer, onFileClic
           <div className="message user-message">
             <div className="bubble">
               <MarkdownRenderer>{message.content}</MarkdownRenderer>
+              {sendStateIcon && <span className="send-state-wrapper">{sendStateIcon}</span>}
             </div>
           </div>
         )}

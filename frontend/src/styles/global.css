@@ -3650,3 +3650,100 @@ body {
   color: var(--color-text-secondary);
   font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
 }
+
+/* ── Send state indicators ─────────────────────────────────── */
+
+.send-state-wrapper {
+  display: inline-flex;
+  align-items: center;
+  margin-left: 8px;
+  vertical-align: middle;
+}
+
+.send-state {
+  font-size: 14px;
+  line-height: 1;
+  opacity: 0.7;
+}
+
+.send-state--sending {
+  color: var(--color-accent, #3b82f6);
+  animation: spin 1.5s linear infinite;
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+.send-state--sent {
+  color: #22c55e;
+}
+
+.send-state--failed {
+  color: #ef4444;
+}
+
+.send-state--timeout {
+  color: #f59e0b;
+}
+
+/* ── Connection banners ────────────────────────────────────── */
+
+.connection-banner {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 8px 16px;
+  font-size: 13px;
+  font-weight: 500;
+  text-align: center;
+}
+
+.connection-banner--reconnecting {
+  background: #fef3c7;
+  color: #92400e;
+}
+
+.connection-banner--failed {
+  background: #fee2e2;
+  color: #991b1b;
+}
+
+.connection-banner--failed button {
+  background: #ef4444;
+  color: white;
+  border: none;
+  padding: 4px 12px;
+  border-radius: 4px;
+  font-size: 12px;
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.connection-banner--failed button:hover {
+  background: #dc2626;
+}
+
+/* ── Connection status variants ────────────────────────────── */
+
+.app-connection.reconnecting {
+  background: rgba(245, 158, 11, 0.1);
+  color: #b45309;
+}
+
+.app-connection.failed {
+  background: rgba(239, 68, 68, 0.1);
+  color: #dc2626;
+}
+
+.app-status-dot.reconnecting {
+  background: #f59e0b;
+  animation: spin 1.5s linear infinite;
+}
+
+.app-status-dot.failed {
+  background: #ef4444;
+}
+

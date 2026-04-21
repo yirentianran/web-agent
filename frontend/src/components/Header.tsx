@@ -1,7 +1,8 @@
 import UserMenu from './UserMenu'
+import type { ConnectionStatus } from '../lib/types'
 
 interface HeaderProps {
-  connected: boolean
+  connectionStatus: ConnectionStatus
   userId: string
   onOpenSettings: () => void
   onOpenFeedback: () => void
@@ -10,7 +11,14 @@ interface HeaderProps {
   onLogout: () => void
 }
 
-export default function Header({ connected, userId, onOpenSettings, onOpenFeedback, onOpenEvolution, onOpenMCP, onLogout }: HeaderProps) {
+const STATUS_LABELS: Record<ConnectionStatus, string> = {
+  connected: 'Connected',
+  connecting: 'Connecting...',
+  reconnecting: 'Reconnecting...',
+  failed: 'Disconnected',
+}
+
+export default function Header({ connectionStatus, userId, onOpenSettings, onOpenFeedback, onOpenEvolution, onOpenMCP, onLogout }: HeaderProps) {
   return (
     <header className="app-header">
       <div className="app-brand">
@@ -19,8 +27,8 @@ export default function Header({ connected, userId, onOpenSettings, onOpenFeedba
       </div>
       <div className="app-header-actions">
         <div className="app-connection">
-          <span className={`app-status-dot ${connected ? 'connected' : ''}`} />
-          <span className="app-status-text">{connected ? 'Connected' : 'Disconnected'}</span>
+          <span className={`app-status-dot ${connectionStatus === 'connected' ? 'connected' : connectionStatus === 'failed' ? 'failed' : 'reconnecting'}`} />
+          <span className="app-status-text">{STATUS_LABELS[connectionStatus]}</span>
         </div>
         <UserMenu userId={userId} onOpenSettings={onOpenSettings} onOpenFeedback={onOpenFeedback} onOpenEvolution={onOpenEvolution} onOpenMCP={onOpenMCP} onLogout={onLogout} />
       </div>

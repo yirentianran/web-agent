@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, fireEvent, act } from '@testing-library/react'
 import '@testing-library/jest-dom/vitest'
 import ChatArea from '../components/ChatArea'
@@ -543,6 +543,229 @@ describe('Hook tracking', () => {
 
     const { container } = renderChatArea(messages, { sessionState: 'completed' })
     expect(container.querySelector('.status-spinner')).not.toBeInTheDocument()
+  })
+})
+
+// ── Session timer persistence across switches ─────────────────────
+
+describe('Session timer persistence', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('starts timer when session transitions to running', () => {
+    const messages: Message[] = [
+      { type: 'user', content: 'Hello', index: 0 },
+    ]
+
+    vi.setSystemTime(new Date('2026-01-01T00:00:00Z'))
+    const { container, rerender } = renderChatArea(messages, { sessionState: 'idle' })
+
+    // No spinner yet
+    expect(container.querySelector('.status-spinner--agent')).not.toBeInTheDocument()
+
+    // Session starts running
+    vi.setSystemTime(new Date('2026-01-01T00:00:05Z'))
+    const scrollPositions = new Map<string, number>()
+    act(() => {
+      rerender(
+        <ChatArea
+          messages={messages}
+          sessionId="session-a"
+          sessionState="running"
+          onAnswer={() => {}}
+          scrollPositions={scrollPositions}
+        />,
+      )
+    })
+
+    // Spinner should appear with elapsed time
+    expect(container.querySelector('.status-spinner--agent')).toBeInTheDocument()
+    // Elapsed text should show "5s" (5 seconds from setSystemTime difference)
+    expect(screen.getByText('Agent is working...')).toBeInTheDocument()
+  })
+
+  it('timer continues when switching away and back to a running session', () => {
+    const messages: Message[] = [
+      { type: 'user', content: 'Hello', index: 0 },
+    ]
+
+    const startTime = new Date('2026-01-01T00:00:00Z').getTime()
+    vi.setSystemTime(startTime)
+
+    // Session A is running — timer starts at t=0
+    const { container, rerender } = renderChatArea(messages, {
+      sessionId: 'session-a',
+      sessionState: 'running',
+    })
+
+    expect(container.querySelector('.status-spinner--agent')).toBeInTheDocument()
+
+    // Simulate 10 seconds passing
+    vi.setSystemTime(startTime + 10_000)
+    act(() => { vi.advanceTimersByTime(10_000) })
+
+    // Switch to session B (not running)
+    const scrollPositions = new Map<string, number>()
+    act(() => {
+      rerender(
+        <ChatArea
+          messages={messages}
+          sessionId="session-b"
+          sessionState="completed"
+          onAnswer={() => {}}
+          scrollPositions={scrollPositions}
+        />,
+      )
+    })
+
+    // Spinner should be gone for non-running session
+    expect(container.querySelector('.status-spinner--agent')).not.toBeInTheDocument()
+
+    // Simulate 5 more seconds passing (total 15s since session A started)
+    vi.setSystemTime(startTime + 15_000)
+
+    // Switch back to session A (still running)
+    act(() => {
+      rerender(
+        <ChatArea
+          messages={messages}
+          sessionId="session-a"
+          sessionState="running"
+          onAnswer={() => {}}
+          scrollPositions={scrollPositions}
+        />,
+      )
+    })
+
+    // Spinner should show again
+    expect(container.querySelector('.status-spinner--agent')).toBeInTheDocument()
+
+    // Advance time by 1 second to trigger the StatusSpinner's interval
+    act(() => { vi.advanceTimersByTime(1_000) })
+
+    // The elapsed time should be ~16s (15s original + 1s advanced),
+    // NOT 1s (which would happen if timer reset on session switch)
+    const elapsedText = container.querySelector('.status-spinner__elapsed')
+    expect(elapsedText).toBeInTheDocument()
+    // Should NOT show "1秒" (reset) — should show something >= "10秒"
+    expect(elapsedText?.textContent).not.toBe('1秒')
+    expect(elapsedText?.textContent?.includes('16')).toBe(true)
+  })
+
+  it('timer resets when session completes and starts running again', () => {
+    const messages: Message[] = [
+      { type: 'user', content: 'Hello', index: 0 },
+    ]
+
+    const startTime = new Date('2026-01-01T00:00:00Z').getTime()
+    vi.setSystemTime(startTime)
+
+    // Session starts running
+    const { container, rerender } = renderChatArea(messages, {
+      sessionId: 'session-a',
+      sessionState: 'running',
+    })
+
+    // 10 seconds pass
+    vi.setSystemTime(startTime + 10_000)
+    act(() => { vi.advanceTimersByTime(10_000) })
+
+    // Session completes
+    const scrollPositions = new Map<string, number>()
+    act(() => {
+      rerender(
+        <ChatArea
+          messages={messages}
+          sessionId="session-a"
+          sessionState="completed"
+          onAnswer={() => {}}
+          scrollPositions={scrollPositions}
+        />,
+      )
+    })
+
+    expect(container.querySelector('.status-spinner--agent')).not.toBeInTheDocument()
+
+    // 5 seconds later, session starts running again (new run)
+    vi.setSystemTime(startTime + 15_000)
+    act(() => {
+      rerender(
+        <ChatArea
+          messages={messages}
+          sessionId="session-a"
+          sessionState="running"
+          onAnswer={() => {}}
+          scrollPositions={scrollPositions}
+        />,
+      )
+    })
+
+    // Timer should start fresh from 0
+    act(() => { vi.advanceTimersByTime(2_000) })
+
+    const elapsedText = container.querySelector('.status-spinner__elapsed')
+    expect(elapsedText).toBeInTheDocument()
+    // Should show ~2s (new run), NOT 17s (continuation of old run)
+    expect(elapsedText?.textContent?.includes('2秒')).toBe(true)
+  })
+
+  it('different sessions maintain independent timers', () => {
+    const messages: Message[] = [
+      { type: 'user', content: 'Hello', index: 0 },
+    ]
+
+    const startTime = new Date('2026-01-01T00:00:00Z').getTime()
+    vi.setSystemTime(startTime)
+
+    // Session A starts running at t=0
+    const { container, rerender } = renderChatArea(messages, {
+      sessionId: 'session-a',
+      sessionState: 'running',
+    })
+
+    // 5 seconds pass
+    vi.setSystemTime(startTime + 5_000)
+    act(() => { vi.advanceTimersByTime(5_000) })
+
+    // Session B starts running at t=5 (independent of A)
+    const scrollPositions = new Map<string, number>()
+    act(() => {
+      rerender(
+        <ChatArea
+          messages={messages}
+          sessionId="session-b"
+          sessionState="running"
+          onAnswer={() => {}}
+          scrollPositions={scrollPositions}
+        />,
+      )
+    })
+
+    // Switch back to session A
+    vi.setSystemTime(startTime + 10_000)
+    act(() => {
+      rerender(
+        <ChatArea
+          messages={messages}
+          sessionId="session-a"
+          sessionState="running"
+          onAnswer={() => {}}
+          scrollPositions={scrollPositions}
+        />,
+      )
+    })
+
+    act(() => { vi.advanceTimersByTime(1_000) })
+
+    const elapsedText = container.querySelector('.status-spinner__elapsed')
+    // Session A should show ~11s (started at t=0, now t=11)
+    // NOT 6s (which would happen if timer picked up from session B's start)
+    expect(elapsedText?.textContent?.includes('11')).toBe(true)
   })
 })
 

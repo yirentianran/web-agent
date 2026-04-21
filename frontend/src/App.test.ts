@@ -1281,6 +1281,185 @@ describe('pending message tracking', () => {
   })
 })
 
+// ── Heartbeat staleness detection ─────────────────────────────────
+
+/**
+ * When the agent completes but the completion WebSocket message is
+ * lost, the subscribe loop on the backend exits and stops sending
+ * heartbeats. The frontend should detect this staleness (no heartbeat
+ * for 60s while sessionState === 'running') and trigger recovery.
+ */
+
+const STALE_HEARTBEAT_THRESHOLD = 60_000 // 60 seconds
+
+function createHeartbeatStalenessTracker() {
+  let lastHeartbeat = Date.now()
+  let sessionState = 'idle'
+  let recoverCalled = false
+  let recoverSessionId: string | null = null
+  let recoverIndex = 0
+
+  function receiveHeartbeat() {
+    lastHeartbeat = Date.now()
+  }
+
+  function setSessionState(state: string) {
+    sessionState = state
+  }
+
+  function getHeartbeatGap() {
+    return Date.now() - lastHeartbeat
+  }
+
+  function checkStaleness() {
+    if (sessionState !== 'running') return false
+    const gap = getHeartbeatGap()
+    if (gap > STALE_HEARTBEAT_THRESHOLD) {
+      recoverCalled = true
+      recoverSessionId = 'test-session'
+      recoverIndex = 5
+      return true
+    }
+    return false
+  }
+
+  return {
+    receiveHeartbeat,
+    setSessionState,
+    getHeartbeatGap,
+    checkStaleness,
+    getRecoverCalled: () => recoverCalled,
+    getRecoverSessionId: () => recoverSessionId,
+    getRecoverIndex: () => recoverIndex,
+    triggerRecover: () => {
+      recoverCalled = true
+      recoverSessionId = 'test-session'
+      recoverIndex = 5
+    },
+  }
+}
+
+describe('heartbeat staleness detection', () => {
+  it('does NOT trigger recovery when session is not running', () => {
+    const tracker = createHeartbeatStalenessTracker()
+    tracker.setSessionState('idle')
+
+    // Simulate 70s gap (past threshold)
+    vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 70_000)
+
+    expect(tracker.checkStaleness()).toBe(false)
+  })
+
+  it('does NOT trigger recovery when heartbeats are recent', () => {
+    const tracker = createHeartbeatStalenessTracker()
+    tracker.setSessionState('running')
+
+    // Heartbeat just arrived
+    tracker.receiveHeartbeat()
+
+    expect(tracker.checkStaleness()).toBe(false)
+  })
+
+  it('triggers recovery when session is running and heartbeats stopped for 60s', () => {
+    const tracker = createHeartbeatStalenessTracker()
+    tracker.setSessionState('running')
+
+    // Last heartbeat was 70s ago (past 60s threshold)
+    tracker.receiveHeartbeat()
+    vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 70_000)
+
+    expect(tracker.checkStaleness()).toBe(true)
+    expect(tracker.getRecoverCalled()).toBe(true)
+    expect(tracker.getRecoverSessionId()).toBe('test-session')
+  })
+
+  it('does NOT trigger recovery when heartbeat gap is just under threshold', () => {
+    const tracker = createHeartbeatStalenessTracker()
+    tracker.setSessionState('running')
+
+    // 50s gap — under 60s threshold
+    tracker.receiveHeartbeat()
+    vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 50_000)
+
+    expect(tracker.checkStaleness()).toBe(false)
+  })
+
+  it('recovery resets after heartbeat arrives (avoids repeated triggers)', () => {
+    const tracker = createHeartbeatStalenessTracker()
+    tracker.setSessionState('running')
+
+    // Stale — triggers recovery
+    vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 70_000)
+    expect(tracker.checkStaleness()).toBe(true)
+
+    // Heartbeat arrives (e.g., from recovery)
+    tracker.receiveHeartbeat()
+
+    // Should NOT trigger again immediately
+    expect(tracker.checkStaleness()).toBe(false)
+  })
+
+  it('handles session switch: running → idle stops staleness check', () => {
+    const tracker = createHeartbeatStalenessTracker()
+    tracker.setSessionState('running')
+
+    vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 70_000)
+    expect(tracker.checkStaleness()).toBe(true)
+
+    // Session completes — state changes to completed
+    tracker.setSessionState('completed')
+
+    // Even with stale gap, should NOT trigger recovery
+    expect(tracker.checkStaleness()).toBe(false)
+  })
+
+  it('handles multiple consecutive staleness checks after reset', () => {
+    const tracker = createHeartbeatStalenessTracker()
+    tracker.setSessionState('running')
+
+    // First check: stale, triggers
+    vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 70_000)
+    expect(tracker.checkStaleness()).toBe(true)
+
+    // Reset by new heartbeat
+    tracker.receiveHeartbeat()
+
+    // Check again: not stale yet
+    expect(tracker.checkStaleness()).toBe(false)
+
+    // 70s later: stale again
+    vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 70_000)
+    expect(tracker.checkStaleness()).toBe(true)
+  })
+
+  it('works correctly for error state (should not trigger)', () => {
+    const tracker = createHeartbeatStalenessTracker()
+    tracker.setSessionState('error')
+
+    vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 70_000)
+
+    expect(tracker.checkStaleness()).toBe(false)
+  })
+
+  it('session switch resets heartbeat to prevent false staleness', () => {
+    // Simulates the real flow: session A running → switch to session B
+    // The heartbeat ref should be reset so session B doesn't falsely
+    // trigger staleness detection based on session A's old heartbeat.
+    const tracker = createHeartbeatStalenessTracker()
+    tracker.setSessionState('running')
+
+    // Session A had a heartbeat 55s ago (almost stale)
+    tracker.receiveHeartbeat()
+    vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 55_000)
+
+    // User switches to session B — heartbeat resets
+    tracker.receiveHeartbeat() // Simulate reset on session switch
+
+    // Even though 55s elapsed, the reset means we're at gap=0
+    expect(tracker.checkStaleness()).toBe(false)
+  })
+})
+
 // ── Rapid session switch integration test ────────────────────────
 
 /**
@@ -1414,5 +1593,391 @@ describe('rapid session switch integration', () => {
     sim.handleSelectSession('session-a', [])
     expect(sim.getMessages()).toHaveLength(1)
     expect(sim.getMessages()[0].content).toBe('long running query')
+  })
+})
+
+// ── UUID-based user message dedup ────────────────────────────────
+
+/**
+ * User messages are now identified by clientMsgId (UUID) instead of
+ * content alone. This prevents the bug where sending two identical
+ * messages would incorrectly dedup the second one.
+ *
+ * New dedup logic:
+ * 1. If msg has clientMsgId → dedup by clientMsgId (exact match)
+ * 2. If msg has no clientMsgId → fallback to content match (backward compat)
+ */
+
+function createMessageHandlerWithUuidDedup() {
+  let messages: Message[] = []
+
+  function handleIncomingMessage(msg: Message) {
+    // Replay dedup
+    if (msg.replay && messages.some((m) => m.index === msg.index)) {
+      return
+    }
+    // Live dedup for user messages: UUID first, content fallback
+    if (msg.type === 'user' && !msg.replay) {
+      if (msg.clientMsgId && messages.some((m) => m.clientMsgId === msg.clientMsgId)) {
+        return
+      }
+      if (!msg.clientMsgId && messages.some((m) => m.type === 'user' && m.content === msg.content)) {
+        return
+      }
+    }
+    // Live dedup for non-user messages
+    if (!msg.replay && msg.type !== 'user') {
+      if (msg.index != null && messages.some((m) => m.index === msg.index)) {
+        return
+      }
+    }
+    messages = [...messages, msg]
+  }
+
+  function handleSend(content: string, clientMsgId: string) {
+    const msg: Message = {
+      type: 'user',
+      content,
+      index: messages.length - 1,
+      clientMsgId,
+    }
+    messages = [...messages, msg]
+  }
+
+  return {
+    getMessages: () => [...messages],
+    handleSend,
+    handleIncomingMessage,
+  }
+}
+
+describe('UUID-based user message dedup', () => {
+  it('allows two messages with identical content but different UUIDs', () => {
+    const handler = createMessageHandlerWithUuidDedup()
+
+    handler.handleSend('hello', 'uuid-1')
+    expect(handler.getMessages()).toHaveLength(1)
+
+    // Same content, different UUID → should NOT be deduped
+    handler.handleIncomingMessage({
+      type: 'user',
+      content: 'hello',
+      index: 0,
+      clientMsgId: 'uuid-2',
+    })
+
+    expect(handler.getMessages()).toHaveLength(2)
+    expect(handler.getMessages()[1].content).toBe('hello')
+  })
+
+  it('dedups when clientMsgId matches (same message echoed)', () => {
+    const handler = createMessageHandlerWithUuidDedup()
+
+    handler.handleSend('test', 'uuid-abc')
+    expect(handler.getMessages()).toHaveLength(1)
+
+    // Backend echo with same UUID → should be deduped
+    handler.handleIncomingMessage({
+      type: 'user',
+      content: 'test',
+      index: 5,
+      clientMsgId: 'uuid-abc',
+    })
+
+    expect(handler.getMessages()).toHaveLength(1)
+  })
+
+  it('falls back to content dedup for messages without UUID', () => {
+    const handler = createMessageHandlerWithUuidDedup()
+
+    // Old-style message without clientMsgId
+    handler.handleIncomingMessage({
+      type: 'user',
+      content: 'legacy message',
+      index: 0,
+    })
+    expect(handler.getMessages()).toHaveLength(1)
+
+    // Same content without UUID → should be deduped
+    handler.handleIncomingMessage({
+      type: 'user',
+      content: 'legacy message',
+      index: 1,
+    })
+
+    expect(handler.getMessages()).toHaveLength(1)
+  })
+
+  it('allows different content messages with same UUID (edge case)', () => {
+    const handler = createMessageHandlerWithUuidDedup()
+
+    handler.handleIncomingMessage({
+      type: 'user',
+      content: 'first',
+      index: 0,
+      clientMsgId: 'shared-uuid',
+    })
+
+    // Different content, same UUID (shouldn't happen in practice, but test the logic)
+    handler.handleIncomingMessage({
+      type: 'user',
+      content: 'second',
+      index: 1,
+      clientMsgId: 'shared-uuid',
+    })
+
+    // Deduped by UUID
+    expect(handler.getMessages()).toHaveLength(1)
+  })
+})
+
+// ── Recovery should not overwrite live running state ─────────────
+
+/**
+ * When WebSocket recovery replays historical messages, it may include
+ * session_state_changed:completed from a previous run. If the agent is
+ * currently running (a new turn started), the replayed 'completed' state
+ * should NOT overwrite the live 'running' state — otherwise the
+ * "Agent is working..." spinner disappears prematurely.
+ *
+ * Fix: when current state is 'running', ignore replayed state changes
+ * that are less active (completed, idle, cancelled).
+ */
+
+function createMessageHandlerWithStateProtection() {
+  const activeSessionRef = { current: 'sess1' }
+  const sessionStates = new Map<string, string>()
+  let messages: Message[] = []
+
+  function setSessionStateFor(sessionId: string, state: string) {
+    sessionStates.set(sessionId, state)
+  }
+
+  function handleIncomingMessage(msg: Message) {
+    const isInvisibleMessage =
+      msg.type === 'heartbeat' ||
+      (msg.type === 'system' && msg.subtype === 'session_state_changed')
+
+    // Cross-session filtering
+    if (msg.session_id && msg.session_id !== activeSessionRef.current) {
+      if (msg.type === 'system' && msg.subtype === 'session_state_changed') {
+        const newState = msg.state || msg.content || 'completed'
+        if (msg.replay) {
+          const currentState = sessionStates.get(msg.session_id)
+          if (currentState === 'running' && newState !== 'running' && newState !== 'error') {
+            // Skip
+          } else {
+            setSessionStateFor(msg.session_id, newState)
+          }
+        } else {
+          setSessionStateFor(msg.session_id, newState)
+        }
+      }
+      return
+    }
+
+    // Invisible messages
+    if (isInvisibleMessage) {
+      if (msg.type === 'system' && msg.subtype === 'session_state_changed' && msg.session_id) {
+        const newState = msg.state || msg.content || 'completed'
+        if (msg.replay) {
+          const currentState = sessionStates.get(msg.session_id)
+          if (currentState === 'running' && newState !== 'running' && newState !== 'error') {
+            // Skip — live state takes precedence over replayed history
+          } else {
+            setSessionStateFor(msg.session_id, newState)
+          }
+        } else {
+          setSessionStateFor(msg.session_id, newState)
+        }
+      }
+      return
+    }
+
+    // Normal message handling
+    messages = [...messages, msg]
+  }
+
+  return {
+    getMessages: () => [...messages],
+    getState: (sid: string) => sessionStates.get(sid),
+    setSessionStateFor,
+    handleIncomingMessage,
+  }
+}
+
+describe('recovery should not overwrite live running state', () => {
+  it('replayed session_state_changed:completed does NOT overwrite running state (active session)', () => {
+    const handler = createMessageHandlerWithStateProtection()
+
+    // Simulate: user sends new message, state becomes 'running'
+    handler.setSessionStateFor('sess1', 'running')
+    expect(handler.getState('sess1')).toBe('running')
+
+    // Recovery replays historical messages including old 'completed' state
+    handler.handleIncomingMessage({
+      type: 'system',
+      subtype: 'session_state_changed',
+      state: 'completed',
+      content: '',
+      index: 10,
+      session_id: 'sess1',
+      replay: true,
+    })
+
+    // State should STILL be 'running' — not overwritten by replay
+    expect(handler.getState('sess1')).toBe('running')
+  })
+
+  it('replayed session_state_changed:running IS accepted (active session)', () => {
+    const handler = createMessageHandlerWithStateProtection()
+
+    handler.setSessionStateFor('sess1', 'idle')
+
+    // Recovery replays 'running' state
+    handler.handleIncomingMessage({
+      type: 'system',
+      subtype: 'session_state_changed',
+      state: 'running',
+      content: '',
+      index: 10,
+      session_id: 'sess1',
+      replay: true,
+    })
+
+    // State should be updated to 'running'
+    expect(handler.getState('sess1')).toBe('running')
+  })
+
+  it('replayed session_state_changed:error IS accepted even when running (error is more severe)', () => {
+    const handler = createMessageHandlerWithStateProtection()
+
+    handler.setSessionStateFor('sess1', 'running')
+
+    // Recovery replays 'error' state
+    handler.handleIncomingMessage({
+      type: 'system',
+      subtype: 'session_state_changed',
+      state: 'error',
+      content: '',
+      index: 10,
+      session_id: 'sess1',
+      replay: true,
+    })
+
+    // Error should overwrite running (it's a terminal state from a different run)
+    // Note: The current fix only protects against less active states.
+    // If error is replayed while running, it means the previous run errored.
+    // The live buffer status check in handleSelectSession will correct this.
+    // For now, we accept this edge case as the live status will fix it.
+    expect(handler.getState('sess1')).toBe('error')
+  })
+
+  it('cross-session: replayed completed does NOT overwrite running for inactive session', () => {
+    const handler = createMessageHandlerWithStateProtection()
+
+    // Session A is running (inactive from user's perspective)
+    handler.setSessionStateFor('sessA', 'running')
+
+    // User is viewing session B (activeSessionRef.current = 'sess1')
+    // Recovery replays session A's completed state
+    handler.handleIncomingMessage({
+      type: 'system',
+      subtype: 'session_state_changed',
+      state: 'completed',
+      content: '',
+      index: 20,
+      session_id: 'sessA',
+      replay: true,
+    })
+
+    // Session A should still be 'running'
+    expect(handler.getState('sessA')).toBe('running')
+  })
+
+  it('non-replay (live) completed DOES overwrite running state', () => {
+    const handler = createMessageHandlerWithStateProtection()
+
+    handler.setSessionStateFor('sess1', 'running')
+
+    // Live (non-replay) completed message — agent actually finished
+    handler.handleIncomingMessage({
+      type: 'system',
+      subtype: 'session_state_changed',
+      state: 'completed',
+      content: '',
+      index: 20,
+      session_id: 'sess1',
+      replay: false,
+    })
+
+    // Live completed should overwrite running
+    expect(handler.getState('sess1')).toBe('completed')
+  })
+
+  it('active session running state is preserved during send → recovery race (BUG #2)', () => {
+    // This simulates the exact scenario: user sends message, then recovery
+    // replays old completed state from previous session run.
+    // The spinner should NOT disappear.
+
+    const handler = createMessageHandlerWithStateProtection()
+
+    // Simulate previous session was completed
+    handler.setSessionStateFor('sess1', 'completed')
+
+    // User sends new message → frontend sets state to running
+    handler.setSessionStateFor('sess1', 'running')
+
+    // Recovery kicks in and replays old history
+    // These are replay messages (replay: true)
+    handler.handleIncomingMessage({
+      type: 'user',
+      content: 'previous message',
+      index: 0,
+      session_id: 'sess1',
+      replay: true,
+    })
+    handler.handleIncomingMessage({
+      type: 'system',
+      subtype: 'session_state_changed',
+      state: 'running',
+      content: '',
+      index: 1,
+      session_id: 'sess1',
+      replay: true,
+    })
+    handler.handleIncomingMessage({
+      type: 'assistant',
+      content: 'previous response',
+      index: 2,
+      session_id: 'sess1',
+      replay: true,
+    })
+    handler.handleIncomingMessage({
+      type: 'system',
+      subtype: 'session_state_changed',
+      state: 'completed',
+      content: '',
+      index: 3,
+      session_id: 'sess1',
+      replay: true,
+    })
+
+    // State should STILL be running — replay protection must hold
+    expect(handler.getState('sess1')).toBe('running')
+
+    // Now the live running state arrives (from the new agent task)
+    handler.handleIncomingMessage({
+      type: 'system',
+      subtype: 'session_state_changed',
+      state: 'running',
+      content: '',
+      index: 10,
+      session_id: 'sess1',
+      replay: false,
+    })
+
+    // State should still be running
+    expect(handler.getState('sess1')).toBe('running')
   })
 })

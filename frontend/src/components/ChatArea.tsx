@@ -66,23 +66,53 @@ export default function ChatArea({ messages, sessionId, sessionState, onAnswer, 
   // correctly reset the elapsed timer. Heartbeats update a stale
   // counter but do NOT reset the elapsed timer (that caused the
   // "timer jumps back to 0" bug).
+  // When sessionId changes we save the current start time to a
+  // per-session Map so switching back restores the original timer
+  // instead of resetting to 0 (A running → B idle → A continues).
   const prevSessionStateRef = useRef<string | null>(null)
+  const agentSessionIdRef = useRef<string | null>(null)
   const heartbeatCountRef = useRef(0)
+  const sessionStartTimesRef = useRef<Map<string, number>>(new Map())
 
   useEffect(() => {
+    // Session changed — save previous session's start time, restore new session's
+    if (agentSessionIdRef.current !== sessionId) {
+      agentSessionIdRef.current = sessionId
+      prevSessionStateRef.current = sessionState
+
+      if (sessionState === 'running' && sessionId) {
+        const savedStart = sessionStartTimesRef.current.get(sessionId)
+        if (savedStart !== undefined) {
+          setAgentStartTime(savedStart)
+        } else {
+          // First time seeing this session as running — record now
+          const now = Date.now()
+          sessionStartTimesRef.current.set(sessionId, now)
+          setAgentStartTime(now)
+        }
+      } else {
+        setAgentStartTime(null)
+      }
+      return
+    }
+
     // Detect transition TO running — always reset the start time
     if (sessionState === 'running' && prevSessionStateRef.current !== 'running') {
-      setAgentStartTime(Date.now())
+      const now = Date.now()
+      if (sessionId) sessionStartTimesRef.current.set(sessionId, now)
+      setAgentStartTime(now)
     }
-    // Transition AWAY from running — clear the start time
-    if (sessionState !== 'running') {
+    // Transition AWAY from running — clear start time for this session
+    // (new runs will get a fresh timestamp)
+    if (prevSessionStateRef.current === 'running' && sessionState !== 'running') {
+      if (sessionId) sessionStartTimesRef.current.delete(sessionId)
       setAgentStartTime(null)
     }
     // Count heartbeats for stale detection (don't affect elapsed timer)
     heartbeatCountRef.current = messages.filter(m => m.type === 'heartbeat').length
 
     prevSessionStateRef.current = sessionState
-  }, [sessionState, messages])
+  }, [sessionState, messages, sessionId])
 
   // Restore scroll position when session changes or messages load
   useEffect(() => {
@@ -250,7 +280,7 @@ export default function ChatArea({ messages, sessionId, sessionState, onAnswer, 
 
         {filteredMessages.map((msg, i) => (
           <MessageBubble
-            key={`${msg.index}-${i}`}
+            key={msg.clientMsgId ?? `${msg.index}-${i}`}
             message={msg}
             sessionId={sessionId || ''}
             onAnswer={onAnswer}

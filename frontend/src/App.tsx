@@ -12,8 +12,8 @@ import DesignPreviewPage from './DesignPreviewPage'
 import SettingsPreviewPage from './SettingsPreviewPage'
 import TechPreviewPage from './TechPreviewPage'
 import { useWebSocket } from './hooks/useWebSocket'
-import type { Message, SessionItem } from './lib/types'
-import { mergeSessionStates, computeRecoverIndex } from './lib/session-state'
+import type { Message, SessionItem, MessageSendState } from './lib/types'
+import { mergeSessionStates, computeRecoverIndex, saveLastKnownIndex, loadLastKnownIndex, clearLastKnownIndex } from './lib/session-state'
 
 const logger = {
   error: (message: string, err: unknown) => {
@@ -144,8 +144,13 @@ function MainApp() {
   }, [activeSession])
   const [sessionStates, setSessionStates] = useState<Map<string, string>>(new Map())
 
-  // Per-session state setter — updates only the specified session
+  // Per-session state setter — updates only the specified session.
+  // Also syncs to sessionStatesRef to avoid stale closure bugs in
+  // handleIncomingMessage when WebSocket messages arrive between
+  // React scheduling a state update and applying it.
   const setSessionStateFor = useCallback((sessionId: string, state: string) => {
+    // Sync to ref immediately — survives React render scheduling
+    sessionStatesRef.current.set(sessionId, state)
     setSessionStates(prev => {
       const next = new Map(prev)
       next.set(sessionId, state)
@@ -282,19 +287,66 @@ function MainApp() {
     }
   }
 
+  // Track last heartbeat arrival — used for staleness detection.
+  // When the backend subscribe loop exits (agent done), heartbeats stop.
+  // If WS is connected but no heartbeat for 60s while 'running',
+  // the completion signal was likely lost → trigger recovery.
+  const lastHeartbeatRef = useRef(Date.now())
+
+  // Reset heartbeat ref on session switch to prevent false staleness
+  // (old heartbeat from previous session could be >60s ago)
+  useEffect(() => {
+    lastHeartbeatRef.current = Date.now()
+  }, [activeSession])
+
+  // Helper: update send state for a message by clientMsgId
+  const updateSendState = useCallback((clientMsgId: string | undefined, newState: MessageSendState) => {
+    if (!clientMsgId) return
+    sendStateMapRef.current.set(clientMsgId, newState)
+    // Update the corresponding message in the messages array
+    setMessages((prev) => prev.map((m) =>
+      m.clientMsgId === clientMsgId ? { ...m, sendState: newState } : m
+    ))
+  }, [])
+
   const handleIncomingMessage = useCallback((msg: Message) => {
+    // Track heartbeat for staleness detection
+    if (msg.type === 'heartbeat') {
+      lastHeartbeatRef.current = Date.now()
+    }
+
+    // Update last_known_index for persistence
+    if (msg.type !== 'heartbeat' && msg.type !== 'system' && msg.index != null && msg.index >= 0) {
+      const sid = msg.session_id || activeSessionRef.current
+      if (sid) {
+        saveLastKnownIndex(sid, msg.index, userId)
+      }
+    }
+
+    // Backend confirmed user message echo: clear pending and confirm send
+    // Match by clientMsgId first, then fallback to content match (backward compat)
+    if (msg.type === 'user' && !msg.replay && msg.session_id) {
+      const pending = pendingUserMsgsRef.current.get(msg.session_id)
+      const matchedByUuid = msg.clientMsgId && pending?.clientMsgId === msg.clientMsgId
+      const matchedByContent = !msg.clientMsgId && pending && pending.content === msg.content
+      if (matchedByUuid || matchedByContent) {
+        pendingUserMsgsRef.current.delete(msg.session_id)
+        if (pending?.clientMsgId) {
+          updateSendState(pending.clientMsgId, 'sent')
+          confirmSendRef.current(pending.clientMsgId)
+        }
+      }
+    }
+
+    // Also confirm send if backend echoes a user message we're tracking (by clientMsgId on the incoming msg)
+    if (msg.type === 'user' && msg.clientMsgId) {
+      updateSendState(msg.clientMsgId, 'sent')
+      confirmSendRef.current(msg.clientMsgId)
+    }
+
     const isInvisibleMessage =
       msg.type === 'heartbeat' ||
       (msg.type === 'system' && msg.subtype === 'session_state_changed')
-
-    // Backend confirmed user message echo: clear pending for this session.
-    // This means the backend has received and buffered the message.
-    if (msg.type === 'user' && !msg.replay && msg.session_id) {
-      const pending = pendingUserMsgsRef.current.get(msg.session_id)
-      if (pending && pending.content === msg.content) {
-        pendingUserMsgsRef.current.delete(msg.session_id)
-      }
-    }
 
     // Filter: skip messages from inactive sessions.
     // A single WebSocket receives messages from ALL sessions for this user.
@@ -302,7 +354,19 @@ function MainApp() {
     // Still process state changes (session_state_changed, result) for all sessions.
     if (msg.session_id && msg.session_id !== activeSessionRef.current) {
       if (msg.type === 'system' && msg.subtype === 'session_state_changed') {
-        setSessionStateFor(msg.session_id, msg.state || msg.content || 'completed')
+        const newState = msg.state || msg.content || 'completed'
+        if (msg.replay) {
+          const currentState = sessionStatesRef.current.get(msg.session_id)
+          // Allow error states through even during replay — they're more severe
+          // But block completed/idle/cancelled from overwriting running
+          if (currentState === 'running' && newState !== 'running' && newState !== 'error') {
+            // Skip — live state takes precedence
+          } else {
+            setSessionStateFor(msg.session_id, newState)
+          }
+        } else {
+          setSessionStateFor(msg.session_id, newState)
+        }
       }
       if (msg.type === 'result') {
         setSessionStateFor(msg.session_id, 'completed')
@@ -314,7 +378,23 @@ function MainApp() {
     // Invisible messages from the active session: update state but don't append
     if (isInvisibleMessage) {
       if (msg.type === 'system' && msg.subtype === 'session_state_changed' && msg.session_id) {
-        setSessionStateFor(msg.session_id, msg.state || msg.content || 'completed')
+        const newState = msg.state || msg.content || 'completed'
+        // Replay messages for the active session should not downgrade
+        // a 'running' state. This protects against the send → recovery
+        // race where replayed history (with old completed/idle states)
+        // arrives after handleSend has set running.
+        // Live (non-replay) messages are always accepted — when the agent
+        // actually finishes, completed will correctly overwrite running.
+        if (msg.replay) {
+          const currentState = sessionStatesRef.current.get(msg.session_id)
+          if (currentState === 'running' && newState !== 'running' && newState !== 'error') {
+            // Skip — live state takes precedence over replayed history
+          } else {
+            setSessionStateFor(msg.session_id, newState)
+          }
+        } else {
+          setSessionStateFor(msg.session_id, newState)
+        }
       }
       return
     }
@@ -341,11 +421,15 @@ function MainApp() {
       if (msg.replay && prev.some((m) => m.index === msg.index)) {
         return prev
       }
-      // Live dedup for user messages: the frontend optimistically adds
-      // the user message; the server sends back the confirmed copy with
-      // a different index. Skip the server copy if content matches.
+      // Live dedup for user messages: prefer UUID-based matching,
+      // fallback to content match for backward compatibility with
+      // messages that don't have clientMsgId.
       if (msg.type === 'user' && !msg.replay) {
-        if (prev.some((m) => m.type === 'user' && m.content === msg.content)) {
+        if (msg.clientMsgId && prev.some((m) => m.clientMsgId === msg.clientMsgId)) {
+          return prev
+        }
+        // Fallback: content match for old messages without UUID
+        if (!msg.clientMsgId && prev.some((m) => m.type === 'user' && m.content === msg.content)) {
           return prev
         }
       }
@@ -383,21 +467,30 @@ function MainApp() {
     if (msg.type === 'file_result') {
       loadFileCount()
     }
-  }, [userId])
+  }, [userId, updateSendState])
 
-  const { connected, sendMessage, sendAnswer, sendRecover } = useWebSocket({
+  const { status, connected, sendMessage, confirmSend, sendAnswer, sendRecover } = useWebSocket({
     userId,
     onMessage: handleIncomingMessage,
     token: authToken ?? undefined,
   })
 
+  // Sync confirmSend to ref (so handleIncomingMessage can use it)
+  useEffect(() => {
+    confirmSendRef.current = confirmSend
+  }, [confirmSend])
+
   // Auto-recover message history when WebSocket reconnects
   // Skip recovery on initial page load if REST already populated messages
+  // Use persisted last_known_index for incremental recovery
   const didRecoverRef = useRef(false)
   useEffect(() => {
     if (connected && activeSessionRef.current && !didRecoverRef.current) {
       didRecoverRef.current = true
-      sendRecover(activeSessionRef.current, 0)
+      const lastIndex = loadLastKnownIndex(activeSessionRef.current, userId)
+      // If we have cached messages, recover from last known index;
+      // otherwise recover from 0 (first load)
+      sendRecover(activeSessionRef.current, messages.length > 0 ? lastIndex : 0)
     }
     // Reset recovery flag on disconnect so next reconnect can recover again
     if (!connected) {
@@ -405,32 +498,36 @@ function MainApp() {
     }
   }, [connected, sendRecover])
 
-  // Stale-state polling: if session is 'running' but hasn't received any
-  // new messages for a while, poll the backend status to detect lost
-  // completion signals (e.g., WebSocket message delivery failure).
+  // Heartbeat staleness detection: when the backend subscribe loop exits
+  // after agent completion, heartbeats stop. If the completion signal was
+  // lost (WS delivery failure), the frontend stays 'running' forever.
+  // Detect this by checking if no heartbeat arrived for 60s while running.
   useEffect(() => {
     if (activeSessionState !== 'running' || !activeSessionRef.current) return
 
-    const pollInterval = setInterval(() => {
+    const checkInterval = setInterval(() => {
       const sid = activeSessionRef.current
       if (!sid) return
-      const headers: Record<string, string> = {}
-      if (authToken) headers['Authorization'] = `Bearer ${authToken}`
-      fetch(`/api/users/${userId}/sessions/${sid}/status`, { headers })
-        .then(resp => {
-          if (!resp.ok) return null
-          return resp.json()
-        })
-        .then(data => {
-          if (data && data.state && data.state !== 'running') {
-            setSessionStateFor(sid, data.state)
-          }
-        })
-        .catch(() => {})
-    }, 120_000) // 2 minutes — long enough to not impact normal flows
 
-    return () => clearInterval(pollInterval)
-  }, [activeSessionState, userId, authToken])
+      const gap = Date.now() - lastHeartbeatRef.current
+      if (gap > 60_000) {
+        // Subscribe loop exited silently — trigger recovery
+        lastHeartbeatRef.current = Date.now() // Reset to avoid repeated triggers
+        sendRecover(sid, computeRecoverIndex(messages))
+      }
+    }, 10_000) // Check every 10s
+
+    return () => clearInterval(checkInterval)
+  }, [activeSessionState, messages, sendRecover])
+
+  // Refs to break circular dependency between handleIncomingMessage and useWebSocket
+  const confirmSendRef = useRef<(clientMsgId: string) => void>(() => {})
+  const sendStateMapRef = useRef<Map<string, MessageSendState>>(new Map())
+  // Mirror of sessionStates for use in handleIncomingMessage — avoids
+  // stale closure bugs when WebSocket messages arrive between React
+  // scheduling a state update and applying it (the "spinner disappears
+  // after send" bug).
+  const sessionStatesRef = useRef<Map<string, string>>(new Map())
 
   const handleSend = useCallback(
     async (message: string, files?: File[]) => {
@@ -467,12 +564,17 @@ function MainApp() {
       clearThresholdRef.current = lastBackendIndex
       replayStartedRef.current = false
       const fileMetadata = files?.map(f => ({ filename: f.name, size: f.size }))
+      const clientMsgId = crypto.randomUUID()
       const optimisticMsg: Message = {
         type: 'user',
         content: message,
         index: lastBackendIndex - 1,
         data: fileMetadata,
+        clientMsgId,
+        sendState: 'sending',
       }
+      // Track send state
+      sendStateMapRef.current.set(clientMsgId, 'sending')
       // Track pending message — survives session switches so it can be
       // restored when switching back, even if the backend hasn't received
       // the WebSocket message yet.
@@ -482,18 +584,28 @@ function MainApp() {
       setMessages((prev) => [...prev, optimisticMsg])
       setSessionStateFor(sessionId!, 'running')
 
-      // last_index: number of messages the backend has already seen
+      // Send via WebSocket with send state tracking
       sendMessage({
         message,
         session_id: sessionId ?? undefined,
         last_index: lastBackendIndex,
         files: files?.map(f => f.name),
+        client_msg_id: clientMsgId,
       })
+
+      // Monitor send outcome (timeout / disconnect)
+      // Since sendMessage returns a clientMsgId, we track it here.
+      // The actual resolution happens when backend echoes or timeout fires.
     },
     [messagesRef, sendMessage, authToken, userId],
   )
 
   const handleNewSession = useCallback(async () => {
+    // Clean up old session's pending messages and last_known_index
+    const oldSessionId = activeSessionRef.current
+    if (oldSessionId) {
+      pendingUserMsgsRef.current.delete(oldSessionId)
+    }
     setMessages([])
     setActiveSession(null)
     // Reset tracking refs — no active session means input should be enabled
@@ -502,6 +614,17 @@ function MainApp() {
   }, [])
 
   const handleSelectSession = useCallback(async (id: string) => {
+    // Flush last_known_index for the old session before switching
+    const oldSessionId = activeSessionRef.current
+    if (oldSessionId) {
+      const oldMaxIndex = computeRecoverIndex(messages) - 1
+      if (oldMaxIndex >= 0) {
+        saveLastKnownIndex(oldSessionId, oldMaxIndex, userId)
+      }
+      // Clean up pending messages for old session
+      pendingUserMsgsRef.current.delete(oldSessionId)
+    }
+
     setActiveSession(id)
     activeSessionRef.current = id  // Sync ref immediately — WS messages arriving
                                    // in the same tick must use the new session
@@ -587,6 +710,15 @@ function MainApp() {
         // we don't miss or duplicate messages.
         sendRecover(id, computeRecoverIndex(msgs))
         didRecoverRef.current = true  // Prevent auto-recovery from sending duplicate recover
+
+        // Update last_known_index from loaded history
+        if (msgs.length > 0) {
+          let maxIdx = msgs[0].index
+          for (let j = 1; j < msgs.length; j++) {
+            if (msgs[j].index > maxIdx) maxIdx = msgs[j].index
+          }
+          if (maxIdx >= 0) saveLastKnownIndex(id, maxIdx, userId)
+        }
       } else {
         // History fetch failed — restore pending if available
         if (pending) {
@@ -605,7 +737,7 @@ function MainApp() {
       }
       setSessionStateFor(id, 'idle')
     }
-  }, [userId, authToken, setSessionStateFor, sendRecover])
+  }, [userId, authToken, messages, setSessionStateFor, sendRecover])
 
   const handleDeleteSession = useCallback(async (id: string) => {
     if (!confirm('Delete this session?')) return
@@ -616,6 +748,9 @@ function MainApp() {
       if (!resp.ok) {
         throw new Error(`Failed to delete session (HTTP ${resp.status})`)
       }
+      // Clean up pending messages and last_known_index
+      pendingUserMsgsRef.current.delete(id)
+      clearLastKnownIndex(id, userId)
       // Small delay to ensure filesystem sync before reload
       await new Promise(r => setTimeout(r, 200))
       // Refresh session list
@@ -689,9 +824,22 @@ function MainApp() {
 
   return (
     <div className="app">
+      {/* Reconnection failure banner */}
+      {status === 'failed' && (
+        <div className="connection-banner connection-banner--failed">
+          <span>Connection lost after multiple attempts.</span>
+          <button onClick={() => window.location.reload()}>Refresh Page</button>
+        </div>
+      )}
+      {/* Reconnecting indicator */}
+      {status === 'reconnecting' && (
+        <div className="connection-banner connection-banner--reconnecting">
+          <span>Reconnecting...</span>
+        </div>
+      )}
       {/* Header */}
       <Header
-        connected={connected}
+        connectionStatus={status}
         userId={userId}
         onOpenSettings={() => setSettingsOpen(true)}
         onOpenFeedback={() => setShowFeedback(true)}
@@ -726,7 +874,7 @@ function MainApp() {
             ref={inputBarRef}
             onSend={handleSend}
             onStop={stopSession}
-            disabled={!connected || activeSessionState === 'running'}
+            disabled={status !== 'connected' || activeSessionState === 'running'}
             userId={userId}
           />
         </main>

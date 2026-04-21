@@ -23,7 +23,17 @@ export interface Message {
   hook_name?: string // name of the hook (e.g., "SessionStart:startup")
   hook_event?: string // event type (e.g., "SessionStart")
   outcome?: string  // "success" or "error" for hook_response
+  // Client-generated message ID for dedup (UUID v4)
+  clientMsgId?: string
+  // Send state for optimistic user messages
+  sendState?: MessageSendState
 }
+
+/** Send state machine for user messages */
+export type MessageSendState = 'sending' | 'sent' | 'failed' | 'timeout'
+
+/** WebSocket connection status */
+export type ConnectionStatus = 'connected' | 'connecting' | 'reconnecting' | 'failed'
 
 export interface SessionItem {
   session_id: string

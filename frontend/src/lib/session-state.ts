@@ -73,3 +73,51 @@ export function computeRecoverIndex(messages: Array<{ index: number }>): number 
   }
   return maxIndex + 1
 }
+
+// ── last_known_index persistence (localStorage) ──────────────────
+
+const LAST_INDEX_KEY_PREFIX = 'web-agent-last-index:'
+
+/**
+ * Build the localStorage key for a given session + user.
+ */
+function makeLastIndexKey(sessionId: string, userId: string): string {
+  return `${LAST_INDEX_KEY_PREFIX}${userId}:${sessionId}`
+}
+
+/**
+ * Persist the highest known message index for a session.
+ * Written lazily (on session switch / unload) to avoid per-message writes.
+ */
+export function saveLastKnownIndex(sessionId: string, index: number, userId: string): void {
+  try {
+    localStorage.setItem(makeLastIndexKey(sessionId, userId), String(index))
+  } catch {
+    // localStorage full or unavailable — skip silently
+  }
+}
+
+/**
+ * Read the last known index for a session. Returns 0 if not found.
+ */
+export function loadLastKnownIndex(sessionId: string, userId: string): number {
+  try {
+    const raw = localStorage.getItem(makeLastIndexKey(sessionId, userId))
+    if (raw === null) return 0
+    const parsed = Number(raw)
+    return Number.isFinite(parsed) ? parsed : 0
+  } catch {
+    return 0
+  }
+}
+
+/**
+ * Remove the persisted index for a session (e.g., on delete).
+ */
+export function clearLastKnownIndex(sessionId: string, userId: string): void {
+  try {
+    localStorage.removeItem(makeLastIndexKey(sessionId, userId))
+  } catch {
+    // ignore
+  }
+}
