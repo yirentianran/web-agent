@@ -188,7 +188,23 @@ export default function MessageBubble({ message, sessionId, onAnswer, onFileClic
     // - init: internal initialization confirmation
     // - session_state_changed: used to update UI state, not displayed
     // - task_started / task_started.*: internal SDK task notifications
-    const hiddenSubtypes = ['hook_started', 'hook_response', 'hook_error', 'init', 'session_state_changed', 'task_started', 'session_cancelled']
+    // - progress: internal task progress updates
+    // - interrupt/can_use_tool/initialize: SDK internal notifications
+    // - set_permission_mode/hook_callback: permission and hook callbacks
+    // - mcp_message/mcp_reconnect/mcp_toggle: MCP server notifications
+    // - rewind_files/stop_task: internal task control
+    // - success/error: task completion notifications (handled elsewhere)
+    // - status: TaskNotificationMessage status updates
+    const hiddenSubtypes = [
+      'hook_started', 'hook_response', 'hook_error',
+      'init', 'session_state_changed', 'session_cancelled',
+      'task_started', 'progress',
+      'interrupt', 'can_use_tool', 'initialize',
+      'set_permission_mode', 'hook_callback',
+      'mcp_message', 'mcp_reconnect', 'mcp_toggle',
+      'rewind_files', 'stop_task',
+      'success', 'error', 'status',
+    ]
     const subtype = message.subtype || ''
     if (hiddenSubtypes.includes(subtype) || subtype.startsWith('task_started.')) {
       return null
