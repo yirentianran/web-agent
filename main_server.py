@@ -1817,16 +1817,16 @@ async def fork_session(user_id: str, session_id: str) -> dict[str, str]:
     for msg in history:
         buffer.add_message(new_session_id, msg)
 
-    # Copy session metadata files
-    src_sessions = user_data_dir(user_id) / "claude-data" / "sessions"
-    src_jsonl = src_sessions / f"{session_id}.jsonl"
-    if src_jsonl.exists():
-        src_jsonl.rename(src_jsonl.with_name(f"{new_session_id}.jsonl"))
-    # Copy meta files if any
-    src_meta = src_sessions / f"{session_id}.meta.json"
-    if src_meta.exists():
-        import shutil
-        shutil.copy2(str(src_meta), str(src_sessions / f"{new_session_id}.meta.json"))
+    # Create new session in DB and copy metadata
+    if session_store is not None:
+        await session_store.create_session(user_id=user_id, session_id=new_session_id)
+        # Copy session title from source
+        sessions = await session_store.list_sessions(user_id=user_id)
+        src_session = next((s for s in sessions if s["session_id"] == session_id), None)
+        if src_session and src_session.get("title"):
+            await session_store.update_session_title(
+                user_id=user_id, session_id=new_session_id, title=src_session["title"]
+            )
 
     return {"status": "ok", "session_id": new_session_id, "forked_from": session_id}
 

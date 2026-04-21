@@ -121,12 +121,12 @@ class TestCancel:
         state = buffer.get_session_state("s1")
         assert state["state"] == "cancelled"
 
-    def test_cancel_adds_system_message(self, buffer: MessageBuffer) -> None:
+    def test_cancel_does_not_add_messages(self, buffer: MessageBuffer) -> None:
+        """cancel() only sets state — the run_agent_task CancelledError handler
+        adds the system messages."""
         buffer.cancel("s1")
         history = buffer.get_history("s1")
-        assert len(history) == 1
-        assert history[0]["type"] == "system"
-        assert history[0]["subtype"] == "session_cancelled"
+        assert history == []
 
     def test_cancel_sets_done(self, buffer: MessageBuffer) -> None:
         buffer.cancel("s1")
@@ -171,52 +171,10 @@ class TestCleanupExpired:
         buffer.cleanup_expired()
         assert "s1" in buffer.sessions
 
-    def test_disk_survives_eviction(self, buffer: MessageBuffer) -> None:
-        buffer.add_message("s1", {"type": "user", "content": "persist"})
-        buffer.sessions["s1"]["last_active"] = time.time() - 3601
+    def test_keeps_active_sessions(self, buffer: MessageBuffer) -> None:
+        buffer.add_message("s1", {"type": "user", "content": "hello"})
         buffer.cleanup_expired()
-        assert "s1" not in buffer.sessions
-        # But history is recoverable from disk
-        history = buffer.get_history("s1")
-        assert len(history) == 1
-        assert history[0]["content"] == "persist"
-
-
-# ── Disk persistence ──────────────────────────────────────────────
-
-
-class TestDiskPersistence:
-    def test_messages_written_to_disk(self, buffer: MessageBuffer) -> None:
-        buffer.add_message("s1", {"type": "user", "content": "disk-test"})
-        disk_path = buffer._disk_path("s1")
-        assert disk_path.exists()
-        content = disk_path.read_text()
-        assert "disk-test" in content
-
-    def test_history_reloaded_from_disk(self, buffer: MessageBuffer) -> None:
-        buffer.add_message("s1", {"type": "user", "content": "msg-a"})
-        buffer.add_message("s1", {"type": "assistant", "content": "msg-b"})
-        # Evict from memory
-        buffer.sessions["s1"]["last_active"] = time.time() - 3601
-        buffer.cleanup_expired()
-        # Reload should hit disk
-        history = buffer.get_history("s1")
-        assert len(history) == 2
-        assert history[0]["content"] == "msg-a"
-        assert history[1]["content"] == "msg-b"
-
-    def test_after_index_on_disk_reload(self, buffer: MessageBuffer) -> None:
-        for i in range(5):
-            buffer.add_message("s1", {"type": "user", "content": f"m-{i}"})
-        buffer.sessions["s1"]["last_active"] = time.time() - 3601
-        buffer.cleanup_expired()
-        # After eviction + disk reload, get_history loads all disk messages
-        # and returns them from the refilled buffer starting at after_index.
-        # Note: the cold-cache path refills then slices [after_index:] on the
-        # refilled deque which starts at 0, so after_index=3 gives messages[3:].
-        history = buffer.get_history("s1", after_index=0)
-        assert len(history) == 5
-        assert history[3]["content"] == "m-3"
+        assert "s1" in buffer.sessions
 
 
 # ── Restart recovery (DB state restoration) ───────────────────────

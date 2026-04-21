@@ -1,6 +1,6 @@
-"""Disk+memory dual-layer message buffer for session persistence.
+"""In-memory message buffer with SQLite fallback for session persistence.
 
-Memory layer for real-time push, disk layer for disconnect recovery
+Memory layer for real-time push, SQLite for disconnect recovery
 and container restart resilience.
 """
 
@@ -150,6 +150,53 @@ class MessageBuffer:
             conn.rollback()
             raise
 
+    def _read_db_sync(self, session_id: str, after_index: int = 0) -> list[dict]:
+        """Read messages from SQLite starting at *after_index*.
+
+        Reconstructs messages from the DB schema, mirroring the field-mapping
+        logic in SessionStore.get_session_history().
+        """
+        if self.db is None or self._sync_conn is None:
+            try:
+                self._sync_conn = sqlite3.connect(str(self.db.db_path))
+            except Exception:
+                return []
+
+        cursor = self._sync_conn.execute(
+            "SELECT type, subtype, name, content, payload, usage "
+            "FROM messages WHERE session_id = ? AND seq >= ? ORDER BY seq",
+            (session_id, after_index),
+        )
+        rows = cursor.fetchall()
+        result: list[dict] = []
+        for row in rows:
+            msg: dict[str, Any] = {"type": row[0]}
+            if row[1] is not None:
+                msg["subtype"] = row[1]
+            if row[2] is not None:
+                msg["name"] = row[2]
+            if row[3] is not None:
+                msg["content"] = row[3]
+            if row[4] is not None:
+                parsed = json.loads(row[4])
+                msg["payload"] = parsed
+                # Map payload fields to top-level keys (same logic as session_store.py)
+                if msg["type"] == "file_result" and "data" in parsed:
+                    msg["data"] = parsed["data"]
+                if msg["type"] == "user" and "data" in parsed:
+                    msg["data"] = parsed["data"]
+                if msg["type"] == "tool_use":
+                    if "id" in parsed:
+                        msg["id"] = parsed["id"]
+                    if "input" in parsed:
+                        msg["input"] = parsed["input"]
+                if msg["type"] == "tool_result" and "tool_use_id" in parsed:
+                    msg["tool_use_id"] = parsed["tool_use_id"]
+            if row[5] is not None:
+                msg["usage"] = json.loads(row[5])
+            result.append(msg)
+        return result
+
     def _read_disk(self, session_id: str, after_index: int = 0) -> list[dict]:
         """Read messages from disk starting at *after_index*."""
         path = self._disk_path(session_id)
@@ -162,7 +209,7 @@ class MessageBuffer:
     # ── public API ───────────────────────────────────────────────
 
     def add_message(self, session_id: str, message: dict) -> None:
-        """SDK produces a message → write to memory + disk (and DB if attached)."""
+        """SDK produces a message → write to memory + SQLite (if DB attached)."""
         buf = self._ensure_buf(session_id)
         buf["messages"].append(message)
         self._evict_old(session_id)
@@ -176,9 +223,6 @@ class MessageBuffer:
             pass  # Keep done=True for redundant result messages
         else:
             buf["done"] = False
-
-        # Write to disk (JSONL) for crash recovery
-        self._write_disk(session_id, message)
 
         # Dual-write to SQLite if database is attached
         self._write_db_sync(session_id, message)
@@ -243,8 +287,13 @@ class MessageBuffer:
             # Have messages in memory starting from the requested position
             return messages[local_index:]
 
-        # Need to read from disk — return disk messages directly without
-        # mixing them into the in-memory buffer (indices wouldn't align).
+        # Need to read from disk — prefer SQLite when DB is attached
+        if self.db is not None:
+            db_result = self._read_db_sync(session_id, after_index)
+            if db_result:
+                return db_result
+
+        # DB unavailable or empty: fall back to JSONL disk file
         return self._read_disk(session_id, after_index)
 
     def get_session_state(self, session_id: str) -> dict[str, Any]:

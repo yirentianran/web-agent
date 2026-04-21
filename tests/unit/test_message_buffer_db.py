@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 
 import pytest
@@ -58,19 +59,6 @@ class TestMessageBufferDBWrite:
             assert len(rows) == 5
             assert rows[0][0] == "msg-0"
             assert rows[4][0] == "msg-4"
-
-    @pytest.mark.asyncio
-    async def test_add_message_still_writes_to_disk(
-        self, buffer: MessageBuffer, db: Database, tmp_path: Path
-    ) -> None:
-        """DB write should not replace disk write — both should coexist."""
-        buffer.db = db
-        buffer.add_message("s1", {"type": "user", "content": "dual-write"})
-
-        disk_path = buffer._disk_path("s1")
-        assert disk_path.exists()
-        content = disk_path.read_text()
-        assert "dual-write" in content
 
     @pytest.mark.asyncio
     async def test_message_seq_assigned_correctly(
@@ -174,6 +162,117 @@ class TestMessageBufferDBWrite:
             assert len(rows) == 4
             assert rows[3][0] == 3
             assert rows[3][1] == "new-message"
+
+
+class TestGetHistorySQLiteFallback:
+    """Test that get_history() falls back to SQLite after memory eviction.
+
+    This replaces the JSONL-based disk fallback — WebSocket recovery paths
+    should work even when the in-memory buffer has been evicted.
+    """
+
+    @pytest.mark.asyncio
+    async def test_get_history_falls_back_to_db_after_eviction(
+        self, buffer: MessageBuffer, db: Database
+    ) -> None:
+        """After memory eviction, get_history() should read from SQLite."""
+        buffer.db = db
+
+        # Add messages
+        for i in range(5):
+            buffer.add_message("s1", {"type": "user", "content": f"msg-{i}"})
+
+        # Verify messages are in memory
+        history = buffer.get_history("s1")
+        assert len(history) == 5
+
+        # Evict from memory (simulate cleanup_expired)
+        buffer.sessions["s1"]["last_active"] = time.time() - 3601
+        buffer.cleanup_expired()
+        assert "s1" not in buffer.sessions
+
+        # Remove JSONL file to force SQLite fallback path
+        jsonl_path = buffer._disk_path("s1")
+        if jsonl_path.exists():
+            jsonl_path.unlink()
+
+        # get_history should recover from SQLite
+        history = buffer.get_history("s1")
+        assert len(history) == 5
+        assert history[0]["content"] == "msg-0"
+        assert history[4]["content"] == "msg-4"
+
+    @pytest.mark.asyncio
+    async def test_get_history_from_db_with_after_index(
+        self, buffer: MessageBuffer, db: Database
+    ) -> None:
+        """After eviction, get_history(session, after_index=N) should return
+        only messages with seq >= N from SQLite."""
+        buffer.db = db
+
+        for i in range(5):
+            buffer.add_message("s1", {"type": "user", "content": f"msg-{i}"})
+
+        # Evict
+        buffer.sessions["s1"]["last_active"] = time.time() - 3601
+        buffer.cleanup_expired()
+
+        # Remove JSONL to force SQLite
+        jsonl_path = buffer._disk_path("s1")
+        if jsonl_path.exists():
+            jsonl_path.unlink()
+
+        # Request from index 2 onward
+        history = buffer.get_history("s1", after_index=2)
+        assert len(history) == 3
+        assert history[0]["content"] == "msg-2"
+        assert history[2]["content"] == "msg-4"
+
+    @pytest.mark.asyncio
+    async def test_get_history_from_db_returns_empty_for_no_messages(
+        self, buffer: MessageBuffer, db: Database
+    ) -> None:
+        """After eviction, get_history for a session with no DB messages
+        should return empty list."""
+        buffer.db = db
+
+        # Evict without adding any messages
+        buffer.cleanup_expired()
+
+        history = buffer.get_history("nonexistent-session")
+        assert history == []
+
+    @pytest.mark.asyncio
+    async def test_get_history_db_roundtrip_tool_use(
+        self, buffer: MessageBuffer, db: Database
+    ) -> None:
+        """After eviction, tool_use messages should recover id and input
+        from SQLite via get_history()."""
+        buffer.db = db
+
+        buffer.add_message("s1", {
+            "type": "tool_use",
+            "name": "Bash",
+            "id": "toolu_xyz",
+            "input": {"command": "ls -la"},
+        })
+
+        # Evict
+        buffer.sessions["s1"]["last_active"] = time.time() - 3601
+        buffer.cleanup_expired()
+
+        # Remove JSONL to force SQLite
+        jsonl_path = buffer._disk_path("s1")
+        if jsonl_path.exists():
+            jsonl_path.unlink()
+
+        history = buffer.get_history("s1")
+        assert len(history) == 1
+        msg = history[0]
+        assert msg["type"] == "tool_use"
+        assert msg["name"] == "Bash"
+        assert msg.get("id") == "toolu_xyz"
+        assert msg.get("input") == {"command": "ls -la"}
 
 
 class TestMessageBufferDBToolUseFields:

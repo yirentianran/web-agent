@@ -224,13 +224,3 @@ class SessionStore:
                 ),
             )
             await conn.commit()
-
-    # ── Internal helpers ─────────────────────────────────────────
-
-    def _write_disk_session(self, session_id: str) -> None:
-        """Write a minimal session file to disk for backward compatibility."""
-        if self.msg_buffer_dir is None:
-            return
-        self.msg_buffer_dir.mkdir(parents=True, exist_ok=True)
-        path = self.msg_buffer_dir / f"{session_id}.jsonl"
-        path.touch()
