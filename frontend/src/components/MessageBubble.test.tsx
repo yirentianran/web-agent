@@ -1131,3 +1131,92 @@ describe('MessageBubble - Write tool_use rendering', () => {
     expect(details).not.toHaveAttribute('open')
   })
 })
+
+describe('MessageBubble - streaming text (content_block_delta)', () => {
+  it('renders content_block_delta stream event as incremental text', () => {
+    const message: Message = {
+      type: 'stream_event',
+      content: '',
+      index: 1,
+      uuid: 'evt-123',
+      event: {
+        type: 'content_block_delta',
+        index: 0,
+        delta: {
+          type: 'text_delta',
+          text: 'Hello',
+        },
+      },
+    }
+
+    renderMessage(message)
+
+    expect(screen.getByText('Hello')).toBeInTheDocument()
+  })
+
+  it('accumulates multiple content_block_delta events', () => {
+    // First delta
+    const message1: Message = {
+      type: 'stream_event',
+      content: '',
+      index: 1,
+      uuid: 'evt-1',
+      event: {
+        type: 'content_block_delta',
+        index: 0,
+        delta: {
+          type: 'text_delta',
+          text: 'Hello',
+        },
+      },
+    }
+
+    // Second delta
+    const message2: Message = {
+      type: 'stream_event',
+      content: '',
+      index: 2,
+      uuid: 'evt-2',
+      event: {
+        type: 'content_block_delta',
+        index: 0,
+        delta: {
+          type: 'text_delta',
+          text: ' world',
+        },
+      },
+    }
+
+    // This test documents the expected behavior: each delta should
+    // contribute to a running text buffer. The actual aggregation
+    // happens in App.tsx, not MessageBubble.
+    renderMessage(message1)
+    renderMessage(message2)
+
+    // Each delta renders its own text fragment
+    expect(screen.getByText('Hello')).toBeInTheDocument()
+    expect(screen.getByText(' world')).toBeInTheDocument()
+  })
+
+  it('ignores non-text_delta events', () => {
+    const message: Message = {
+      type: 'stream_event',
+      content: '',
+      index: 3,
+      uuid: 'evt-3',
+      event: {
+        type: 'content_block_delta',
+        index: 0,
+        delta: {
+          type: 'input_json_delta', // Not text_delta
+          partial_json: '{"key": "val',
+        },
+      },
+    }
+
+    const { container } = renderMessage(message)
+
+    // Non-text deltas should not render as visible text
+    expect(container.firstChild).toBeNull()
+  })
+})

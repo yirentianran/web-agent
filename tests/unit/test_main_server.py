@@ -1774,3 +1774,41 @@ class TestAgentTaskTimeout:
         assert "session_timeout" in source, (
             "No session_timeout subtype found — frontend won't know why session ended"
         )
+
+
+# ── Streaming output: include_partial_messages ────────────────────────
+
+
+class TestStreamingOutput:
+    """Test that SDK options enable partial message streaming for real-time
+    text display."""
+
+    def test_build_sdk_options_sets_include_partial_messages_true(self) -> None:
+        """build_sdk_options must set include_partial_messages=True so
+        the SDK emits StreamEvent with content_block_delta events."""
+        import inspect
+        source = inspect.getsource(main_server.build_sdk_options)
+
+        # Verify the field is set to True
+        assert "include_partial_messages" in source, (
+            "No include_partial_messages found in build_sdk_options — "
+            "streaming output is disabled"
+        )
+        assert "True" in source.split("include_partial_messages")[1][:20], (
+            "include_partial_messages is not set to True — "
+            "SDK will not emit partial text deltas"
+        )
+
+    def test_stream_event_handler_exists_in_message_to_dicts(self) -> None:
+        """message_to_dicts must handle StreamEvent messages to forward
+        content_block_delta to the frontend."""
+        import inspect
+        source = inspect.getsource(main_server.message_to_dicts)
+        assert "StreamEvent" in source, (
+            "No StreamEvent handling in message_to_dicts — "
+            "partial messages will be ignored"
+        )
+        assert "stream_event" in source, (
+            "StreamEvent not converted to stream_event dict — "
+            "frontend won't receive streaming events"
+        )
