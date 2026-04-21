@@ -6,6 +6,28 @@ import type { Message } from '../lib/types'
 
 const SCROLL_THRESHOLD = 100 // pixels from bottom to consider "at bottom"
 
+const AGENT_START_TIME_KEY = 'web-agent-start-times'
+
+// Persist agent start times to localStorage so timer survives page refresh
+function loadStartTimes(): Map<string, number> {
+  try {
+    const raw = localStorage.getItem(AGENT_START_TIME_KEY)
+    if (!raw) return new Map()
+    const parsed = JSON.parse(raw) as [string, number][]
+    return new Map(parsed)
+  } catch {
+    return new Map()
+  }
+}
+
+function saveStartTimes(times: Map<string, number>) {
+  try {
+    localStorage.setItem(AGENT_START_TIME_KEY, JSON.stringify(Array.from(times)))
+  } catch {
+    // localStorage full — ignore
+  }
+}
+
 interface ChatAreaProps {
   messages: Message[]
   sessionId: string | null
@@ -75,10 +97,11 @@ export default function ChatArea({ messages, sessionId, sessionState, onAnswer, 
   // When sessionId changes we save the current start time to a
   // per-session Map so switching back restores the original timer
   // instead of resetting to 0 (A running → B idle → A continues).
+  // Start times are persisted to localStorage so page refresh preserves timer.
   const prevSessionStateRef = useRef<string | null>(null)
   const agentSessionIdRef = useRef<string | null>(null)
   const heartbeatCountRef = useRef(0)
-  const sessionStartTimesRef = useRef<Map<string, number>>(new Map())
+  const sessionStartTimesRef = useRef<Map<string, number>>(loadStartTimes())
 
   useEffect(() => {
     // Session changed — save previous session's start time, restore new session's
@@ -94,6 +117,7 @@ export default function ChatArea({ messages, sessionId, sessionState, onAnswer, 
           // First time seeing this session as running — record now
           const now = Date.now()
           sessionStartTimesRef.current.set(sessionId, now)
+          saveStartTimes(sessionStartTimesRef.current)
           setAgentStartTime(now)
         }
       } else {
@@ -105,13 +129,19 @@ export default function ChatArea({ messages, sessionId, sessionState, onAnswer, 
     // Detect transition TO running — always reset the start time
     if (sessionState === 'running' && prevSessionStateRef.current !== 'running') {
       const now = Date.now()
-      if (sessionId) sessionStartTimesRef.current.set(sessionId, now)
+      if (sessionId) {
+        sessionStartTimesRef.current.set(sessionId, now)
+        saveStartTimes(sessionStartTimesRef.current)
+      }
       setAgentStartTime(now)
     }
     // Transition AWAY from running — clear start time for this session
     // (new runs will get a fresh timestamp)
     if (prevSessionStateRef.current === 'running' && sessionState !== 'running') {
-      if (sessionId) sessionStartTimesRef.current.delete(sessionId)
+      if (sessionId) {
+        sessionStartTimesRef.current.delete(sessionId)
+        saveStartTimes(sessionStartTimesRef.current)
+      }
       setAgentStartTime(null)
     }
     // Count heartbeats for stale detection (don't affect elapsed timer)

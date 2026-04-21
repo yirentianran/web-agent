@@ -4,6 +4,19 @@ import '@testing-library/jest-dom/vitest'
 import ChatArea from '../components/ChatArea'
 import type { Message } from '../lib/types'
 
+// Mock localStorage for agent start times persistence
+const localStorageMock = (() => {
+  let store: Record<string, string> = {}
+  return {
+    getItem: (key: string) => store[key] || null,
+    setItem: (key: string, value: string) => { store[key] = value },
+    removeItem: (key: string) => { delete store[key] },
+    clear: () => { store = {} },
+  }
+})()
+
+Object.defineProperty(window, 'localStorage', { value: localStorageMock })
+
 interface RenderResult {
   messagesContainer: HTMLElement
   scrollPositions: Map<string, number>
@@ -37,6 +50,11 @@ function renderChatArea(messages: Message[], opts?: { sessionId?: string | null;
   const messagesContainer = result.container.querySelector('.messages') as HTMLElement
   return { messagesContainer, scrollPositions, rerender: result.rerender, container: result.container }
 }
+
+// Clear localStorage before each test to ensure test isolation
+beforeEach(() => {
+  localStorageMock.clear()
+})
 
 /**
  * Returns the index of an element among message siblings.
