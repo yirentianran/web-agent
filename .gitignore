@@ -34,3 +34,4 @@ Thumbs.db
 
 # Local Claude Code
 .claude/
+node_modules/
