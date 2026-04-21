@@ -323,6 +323,14 @@ function MainApp() {
       }
     }
 
+    // Track highest user message index — used to filter out old state changes
+    // from previous runs. A state change with index lower than the latest
+    // user message belongs to a previous run (the subscribe loop sends old
+    // state changes with replay: False, bypassing replay protection).
+    if (msg.type === 'user' && msg.index != null && msg.index > highestUserMsgIndexRef.current) {
+      highestUserMsgIndexRef.current = msg.index
+    }
+
     // Backend confirmed user message echo: clear pending and confirm send
     // Match by clientMsgId first, then fallback to content match (backward compat)
     if (msg.type === 'user' && !msg.replay && msg.session_id) {
@@ -355,7 +363,10 @@ function MainApp() {
     if (msg.session_id && msg.session_id !== activeSessionRef.current) {
       if (msg.type === 'system' && msg.subtype === 'session_state_changed') {
         const newState = msg.state || msg.content || 'completed'
-        if (msg.replay) {
+        // Index-based filtering: block state changes from previous runs
+        if (msg.index != null && msg.index < highestUserMsgIndexRef.current) {
+          // Skip — this state change is older than the current run's user message
+        } else if (msg.replay) {
           const currentState = sessionStatesRef.current.get(msg.session_id)
           // Allow error states through even during replay — they're more severe
           // But block completed/idle/cancelled from overwriting running
@@ -369,8 +380,11 @@ function MainApp() {
         }
       }
       if (msg.type === 'result') {
-        setSessionStateFor(msg.session_id, 'completed')
-        loadSessions()
+        // Guard against old result messages from previous runs
+        if (msg.index == null || msg.index >= highestUserMsgIndexRef.current) {
+          setSessionStateFor(msg.session_id, 'completed')
+          loadSessions()
+        }
       }
       return
     }
@@ -379,13 +393,10 @@ function MainApp() {
     if (isInvisibleMessage) {
       if (msg.type === 'system' && msg.subtype === 'session_state_changed' && msg.session_id) {
         const newState = msg.state || msg.content || 'completed'
-        // Replay messages for the active session should not downgrade
-        // a 'running' state. This protects against the send → recovery
-        // race where replayed history (with old completed/idle states)
-        // arrives after handleSend has set running.
-        // Live (non-replay) messages are always accepted — when the agent
-        // actually finishes, completed will correctly overwrite running.
-        if (msg.replay) {
+        // Index-based filtering: block state changes from previous runs
+        if (msg.index != null && msg.index < highestUserMsgIndexRef.current) {
+          // Skip — this state change is older than the current run's user message
+        } else if (msg.replay) {
           const currentState = sessionStatesRef.current.get(msg.session_id)
           if (currentState === 'running' && newState !== 'running' && newState !== 'error') {
             // Skip — live state takes precedence over replayed history
@@ -448,10 +459,16 @@ function MainApp() {
     }
 
     if (msg.type === 'system' && msg.subtype === 'session_state_changed' && msg.session_id) {
-      setSessionStateFor(msg.session_id, msg.state || msg.content || 'completed')
+      // Guard against old state changes from previous runs
+      if (msg.index == null || msg.index >= highestUserMsgIndexRef.current) {
+        setSessionStateFor(msg.session_id, msg.state || msg.content || 'completed')
+      }
     }
     if (msg.type === 'result' && msg.session_id) {
-      setSessionStateFor(msg.session_id, 'completed')
+      // Guard against old result messages from previous runs
+      if (msg.index == null || msg.index >= highestUserMsgIndexRef.current) {
+        setSessionStateFor(msg.session_id, 'completed')
+      }
       // Auto-generate title from first message
       if (activeSessionRef.current && firstMessageRef.current) {
         fetch(`/api/users/${userId}/sessions/${activeSessionRef.current}/title`, {
@@ -528,6 +545,12 @@ function MainApp() {
   // scheduling a state update and applying it (the "spinner disappears
   // after send" bug).
   const sessionStatesRef = useRef<Map<string, string>>(new Map())
+  // Track the highest index of any user message received. Used to filter
+  // out old state changes from previous runs — they have lower indices
+  // than the user message that started the current run. The subscribe
+  // loop sends old state changes with replay: False, so replay protection
+  // doesn't catch them. Index-based filtering blocks them instead.
+  const highestUserMsgIndexRef = useRef(-1)
 
   const handleSend = useCallback(
     async (message: string, files?: File[]) => {
@@ -611,6 +634,7 @@ function MainApp() {
     // Reset tracking refs — no active session means input should be enabled
     clearThresholdRef.current = Number.MAX_SAFE_INTEGER
     replayStartedRef.current = false
+    highestUserMsgIndexRef.current = -1
   }, [])
 
   const handleSelectSession = useCallback(async (id: string) => {
@@ -632,6 +656,7 @@ function MainApp() {
     // Reset tracking refs
     clearThresholdRef.current = Number.MAX_SAFE_INTEGER
     replayStartedRef.current = false
+    highestUserMsgIndexRef.current = -1
 
     // Restore pending message for this session so the user sees their
     // message immediately, even if the backend hasn't received the
@@ -768,6 +793,7 @@ function MainApp() {
         // Reset replay tracking refs
         clearThresholdRef.current = Number.MAX_SAFE_INTEGER
         replayStartedRef.current = false
+        highestUserMsgIndexRef.current = -1
       }
     } catch (err) {
       logger.error('Failed to delete session', err)

@@ -192,6 +192,8 @@ class MessageBuffer:
                         msg["input"] = parsed["input"]
                 if msg["type"] == "tool_result" and "tool_use_id" in parsed:
                     msg["tool_use_id"] = parsed["tool_use_id"]
+                if msg["type"] == "system" and msg.get("subtype") == "session_state_changed" and "state" in parsed:
+                    msg["state"] = parsed["state"]
             if row[5] is not None:
                 msg["usage"] = json.loads(row[5])
             result.append(msg)

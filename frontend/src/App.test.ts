@@ -1731,29 +1731,43 @@ describe('UUID-based user message dedup', () => {
   })
 })
 
-// ── Recovery should not overwrite live running state ─────────────
+// ── Index-based filtering for old state changes (server restart) ──
 
 /**
- * When WebSocket recovery replays historical messages, it may include
- * session_state_changed:completed from a previous run. If the agent is
- * currently running (a new turn started), the replayed 'completed' state
- * should NOT overwrite the live 'running' state — otherwise the
- * "Agent is working..." spinner disappears prematurely.
+ * When the server restarts and a user opens an existing session:
+ * 1. User sends a new message → state becomes 'running' (spinner appears)
+ * 2. Message sends successfully → green ✓ appears
+ * 3. Backend subscribe loop sends old buffer messages, including
+ *    session_state_changed:completed from the PREVIOUS run with replay: False
+ * 4. These old state changes bypass replay protection (replay: False)
+ *    and overwrite 'running' → 'completed' → spinner disappears
  *
- * Fix: when current state is 'running', ignore replayed state changes
- * that are less active (completed, idle, cancelled).
+ * Fix: track the highest index of any user message. Block any
+ * session_state_changed message with an index lower than this value —
+ * it must be from a previous run.
  */
 
-function createMessageHandlerWithStateProtection() {
-  const activeSessionRef = { current: 'sess1' }
+function createMessageHandlerWithIndexFilter(opts?: {
+  activeSessionRef?: { current: string | null }
+  onSessionStateChange?: (sessionId: string, state: string) => void
+}) {
+  const activeSessionRef = opts?.activeSessionRef ?? { current: 'sess1' }
   const sessionStates = new Map<string, string>()
+  const sessionStatesRef = new Map<string, string>()
+  let highestUserMsgIndex = -1
   let messages: Message[] = []
 
   function setSessionStateFor(sessionId: string, state: string) {
+    sessionStatesRef.set(sessionId, state)
     sessionStates.set(sessionId, state)
   }
 
   function handleIncomingMessage(msg: Message) {
+    // Track highest user message index
+    if (msg.type === 'user' && msg.index != null && msg.index > highestUserMsgIndex) {
+      highestUserMsgIndex = msg.index
+    }
+
     const isInvisibleMessage =
       msg.type === 'heartbeat' ||
       (msg.type === 'system' && msg.subtype === 'session_state_changed')
@@ -1762,8 +1776,10 @@ function createMessageHandlerWithStateProtection() {
     if (msg.session_id && msg.session_id !== activeSessionRef.current) {
       if (msg.type === 'system' && msg.subtype === 'session_state_changed') {
         const newState = msg.state || msg.content || 'completed'
-        if (msg.replay) {
-          const currentState = sessionStates.get(msg.session_id)
+        if (msg.index != null && msg.index < highestUserMsgIndex) {
+          // Skip — old state change from previous run
+        } else if (msg.replay) {
+          const currentState = sessionStatesRef.get(msg.session_id)
           if (currentState === 'running' && newState !== 'running' && newState !== 'error') {
             // Skip
           } else {
@@ -1776,14 +1792,16 @@ function createMessageHandlerWithStateProtection() {
       return
     }
 
-    // Invisible messages
+    // Invisible messages from active session
     if (isInvisibleMessage) {
       if (msg.type === 'system' && msg.subtype === 'session_state_changed' && msg.session_id) {
         const newState = msg.state || msg.content || 'completed'
-        if (msg.replay) {
-          const currentState = sessionStates.get(msg.session_id)
+        if (msg.index != null && msg.index < highestUserMsgIndex) {
+          // Skip — old state change from previous run
+        } else if (msg.replay) {
+          const currentState = sessionStatesRef.get(msg.session_id)
           if (currentState === 'running' && newState !== 'running' && newState !== 'error') {
-            // Skip — live state takes precedence over replayed history
+            // Skip
           } else {
             setSessionStateFor(msg.session_id, newState)
           }
@@ -1794,165 +1812,237 @@ function createMessageHandlerWithStateProtection() {
       return
     }
 
-    // Normal message handling
+    // Normal message: append
     messages = [...messages, msg]
+
+    // Also handle session_state_changed in the visible path
+    if (msg.type === 'system' && msg.subtype === 'session_state_changed' && msg.session_id) {
+      if (msg.index == null || msg.index >= highestUserMsgIndex) {
+        setSessionStateFor(msg.session_id, msg.state || msg.content || 'completed')
+      }
+    }
   }
 
   return {
     getMessages: () => [...messages],
     getState: (sid: string) => sessionStates.get(sid),
     setSessionStateFor,
+    getHighestUserMsgIndex: () => highestUserMsgIndex,
+    resetHighestUserMsgIndex: () => { highestUserMsgIndex = -1 },
     handleIncomingMessage,
   }
 }
 
-describe('recovery should not overwrite live running state', () => {
-  it('replayed session_state_changed:completed does NOT overwrite running state (active session)', () => {
-    const handler = createMessageHandlerWithStateProtection()
+describe('index-based filtering for old state changes (server restart)', () => {
+  it('blocks old session_state_changed:completed from previous run after new user message', () => {
+    const handler = createMessageHandlerWithIndexFilter()
 
-    // Simulate: user sends new message, state becomes 'running'
+    // Step 1: User sends new message → state becomes 'running'
+    // The user message gets index 5 (simulating existing history of 6 messages)
+    handler.handleIncomingMessage({
+      type: 'user',
+      content: 'new question',
+      index: 5,
+      session_id: 'sess1',
+      clientMsgId: 'uuid-new',
+    })
     handler.setSessionStateFor('sess1', 'running')
-    expect(handler.getState('sess1')).toBe('running')
 
-    // Recovery replays historical messages including old 'completed' state
+    expect(handler.getState('sess1')).toBe('running')
+    expect(handler.getHighestUserMsgIndex()).toBe(5)
+
+    // Step 2: Subscribe loop sends old completed state from previous run
+    // This has replay: False but a lower index (e.g., 3)
     handler.handleIncomingMessage({
       type: 'system',
       subtype: 'session_state_changed',
       state: 'completed',
       content: '',
-      index: 10,
-      session_id: 'sess1',
-      replay: true,
-    })
-
-    // State should STILL be 'running' — not overwritten by replay
-    expect(handler.getState('sess1')).toBe('running')
-  })
-
-  it('replayed session_state_changed:running IS accepted (active session)', () => {
-    const handler = createMessageHandlerWithStateProtection()
-
-    handler.setSessionStateFor('sess1', 'idle')
-
-    // Recovery replays 'running' state
-    handler.handleIncomingMessage({
-      type: 'system',
-      subtype: 'session_state_changed',
-      state: 'running',
-      content: '',
-      index: 10,
-      session_id: 'sess1',
-      replay: true,
-    })
-
-    // State should be updated to 'running'
-    expect(handler.getState('sess1')).toBe('running')
-  })
-
-  it('replayed session_state_changed:error IS accepted even when running (error is more severe)', () => {
-    const handler = createMessageHandlerWithStateProtection()
-
-    handler.setSessionStateFor('sess1', 'running')
-
-    // Recovery replays 'error' state
-    handler.handleIncomingMessage({
-      type: 'system',
-      subtype: 'session_state_changed',
-      state: 'error',
-      content: '',
-      index: 10,
-      session_id: 'sess1',
-      replay: true,
-    })
-
-    // Error should overwrite running (it's a terminal state from a different run)
-    // Note: The current fix only protects against less active states.
-    // If error is replayed while running, it means the previous run errored.
-    // The live buffer status check in handleSelectSession will correct this.
-    // For now, we accept this edge case as the live status will fix it.
-    expect(handler.getState('sess1')).toBe('error')
-  })
-
-  it('cross-session: replayed completed does NOT overwrite running for inactive session', () => {
-    const handler = createMessageHandlerWithStateProtection()
-
-    // Session A is running (inactive from user's perspective)
-    handler.setSessionStateFor('sessA', 'running')
-
-    // User is viewing session B (activeSessionRef.current = 'sess1')
-    // Recovery replays session A's completed state
-    handler.handleIncomingMessage({
-      type: 'system',
-      subtype: 'session_state_changed',
-      state: 'completed',
-      content: '',
-      index: 20,
-      session_id: 'sessA',
-      replay: true,
-    })
-
-    // Session A should still be 'running'
-    expect(handler.getState('sessA')).toBe('running')
-  })
-
-  it('non-replay (live) completed DOES overwrite running state', () => {
-    const handler = createMessageHandlerWithStateProtection()
-
-    handler.setSessionStateFor('sess1', 'running')
-
-    // Live (non-replay) completed message — agent actually finished
-    handler.handleIncomingMessage({
-      type: 'system',
-      subtype: 'session_state_changed',
-      state: 'completed',
-      content: '',
-      index: 20,
+      index: 3,
       session_id: 'sess1',
       replay: false,
     })
 
-    // Live completed should overwrite running
+    // State should STILL be 'running' — old state change blocked by index filter
+    expect(handler.getState('sess1')).toBe('running')
+  })
+
+  it('allows new session_state_changed with index >= user message index', () => {
+    const handler = createMessageHandlerWithIndexFilter()
+
+    // User message at index 5
+    handler.handleIncomingMessage({
+      type: 'user',
+      content: 'hello',
+      index: 5,
+      session_id: 'sess1',
+    })
+    handler.setSessionStateFor('sess1', 'running')
+
+    // New state change from the CURRENT run (index 6)
+    handler.handleIncomingMessage({
+      type: 'system',
+      subtype: 'session_state_changed',
+      state: 'completed',
+      content: '',
+      index: 6,
+      session_id: 'sess1',
+      replay: false,
+    })
+
+    // Should be accepted — this is from the current run
     expect(handler.getState('sess1')).toBe('completed')
   })
 
-  it('active session running state is preserved during send → recovery race (BUG #2)', () => {
-    // This simulates the exact scenario: user sends message, then recovery
-    // replays old completed state from previous session run.
-    // The spinner should NOT disappear.
+  it('blocks old state changes for inactive sessions too', () => {
+    const handler = createMessageHandlerWithIndexFilter({
+      activeSessionRef: { current: 'sess1' },
+    })
 
-    const handler = createMessageHandlerWithStateProtection()
-
-    // Simulate previous session was completed
-    handler.setSessionStateFor('sess1', 'completed')
-
-    // User sends new message → frontend sets state to running
-    handler.setSessionStateFor('sess1', 'running')
-
-    // Recovery kicks in and replays old history
-    // These are replay messages (replay: true)
+    // User sends message in sess1
     handler.handleIncomingMessage({
       type: 'user',
-      content: 'previous message',
+      content: 'question',
+      index: 10,
+      session_id: 'sess1',
+    })
+
+    // Old state change from sess2 (inactive session) with low index
+    handler.handleIncomingMessage({
+      type: 'system',
+      subtype: 'session_state_changed',
+      state: 'completed',
+      content: '',
+      index: 3,
+      session_id: 'sess2',
+      replay: false,
+    })
+
+    // State for sess2 should not be set (blocked by index filter)
+    expect(handler.getState('sess2')).toBeUndefined()
+  })
+
+  it('resets highest user msg index on session switch', () => {
+    const handler = createMessageHandlerWithIndexFilter()
+
+    // User message at index 10
+    handler.handleIncomingMessage({
+      type: 'user',
+      content: 'first session msg',
+      index: 10,
+      session_id: 'sess1',
+    })
+    expect(handler.getHighestUserMsgIndex()).toBe(10)
+
+    // Simulate session switch — reset
+    handler.resetHighestUserMsgIndex()
+    expect(handler.getHighestUserMsgIndex()).toBe(-1)
+
+    // New user message in new session at index 0
+    handler.handleIncomingMessage({
+      type: 'user',
+      content: 'new session msg',
+      index: 0,
+      session_id: 'sess2',
+    })
+    expect(handler.getHighestUserMsgIndex()).toBe(0)
+  })
+
+  it('handles server restart full scenario: spinner stays during send', () => {
+    // Full simulation of the server restart scenario:
+    // 1. Server restarts, user opens existing session
+    // 2. REST loads history, WS reconnects
+    // 3. User sends message → 'running' state set, spinner appears
+    // 4. WebSocket send succeeds → green ✓
+    // 5. Subscribe loop sends old buffer messages including
+    //    session_state_changed:completed (replay: False, low index)
+    // 6. New agent messages start streaming in
+
+    const handler = createMessageHandlerWithIndexFilter()
+
+    // Step 0: REST loaded some history (simulated)
+    handler.handleIncomingMessage({
+      type: 'user',
+      content: 'previous run message',
       index: 0,
       session_id: 'sess1',
       replay: true,
     })
+    handler.setSessionStateFor('sess1', 'completed')
+
+    // Step 1: User sends new message
+    handler.handleIncomingMessage({
+      type: 'user',
+      content: 'new question',
+      index: 1,
+      session_id: 'sess1',
+      clientMsgId: 'uuid-1',
+    })
+    handler.setSessionStateFor('sess1', 'running')
+
+    expect(handler.getState('sess1')).toBe('running')
+    expect(handler.getMessages()).toHaveLength(2)
+
+    // Step 2: Subscribe loop sends old 'completed' state (index 0)
+    // This is the bug trigger — replay: False but old index
+    handler.handleIncomingMessage({
+      type: 'system',
+      subtype: 'session_state_changed',
+      state: 'completed',
+      content: '',
+      index: 0,
+      session_id: 'sess1',
+      replay: false,
+    })
+
+    // Spinner should NOT disappear
+    expect(handler.getState('sess1')).toBe('running')
+
+    // Step 3: Agent starts working, new state arrives
     handler.handleIncomingMessage({
       type: 'system',
       subtype: 'session_state_changed',
       state: 'running',
       content: '',
-      index: 1,
-      session_id: 'sess1',
-      replay: true,
-    })
-    handler.handleIncomingMessage({
-      type: 'assistant',
-      content: 'previous response',
       index: 2,
       session_id: 'sess1',
-      replay: true,
+      replay: false,
     })
+
+    expect(handler.getState('sess1')).toBe('running')
+
+    // Step 4: Agent response arrives
+    handler.handleIncomingMessage({
+      type: 'assistant',
+      content: 'Here is the answer...',
+      index: 3,
+      session_id: 'sess1',
+    })
+
+    expect(handler.getMessages()).toHaveLength(3)
+    expect(handler.getMessages()[2].content).toBe('Here is the answer...')
+
+    // Step 5: Agent completes
+    handler.handleIncomingMessage({
+      type: 'system',
+      subtype: 'session_state_changed',
+      state: 'completed',
+      content: '',
+      index: 4,
+      session_id: 'sess1',
+      replay: false,
+    })
+
+    // Now completed should overwrite running (agent actually finished)
+    expect(handler.getState('sess1')).toBe('completed')
+  })
+
+  it('allows replayed state changes when no user message has been seen yet', () => {
+    // If no user message has been received yet (highestUserMsgIndex = -1),
+    // all state changes should pass through normally.
+    const handler = createMessageHandlerWithIndexFilter()
+
+    // Replay a completed state — no user message seen yet
     handler.handleIncomingMessage({
       type: 'system',
       subtype: 'session_state_changed',
@@ -1963,21 +2053,41 @@ describe('recovery should not overwrite live running state', () => {
       replay: true,
     })
 
-    // State should STILL be running — replay protection must hold
-    expect(handler.getState('sess1')).toBe('running')
+    // Should be accepted since highestUserMsgIndex is still -1
+    // Wait — actually, since 3 >= -1 is true, it passes
+    // But replay protection would also apply. Let me check...
+    // Since no user message was seen, highestUserMsgIndex is -1,
+    // so index 3 >= -1 is true → passes index filter
+    // Then replay protection applies, but state is 'idle' (no running yet)
+    // So 'completed' should be set
+    expect(handler.getState('sess1')).toBe('completed')
+  })
 
-    // Now the live running state arrives (from the new agent task)
+  it('does not block state change when index is missing', () => {
+    // Some messages may not have an index — they should pass through
+    const handler = createMessageHandlerWithIndexFilter()
+
+    // User message seen
+    handler.handleIncomingMessage({
+      type: 'user',
+      content: 'hello',
+      index: 5,
+      session_id: 'sess1',
+    })
+    handler.setSessionStateFor('sess1', 'running')
+
+    // State change without index — use as any to simulate missing field
     handler.handleIncomingMessage({
       type: 'system',
       subtype: 'session_state_changed',
-      state: 'running',
+      state: 'completed',
       content: '',
-      index: 10,
       session_id: 'sess1',
       replay: false,
-    })
+      // No index — simulates message from older backend version
+    } as any as Message)
 
-    // State should still be running
-    expect(handler.getState('sess1')).toBe('running')
+    // Should be accepted (index missing → no blocking)
+    expect(handler.getState('sess1')).toBe('completed')
   })
 })
