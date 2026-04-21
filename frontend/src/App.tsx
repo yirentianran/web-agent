@@ -405,6 +405,33 @@ function MainApp() {
     }
   }, [connected, sendRecover])
 
+  // Stale-state polling: if session is 'running' but hasn't received any
+  // new messages for a while, poll the backend status to detect lost
+  // completion signals (e.g., WebSocket message delivery failure).
+  useEffect(() => {
+    if (activeSessionState !== 'running' || !activeSessionRef.current) return
+
+    const pollInterval = setInterval(() => {
+      const sid = activeSessionRef.current
+      if (!sid) return
+      const headers: Record<string, string> = {}
+      if (authToken) headers['Authorization'] = `Bearer ${authToken}`
+      fetch(`/api/users/${userId}/sessions/${sid}/status`, { headers })
+        .then(resp => {
+          if (!resp.ok) return null
+          return resp.json()
+        })
+        .then(data => {
+          if (data && data.state && data.state !== 'running') {
+            setSessionStateFor(sid, data.state)
+          }
+        })
+        .catch(() => {})
+    }, 120_000) // 2 minutes — long enough to not impact normal flows
+
+    return () => clearInterval(pollInterval)
+  }, [activeSessionState, userId, authToken])
+
   const handleSend = useCallback(
     async (message: string, files?: File[]) => {
       let sessionId = activeSessionRef.current

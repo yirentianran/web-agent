@@ -52,17 +52,42 @@ class MessageBuffer:
     # ── internal helpers ─────────────────────────────────────────
 
     def _ensure_buf(self, session_id: str) -> dict[str, Any]:
-        """Lazy-initialise a session buffer."""
+        """Lazy-initialise a session buffer, restoring terminal state from DB."""
         if session_id not in self.sessions:
-            self.sessions[session_id] = {
-                "messages": [],  # unbounded list — base_index tracks eviction
-                "base_index": 0,  # number of messages evicted from the front
+            buf: dict[str, Any] = {
+                "messages": [],
+                "base_index": 0,
                 "consumers": set(),
                 "done": False,
-                "state": "idle",  # idle | running | completed | error | waiting_user | cancelled
+                "state": "idle",
                 "last_active": time.time(),
                 "cost_usd": 0.0,
             }
+
+            # On first access (e.g. after server restart), check if the
+            # session had a terminal state in the database. This prevents
+            # the recover loop from spinning forever on a completed session.
+            if self.db is not None:
+                if self._sync_conn is None:
+                    try:
+                        self._sync_conn = sqlite3.connect(str(self.db.db_path))
+                    except Exception:
+                        pass
+                if self._sync_conn is not None:
+                    try:
+                        cursor = self._sync_conn.execute(
+                            "SELECT type FROM messages WHERE session_id = ? "
+                            "ORDER BY seq DESC LIMIT 1",
+                            (session_id,),
+                        )
+                        row = cursor.fetchone()
+                        if row and row[0] == "result":
+                            buf["done"] = True
+                            buf["state"] = "completed"
+                    except Exception:
+                        pass  # DB unavailable — keep defaults
+
+            self.sessions[session_id] = buf
         return self.sessions[session_id]
 
     def _disk_path(self, session_id: str) -> Path:
@@ -143,12 +168,16 @@ class MessageBuffer:
         self._evict_old(session_id)
         buf["last_active"] = time.time()
         # Reset done flag when a new message arrives — the session is active again.
-        # But don't reset if the session is already in a terminal state
-        # (completed/error/cancelled) — prevents undoing mark_done when
-        # state_changed messages are added after it.
-        state = buf.get("state", "idle")
-        if state not in ("completed", "error", "cancelled"):
+        # Only preserve done=True when a result message is added to a session
+        # that was already completed (prevents double-completion artifacts).
+        msg_type = message.get("type", "")
+        prev_state = buf.get("state", "idle")
+        if msg_type == "result" and prev_state in ("completed", "error", "cancelled"):
+            pass  # Keep done=True for redundant result messages
+        else:
             buf["done"] = False
+
+        # Write to disk (JSONL) for crash recovery
         self._write_disk(session_id, message)
 
         # Dual-write to SQLite if database is attached

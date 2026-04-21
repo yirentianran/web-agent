@@ -3,6 +3,18 @@ import './StatusSpinner.css'
 
 const STALE_THRESHOLD_SEC = 30
 
+export function formatElapsed(seconds: number): string {
+  const h = Math.floor(seconds / 3600)
+  const m = Math.floor((seconds % 3600) / 60)
+  const s = seconds % 60
+
+  const parts: string[] = []
+  if (h > 0) parts.push(`${h}时`)
+  if (m > 0) parts.push(`${m}分`)
+  if (s > 0 || parts.length === 0) parts.push(`${s}秒`)
+  return parts.join('')
+}
+
 interface StatusSpinnerProps {
   text?: string
   detail?: string
@@ -36,7 +48,7 @@ export default function StatusSpinner({ text, detail, variant = 'default', start
         {detail && <strong className="status-spinner__detail">{detail}</strong>}
         {startTime !== undefined && (
           <span className="status-spinner__elapsed" data-stale={isStale}>
-            {elapsedSec}s
+            {formatElapsed(elapsedSec)}
           </span>
         )}
       </span>

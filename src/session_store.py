@@ -48,9 +48,6 @@ class SessionStore:
             )
             await conn.commit()
 
-        # Also write to disk for backward compatibility during migration
-        self._write_disk_session(session_id)
-
         return {"session_id": session_id, "title": ""}
 
     async def list_sessions(self, user_id: str) -> list[dict[str, Any]]:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import sqlite3
 import time
 from pathlib import Path
 
@@ -216,3 +217,163 @@ class TestDiskPersistence:
         history = buffer.get_history("s1", after_index=0)
         assert len(history) == 5
         assert history[3]["content"] == "m-3"
+
+
+# ── Restart recovery (DB state restoration) ───────────────────────
+
+
+class TestRestartRecovery:
+    """Simulate server restart: a session was completed before restart,
+    then a new MessageBuffer is created and should restore terminal state from DB."""
+
+    def _write_completed_session_to_db(self, db_path: Path, session_id: str) -> None:
+        """Directly write messages to SQLite to simulate a completed session."""
+        conn = sqlite3.connect(str(db_path))
+        try:
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS messages ("
+                "  id INTEGER PRIMARY KEY AUTOINCREMENT,"
+                "  session_id TEXT NOT NULL,"
+                "  seq INTEGER NOT NULL,"
+                "  type TEXT NOT NULL,"
+                "  subtype TEXT,"
+                "  name TEXT,"
+                "  content TEXT,"
+                "  payload TEXT,"
+                "  usage TEXT,"
+                "  created_at REAL NOT NULL DEFAULT 0"
+                ")"
+            )
+            conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_session_seq "
+                "ON messages(session_id, seq)"
+            )
+            # Write a conversation that ended with a result message
+            conn.execute(
+                "INSERT INTO messages (session_id, seq, type, content, created_at) "
+                "VALUES (?, 0, 'user', 'hello', ?)",
+                (session_id, time.time() - 100),
+            )
+            conn.execute(
+                "INSERT INTO messages (session_id, seq, type, content, created_at) "
+                "VALUES (?, 1, 'system', 'working...', ?)",
+                (session_id, time.time() - 50),
+            )
+            conn.execute(
+                "INSERT INTO messages (session_id, seq, type, content, created_at) "
+                "VALUES (?, 2, 'result', 'done!', ?)",
+                (session_id, time.time() - 10),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def test_restores_done_true_from_db_result_message(
+        self, tmp_path: Path
+    ) -> None:
+        db_path = tmp_path / "test.db"
+        session_id = "completed-session-1"
+        self._write_completed_session_to_db(db_path, session_id)
+
+        # Simulate restart: new MessageBuffer with DB attached
+        buf = MessageBuffer(base_dir=tmp_path / "buf", db=type("FakeDB", (), {"db_path": db_path})())  # type: ignore[arg-type]
+        buf._sync_conn = sqlite3.connect(str(db_path))
+
+        # Accessing the session should restore done=True from DB
+        assert buf.is_done(session_id) is True
+
+    def test_restores_completed_state_from_db(
+        self, tmp_path: Path
+    ) -> None:
+        db_path = tmp_path / "test.db"
+        session_id = "completed-session-2"
+        self._write_completed_session_to_db(db_path, session_id)
+
+        buf = MessageBuffer(base_dir=tmp_path / "buf", db=type("FakeDB", (), {"db_path": db_path})())  # type: ignore[arg-type]
+        buf._sync_conn = sqlite3.connect(str(db_path))
+
+        state = buf.get_session_state(session_id)
+        assert state["state"] == "completed"
+
+    def test_idle_session_stays_idle_after_restart(
+        self, tmp_path: Path
+    ) -> None:
+        """A session with only user messages (no result) should stay idle."""
+        db_path = tmp_path / "test.db"
+        session_id = "idle-session-1"
+        conn = sqlite3.connect(str(db_path))
+        try:
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS messages ("
+                "  id INTEGER PRIMARY KEY AUTOINCREMENT,"
+                "  session_id TEXT NOT NULL,"
+                "  seq INTEGER NOT NULL,"
+                "  type TEXT NOT NULL,"
+                "  subtype TEXT,"
+                "  name TEXT,"
+                "  content TEXT,"
+                "  payload TEXT,"
+                "  usage TEXT,"
+                "  created_at REAL NOT NULL DEFAULT 0"
+                ")"
+            )
+            conn.execute(
+                "INSERT INTO messages (session_id, seq, type, content, created_at) "
+                "VALUES (?, 0, 'user', 'hello', ?)",
+                (session_id, time.time()),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        buf = MessageBuffer(base_dir=tmp_path / "buf", db=type("FakeDB", (), {"db_path": db_path})())  # type: ignore[arg-type]
+        buf._sync_conn = sqlite3.connect(str(db_path))
+
+        assert buf.is_done(session_id) is False
+        state = buf.get_session_state(session_id)
+        assert state["state"] == "idle"
+
+    def test_user_message_resets_done_after_restart(
+        self, tmp_path: Path
+    ) -> None:
+        """After restart, adding a user message to a completed session must
+        reset done=False so the subscribe loop doesn't exit prematurely."""
+        db_path = tmp_path / "test.db"
+        session_id = "completed-session-3"
+        self._write_completed_session_to_db(db_path, session_id)
+
+        buf = MessageBuffer(base_dir=tmp_path / "buf", db=type("FakeDB", (), {"db_path": db_path})())  # type: ignore[arg-type]
+        buf._sync_conn = sqlite3.connect(str(db_path))
+
+        # Buffer was restored from DB: done=True
+        assert buf.is_done(session_id) is True
+
+        # Adding a user message must reset done=False
+        buf.add_message(session_id, {"type": "user", "content": "new question"})
+        assert buf.is_done(session_id) is False
+
+        # Adding a running state_changed must keep done=False
+        buf.add_message(session_id, {
+            "type": "system",
+            "subtype": "session_state_changed",
+            "state": "running",
+        })
+        assert buf.is_done(session_id) is False
+
+    def test_result_message_preserves_done_after_restart(
+        self, tmp_path: Path
+    ) -> None:
+        """A redundant result message on an already-completed session should
+        not reset done back to False."""
+        db_path = tmp_path / "test.db"
+        session_id = "completed-session-4"
+        self._write_completed_session_to_db(db_path, session_id)
+
+        buf = MessageBuffer(base_dir=tmp_path / "buf", db=type("FakeDB", (), {"db_path": db_path})())  # type: ignore[arg-type]
+        buf._sync_conn = sqlite3.connect(str(db_path))
+
+        assert buf.is_done(session_id) is True
+
+        # Adding another result message should preserve done=True
+        buf.add_message(session_id, {"type": "result", "content": "done again"})
+        assert buf.is_done(session_id) is True

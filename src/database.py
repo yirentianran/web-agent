@@ -82,10 +82,28 @@ CREATE TABLE IF NOT EXISTS tasks (
     blocked_by TEXT NOT NULL DEFAULT '[]',
     parent_task_id TEXT REFERENCES tasks(id),
     created_at REAL NOT NULL DEFAULT (strftime('%s', 'now')),
-    updated_at REAL NOT NULL DEFAULT (strftime('%s', 'now'))
+    updated_at REAL NOT NULL DEFAULT (strftime('%s', 'now')),
+    completed_at REAL
 );
 
 CREATE INDEX IF NOT EXISTS idx_tasks_user_created ON tasks(user_id, created_at DESC);
+
+-- MCP servers
+CREATE TABLE IF NOT EXISTS mcp_servers (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL UNIQUE,
+    type TEXT NOT NULL DEFAULT 'stdio',
+    command TEXT,
+    args TEXT NOT NULL DEFAULT '[]',
+    url TEXT,
+    env TEXT NOT NULL DEFAULT '{}',
+    tools TEXT NOT NULL DEFAULT '[]',
+    description TEXT NOT NULL DEFAULT '',
+    enabled INTEGER NOT NULL DEFAULT 1,
+    access TEXT NOT NULL DEFAULT 'all',
+    created_at REAL NOT NULL DEFAULT (strftime('%s', 'now')),
+    updated_at REAL NOT NULL DEFAULT (strftime('%s', 'now'))
+);
 
 -- Skill feedback
 CREATE TABLE IF NOT EXISTS skill_feedback (
