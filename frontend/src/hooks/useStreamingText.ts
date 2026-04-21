@@ -31,29 +31,37 @@ export function createInitialState(): StreamingTextState {
  * Process a message and update streaming text state.
  *
  * - Accumulates text from content_block_delta stream events
- * - Clears text when matching assistant message arrives
+ * - Clears text when message stops or non-streaming message arrives
  */
 export function processMessage(
   state: StreamingTextState,
   msg: any
 ): StreamingTextState {
-  // Handle stream_event.content_block_delta
+  // Handle stream_event.content_block_delta - accumulate text
   if (msg.type === 'stream_event' && msg.event?.type === 'content_block_delta') {
     const delta = msg.event.delta
     if (delta?.type === 'text_delta' && delta.text) {
-      const newIndex = msg.index ?? state.streamingMessageId
       return {
         accumulatedText: state.accumulatedText + delta.text,
-        streamingMessageId: newIndex,
+        streamingMessageId: state.streamingMessageId, // Keep existing
       }
     }
   }
 
-  // Handle assistant message — clear if matching index
-  if (msg.type === 'assistant' && msg.index != null) {
-    if (state.streamingMessageId === msg.index) {
-      return createInitialState()
-    }
+  // Clear streaming text when message stops or assistant message completes
+  // message_stop event signals end of streaming for this response
+  if (msg.type === 'stream_event' && msg.event?.type === 'message_stop') {
+    return createInitialState()
+  }
+
+  // Clear when assistant message arrives (complete, not streaming)
+  if (msg.type === 'assistant' && msg.content) {
+    return createInitialState()
+  }
+
+  // Clear when result message arrives (agent finished)
+  if (msg.type === 'result') {
+    return createInitialState()
   }
 
   return state

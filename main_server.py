@@ -861,11 +861,16 @@ def message_to_dicts(msg: Any) -> Iterator[dict[str, Any]]:
         return
 
     if isinstance(msg, StreamEvent):
-        yield {
+        result = {
             "type": "stream_event",
             "uuid": msg.uuid,
             "event": msg.event,
+            "session_id": msg.session_id,
         }
+        # Extract index from event if present (for content_block_delta)
+        if msg.event and "index" in msg.event:
+            result["index"] = msg.event["index"]
+        yield result
         return
 
     # Fallback: try to serialize as dict
