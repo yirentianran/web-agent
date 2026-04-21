@@ -374,20 +374,10 @@ export default function MessageBubble({ message, sessionId, onAnswer, onFileClic
     const progressMsg = event.message as string | undefined
 
     // content_block_delta — streaming text output
+    // NOTE: Aggregation and display handled by App.tsx useStreamingText hook
+    // MessageBubble should NOT render individual deltas to avoid duplicate display
     if (eventType === 'content_block_delta') {
-      const delta = event.delta as Record<string, unknown> | undefined
-      if (!delta) return null
-      const deltaType = delta.type as string | undefined
-      if (deltaType !== 'text_delta') return null
-      const text = delta.text as string | undefined
-      if (!text) return null
-      // Render streaming text as a simple text fragment
-      // Note: aggregation of multiple deltas happens in App.tsx
-      return (
-        <div className="message stream-event stream-event--text">
-          <span className="streaming-text">{text}</span>
-        </div>
-      )
+      return null
     }
 
     if (eventType === 'tool_use' && toolName) {

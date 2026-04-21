@@ -1133,7 +1133,11 @@ describe('MessageBubble - Write tool_use rendering', () => {
 })
 
 describe('MessageBubble - streaming text (content_block_delta)', () => {
-  it('renders content_block_delta stream event as incremental text', () => {
+  // content_block_delta events are now hidden in MessageBubble
+  // Aggregation and display handled by App.tsx useStreamingText hook
+  // This prevents duplicate display of streaming text
+
+  it('hides content_block_delta stream event (aggregation in App.tsx)', () => {
     const message: Message = {
       type: 'stream_event',
       content: '',
@@ -1149,15 +1153,13 @@ describe('MessageBubble - streaming text (content_block_delta)', () => {
       },
     }
 
-    renderMessage(message)
+    const { container } = renderMessage(message)
 
-    expect(screen.getByText('Hello')).toBeInTheDocument()
+    // Should return null - not render individual deltas
+    expect(container.firstChild).toBeNull()
   })
 
-  it('accumulates multiple content_block_delta events', () => {
-    // This test documents that each delta renders independently.
-    // Actual aggregation happens in App.tsx state management.
-    // Here we test that a single message with combined text renders correctly.
+  it('hides combined content_block_delta event', () => {
     const combinedMessage: Message = {
       type: 'stream_event',
       content: '',
@@ -1173,10 +1175,10 @@ describe('MessageBubble - streaming text (content_block_delta)', () => {
       },
     }
 
-    renderMessage(combinedMessage)
+    const { container } = renderMessage(combinedMessage)
 
-    // Combined text should render
-    expect(screen.getByText('Hello world')).toBeInTheDocument()
+    // Should return null - aggregation happens in App.tsx
+    expect(container.firstChild).toBeNull()
   })
 
   it('ignores non-text_delta events', () => {
@@ -1197,7 +1199,7 @@ describe('MessageBubble - streaming text (content_block_delta)', () => {
 
     const { container } = renderMessage(message)
 
-    // Non-text deltas should not render as visible text
+    // Non-text deltas should not render
     expect(container.firstChild).toBeNull()
   })
 })
