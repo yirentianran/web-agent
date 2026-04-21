@@ -587,17 +587,33 @@ body {
 }
 
 /* Streaming text display — accumulated content_block_delta */
+/* Use same styling as assistant message for consistency */
 .streaming-message {
-  opacity: 0.95;
+  /* Inherit from assistant-message styles */
 }
 
 .streaming-message .bubble {
-  background: var(--color-surface);
+  /* Match .assistant-message .bubble styling */
+  padding: 14px 18px;
+  line-height: 1.6;
+  color: var(--color-text);
+  /* Visual indicator for streaming in progress */
   border-left: 3px solid var(--color-primary, #3b82f6);
+  animation: pulse-border 1.5s ease-in-out infinite;
+}
+
+@keyframes pulse-border {
+  0%, 100% {
+    border-left-color: var(--color-primary, #3b82f6);
+  }
+  50% {
+    border-left-color: transparent;
+  }
 }
 
 .streaming-text {
-  font-family: var(--font-mono, monospace);
+  /* Match assistant message text styling, not monospace */
+  font-family: inherit;
   white-space: pre-wrap;
   word-break: break-word;
 }
