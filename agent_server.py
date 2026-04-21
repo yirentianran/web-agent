@@ -47,6 +47,33 @@ buffer = MessageBuffer()
 # ── Skill loading ─────────────────────────────────────────────────
 
 
+def parse_skill_frontmatter(content: str) -> dict[str, str | None]:
+    """Extract name, description, version from SKILL.md YAML frontmatter."""
+    result: dict[str, str | None] = {
+        "name": None,
+        "description": None,
+        "version": None,
+    }
+    if not content.startswith("---"):
+        return result
+    end_idx = content.find("---", 3)
+    if end_idx < 0:
+        return result
+    yaml_block = content[3:end_idx].strip()
+    try:
+        import yaml
+
+        frontmatter = yaml.safe_load(yaml_block)
+        if not isinstance(frontmatter, dict):
+            return result
+        result["name"] = frontmatter.get("name")
+        result["description"] = frontmatter.get("description")
+        result["version"] = frontmatter.get("version")
+    except Exception:
+        pass
+    return result
+
+
 def load_skills() -> dict[str, dict[str, Any]]:
     """Load all Skills from shared (ro) + personal (rw) directories."""
     skills_dirs = os.getenv(
@@ -62,12 +89,16 @@ def load_skills() -> dict[str, dict[str, Any]]:
         for skill_dir in sorted(path.iterdir()):
             skill_file = skill_dir / "SKILL.md"
             if skill_file.exists():
+                content = skill_file.read_text()
+                frontmatter = parse_skill_frontmatter(content)
                 name = skill_dir.name
-                # Personal overrides shared
                 all_skills[name] = {
                     "path": str(skill_dir),
                     "source": "shared" if "shared" in str(skill_dir) else "personal",
-                    "content": skill_file.read_text(),
+                    "content": content,
+                    "name": frontmatter["name"] or name,
+                    "description": frontmatter["description"],
+                    "version": frontmatter["version"],
                 }
     return all_skills
 
@@ -124,7 +155,11 @@ def build_system_prompt(skills: dict[str, dict[str, Any]]) -> str:
     if skills:
         parts.append("\n## Available Skills\n")
         for name, info in skills.items():
-            parts.append(f"- {name}: {info.get('source', 'unknown')}\n")
+            desc = info.get("description")
+            if desc:
+                parts.append(f"- {name}: {desc}\n")
+            else:
+                parts.append(f"- {name}\n")
 
     memory_context = load_memory()
     if memory_context:
@@ -189,8 +224,16 @@ def build_sdk_options(
     max_turns = settings.get("max_turns", 30)
 
     allowed_tools = [
-        "Read", "Edit", "Write", "Glob", "Grep", "Bash",
-        "WebFetch", "WebSearch", "Agent", "Skill",
+        "Read",
+        "Edit",
+        "Write",
+        "Glob",
+        "Grep",
+        "Bash",
+        "WebFetch",
+        "WebSearch",
+        "Agent",
+        "Skill",
     ]
     for server_name in mcp_config.get("mcpServers", {}):
         cfg = mcp_config["mcpServers"][server_name]
@@ -276,12 +319,15 @@ async def _can_use_tool_for_session(
 ) -> PermissionResult:
     """Intercept AskUserQuestion and route answer through WebSocket."""
     if tool_name == "AskUserQuestion":
-        buffer.add_message(session_id, {
-            "type": "tool_use",
-            "name": "AskUserQuestion",
-            "id": f"ask_{__import__('uuid').uuid4().hex[:8]}",
-            "input": tool_input,
-        })
+        buffer.add_message(
+            session_id,
+            {
+                "type": "tool_use",
+                "name": "AskUserQuestion",
+                "id": f"ask_{__import__('uuid').uuid4().hex[:8]}",
+                "input": tool_input,
+            },
+        )
 
         answer_future = asyncio.get_event_loop().create_future()
         pending_answers[session_id] = answer_future
@@ -358,9 +404,7 @@ async def run_agent_task(session_id: str, user_message: str) -> None:
         tool_input: dict[str, Any],
         ctx: ToolPermissionContext,
     ) -> PermissionResult:
-        return await _can_use_tool_for_session(
-            session_id, tool_name, tool_input, ctx
-        )
+        return await _can_use_tool_for_session(session_id, tool_name, tool_input, ctx)
 
     options = build_sdk_options(session_id, can_use_tool_callback=can_use_tool_cb)
     client = ClaudeSDKClient(options)
@@ -374,24 +418,33 @@ async def run_agent_task(session_id: str, user_message: str) -> None:
             buffer.add_message(session_id, event)
 
         buffer.mark_done(session_id)
-        buffer.add_message(session_id, {
-            "type": "system",
-            "subtype": "session_state_changed",
-            "state": "completed",
-        })
+        buffer.add_message(
+            session_id,
+            {
+                "type": "system",
+                "subtype": "session_state_changed",
+                "state": "completed",
+            },
+        )
     except asyncio.CancelledError:
-        buffer.add_message(session_id, {
-            "type": "system",
-            "subtype": "session_cancelled",
-            "message": "Agent task has been cancelled.",
-        })
+        buffer.add_message(
+            session_id,
+            {
+                "type": "system",
+                "subtype": "session_cancelled",
+                "message": "Agent task has been cancelled.",
+            },
+        )
         buffer.mark_done(session_id)
     except Exception as e:
         logger.exception("Agent task failed for session %s", session_id)
-        buffer.add_message(session_id, {
-            "type": "error",
-            "message": str(e),
-        })
+        buffer.add_message(
+            session_id,
+            {
+                "type": "error",
+                "message": str(e),
+            },
+        )
         buffer.mark_done(session_id)
     finally:
         try:
@@ -432,11 +485,15 @@ async def handle_agent(websocket: WebSocket) -> None:
             # Send historical messages (reconnection recovery)
             history = buffer.get_history(session_id, after_index=last_index)
             for i, h in enumerate(history):
-                await websocket.send_text(json.dumps({
-                    **h,
-                    "index": last_index + i,
-                    "replay": True,
-                }))
+                await websocket.send_text(
+                    json.dumps(
+                        {
+                            **h,
+                            "index": last_index + i,
+                            "replay": True,
+                        }
+                    )
+                )
 
             # Start or reuse agent task
             task_key = f"task_{session_id}"
@@ -457,11 +514,15 @@ async def handle_agent(websocket: WebSocket) -> None:
                         continue
                     new_messages = buffer.get_history(session_id, after_index=last_seen)
                     for i, h in enumerate(new_messages):
-                        await websocket.send_text(json.dumps({
-                            **h,
-                            "index": last_seen + i,
-                            "replay": False,
-                        }))
+                        await websocket.send_text(
+                            json.dumps(
+                                {
+                                    **h,
+                                    "index": last_seen + i,
+                                    "replay": False,
+                                }
+                            )
+                        )
                     last_seen += len(new_messages)
             finally:
                 buffer.unsubscribe(session_id, event)
@@ -471,10 +532,14 @@ async def handle_agent(websocket: WebSocket) -> None:
     except Exception as e:
         logger.exception("WebSocket error")
         try:
-            await websocket.send_text(json.dumps({
-                "type": "error",
-                "message": str(e),
-            }))
+            await websocket.send_text(
+                json.dumps(
+                    {
+                        "type": "error",
+                        "message": str(e),
+                    }
+                )
+            )
         except Exception:
             pass
 

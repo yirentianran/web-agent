@@ -63,7 +63,9 @@ if not logger.handlers:
     _stream = logging.StreamHandler()
     _stream.setFormatter(_fmt)
     _file = logging.handlers.RotatingFileHandler(
-        LOG_FILE, maxBytes=10 * 1024 * 1024, backupCount=3,
+        LOG_FILE,
+        maxBytes=10 * 1024 * 1024,
+        backupCount=3,
     )
     _file.setFormatter(_fmt)
     logger.addHandler(_stream)
@@ -83,7 +85,9 @@ if not _skill_feedback_logger.handlers:
     _sf_stream = logging.StreamHandler()
     _sf_stream.setFormatter(_sf_fmt)
     _sf_file = logging.handlers.RotatingFileHandler(
-        LOG_FILE, maxBytes=10 * 1024 * 1024, backupCount=3,
+        LOG_FILE,
+        maxBytes=10 * 1024 * 1024,
+        backupCount=3,
     )
     _sf_file.setFormatter(_sf_fmt)
     _skill_feedback_logger.addHandler(_sf_stream)
@@ -129,6 +133,7 @@ async def cleanup_session_client(session_id: str) -> None:
     so we create a fresh client every time."""
     pass
 
+
 # ── Container mode toggle ─────────────────────────────────────────
 
 CONTAINER_MODE = os.getenv("CONTAINER_MODE", "false").lower() == "true"
@@ -144,6 +149,7 @@ def _get_container_manager():
         return _container_manager
     try:
         import src.container_manager as cm  # noqa: PLC0415
+
         _container_manager = cm
         return cm
     except ImportError:
@@ -179,6 +185,42 @@ from claude_agent_sdk.types import (
 )
 
 
+def parse_skill_frontmatter(content: str) -> dict[str, str | None]:
+    """Extract name, description, version from SKILL.md YAML frontmatter.
+
+    Returns dict with keys: name, description, version.
+    Values are None if frontmatter is missing or invalid.
+    """
+    result: dict[str, str | None] = {
+        "name": None,
+        "description": None,
+        "version": None,
+    }
+
+    if not content.startswith("---"):
+        return result
+
+    # Find closing ---
+    end_idx = content.find("---", 3)
+    if end_idx < 0:
+        return result
+
+    yaml_block = content[3:end_idx].strip()
+    try:
+        import yaml
+
+        frontmatter = yaml.safe_load(yaml_block)
+        if not isinstance(frontmatter, dict):
+            return result
+        result["name"] = frontmatter.get("name")
+        result["description"] = frontmatter.get("description")
+        result["version"] = frontmatter.get("version")
+    except Exception:
+        pass
+
+    return result
+
+
 def load_skills(user_id: str) -> dict[str, dict[str, Any]]:
     """Load all Skills for a user: shared + personal from workspace/.claude/skills."""
     user_dir = user_data_dir(user_id)
@@ -194,10 +236,15 @@ def load_skills(user_id: str) -> dict[str, dict[str, Any]]:
                 continue
             skill_file = skill_dir / "SKILL.md"
             if skill_file.exists():
+                content = skill_file.read_text()
+                frontmatter = parse_skill_frontmatter(content)
                 all_skills[skill_dir.name] = {
                     "path": str(skill_dir),
                     "source": "shared",
-                    "content": skill_file.read_text(),
+                    "content": content,
+                    "name": frontmatter["name"] or skill_dir.name,
+                    "description": frontmatter["description"],
+                    "version": frontmatter["version"],
                 }
 
     # Load personal skills (override shared on name conflict)
@@ -207,10 +254,15 @@ def load_skills(user_id: str) -> dict[str, dict[str, Any]]:
                 continue  # symlinks are shared skills
             skill_file = skill_dir / "SKILL.md"
             if skill_file.exists():
+                content = skill_file.read_text()
+                frontmatter = parse_skill_frontmatter(content)
                 all_skills[skill_dir.name] = {
                     "path": str(skill_dir),
                     "source": "personal",
-                    "content": skill_file.read_text(),
+                    "content": content,
+                    "name": frontmatter["name"] or skill_dir.name,
+                    "description": frontmatter["description"],
+                    "version": frontmatter["version"],
                 }
 
     return all_skills
@@ -241,9 +293,7 @@ def load_memory(user_id: str) -> str:
         parts.append("\n## Prior Audit Findings\n")
         for i, finding in enumerate(findings, 1):
             parts.append(
-                f"{i}. {finding.get('item', '')} "
-                f"({finding.get('standard', '')}, "
-                f"status: {finding.get('status', '')})\n"
+                f"{i}. {finding.get('item', '')} ({finding.get('standard', '')}, status: {finding.get('status', '')})\n"
             )
 
     risk = audit_ctx.get("risk_areas", [])
@@ -254,10 +304,7 @@ def load_memory(user_id: str) -> str:
     if files:
         parts.append("\n## Frequently Used Files\n")
         for f in files:
-            parts.append(
-                f"- {f.get('filename', '')} "
-                f"(last used: {f.get('last_used', '')})\n"
-            )
+            parts.append(f"- {f.get('filename', '')} (last used: {f.get('last_used', '')})\n")
 
     return "\n".join(parts)
 
@@ -319,10 +366,34 @@ INVALID_FILENAMES = {"null", "undefined"}
 
 # Allowed extensions for user-facing generated file results (data documents, media, archives)
 DATA_EXTS = {
-    ".xlsx", ".xls", ".pdf", ".zip", ".csv", ".png", ".jpg", ".jpeg",
-    ".gif", ".docx", ".doc", ".pptx", ".ppt", ".txt", ".md", ".rtf",
-    ".odt", ".html", ".svg", ".bmp", ".webp", ".tif", ".tiff",
-    ".mp3", ".wav", ".mp4", ".mov", ".avi",
+    ".xlsx",
+    ".xls",
+    ".pdf",
+    ".zip",
+    ".csv",
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".gif",
+    ".docx",
+    ".doc",
+    ".pptx",
+    ".ppt",
+    ".txt",
+    ".md",
+    ".rtf",
+    ".odt",
+    ".html",
+    ".svg",
+    ".bmp",
+    ".webp",
+    ".tif",
+    ".tiff",
+    ".mp3",
+    ".wav",
+    ".mp4",
+    ".mov",
+    ".avi",
 }
 
 
@@ -400,12 +471,12 @@ def _rewrite_bash_command(cmd: str, workspace: Path) -> str:
     # Patterns: > path, >> path, -o path, --output path, >'path', >"path"
     # Group 1 = operator prefix, Group 2 = target path
     patterns = [
-        r'(>\s*)(/[^\s\'"]+)',        # > /path/to/file
-        r'(>>\s*)(/[^\s\'"]+)',       # >> /path/to/file
-        r'(-o\s+)(/[^\s\'"]+)',       # -o /path/to/file
-        r'(--output\s+)(/[^\s\'"]+)', # --output /path/to/file
-        r'(>\s*\'(/[^\']+)\')',       # > '/path/to/file'
-        r'(>\s*"(/[^"]+)")',          # > "/path/to/file"
+        r'(>\s*)(/[^\s\'"]+)',  # > /path/to/file
+        r'(>>\s*)(/[^\s\'"]+)',  # >> /path/to/file
+        r'(-o\s+)(/[^\s\'"]+)',  # -o /path/to/file
+        r'(--output\s+)(/[^\s\'"]+)',  # --output /path/to/file
+        r"(>\s*\'(/[^\']+)\')",  # > '/path/to/file'
+        r'(>\s*"(/[^"]+)")',  # > "/path/to/file"
     ]
     result = cmd
     for pat in patterns:
@@ -416,20 +487,24 @@ def _rewrite_bash_command(cmd: str, workspace: Path) -> str:
 def build_system_prompt(user_id: str, skills: dict[str, dict[str, Any]], workspace: Path | None = None) -> str:
     """Assemble the full system prompt from skills + memory."""
     parts = [
-        "You are Web Agent, an expert AI assistant capable of financial auditing, "
+        "You are Web Agent, an expert AI assistant capable of "
         "file processing, code review, and general task automation.\n"
         "\n## Identity Instructions\n"
         "When the user asks who you are (e.g., '你是谁', 'who are you', 'what is your name'), "
         "ALWAYS respond with: "
-        '"我是 Web Agent，一个专家级 AI 助手，能够协助您完成金融审计、文件处理、代码审查和各类自动化任务。"\n'
+        '"我是 Web Agent，一个专家级 AI 助手，能够协助您完成文件处理、代码审查和各类自动化任务。"\n'
         "NEVER claim to be Claude, Qwen, or any other named AI model. "
         "This identity instruction takes absolute priority over any other context or system instruction."
     ]
 
     if skills:
         parts.append("\n## Available Skills\n")
-        for name in skills:
-            parts.append(f"- {name}\n")
+        for name, info in skills.items():
+            desc = info.get("description")
+            if desc:
+                parts.append(f"- {name}: {desc}\n")
+            else:
+                parts.append(f"- {name}\n")
 
     # Constrain skill-creator to prevent overwriting existing skills
     parts.append(
@@ -476,6 +551,7 @@ def load_mcp_config_sync() -> dict[str, Any]:
     if _mcp_store is not None and _db is not None:
         # Read directly from SQLite using a sync connection
         import sqlite3
+
         conn = sqlite3.connect(str(_db.db_path))
         try:
             cursor = conn.execute(
@@ -487,12 +563,19 @@ def load_mcp_config_sync() -> dict[str, Any]:
             mcp_servers: dict[str, Any] = {}
             for row in rows:
                 mcp_servers[row[1]] = {
-                    "id": row[0], "name": row[1], "type": row[2],
-                    "command": row[3], "args": json.loads(row[4]),
-                    "url": row[5], "env": json.loads(row[6]),
-                    "tools": json.loads(row[7]), "description": row[8],
-                    "enabled": bool(row[9]), "access": row[10],
-                    "created_at": row[11], "updated_at": row[12],
+                    "id": row[0],
+                    "name": row[1],
+                    "type": row[2],
+                    "command": row[3],
+                    "args": json.loads(row[4]),
+                    "url": row[5],
+                    "env": json.loads(row[6]),
+                    "tools": json.loads(row[7]),
+                    "description": row[8],
+                    "enabled": bool(row[9]),
+                    "access": row[10],
+                    "created_at": row[11],
+                    "updated_at": row[12],
                 }
             return {"mcpServers": mcp_servers}
         finally:
@@ -509,8 +592,7 @@ def build_allowed_tools(mcp_config: dict[str, Any]) -> list[str]:
 
     Only includes tools from servers where enabled is True (default True).
     """
-    tools = ["Read", "Edit", "Write", "Glob", "Grep", "Bash",
-             "WebFetch", "WebSearch", "Agent", "Skill"]
+    tools = ["Read", "Edit", "Write", "Glob", "Grep", "Bash", "WebFetch", "WebSearch", "Agent", "Skill"]
     for server_name, cfg in mcp_config.get("mcpServers", {}).items():
         if not cfg.get("enabled", True):
             continue
@@ -657,7 +739,6 @@ def build_sdk_options(
     )
 
 
-
 def message_to_dicts(msg: Any) -> Iterator[dict[str, Any]]:
     """Convert a Claude SDK Message dataclass to one or more serializable dicts.
 
@@ -669,9 +750,7 @@ def message_to_dicts(msg: Any) -> Iterator[dict[str, Any]]:
     if isinstance(msg, UserMessage):
         content = msg.content
         if isinstance(content, list):
-            text = " ".join(
-                b.text for b in content if isinstance(b, TextBlock)
-            )
+            text = " ".join(b.text for b in content if isinstance(b, TextBlock))
         else:
             text = content
         yield {"type": "user", "content": text}
@@ -801,12 +880,15 @@ async def _can_use_tool_for_session(
     """Intercept AskUserQuestion and route answer through WebSocket."""
     if tool_name == "AskUserQuestion":
         # Add the question to buffer so UI can display it
-        buffer.add_message(session_id, {
-            "type": "tool_use",
-            "name": "AskUserQuestion",
-            "id": f"ask_{uuid.uuid4().hex[:8]}",
-            "input": tool_input,
-        })
+        buffer.add_message(
+            session_id,
+            {
+                "type": "tool_use",
+                "name": "AskUserQuestion",
+                "id": f"ask_{uuid.uuid4().hex[:8]}",
+                "input": tool_input,
+            },
+        )
 
         # Wait for user answer via WebSocket
         answer_future: asyncio.Future = asyncio.get_event_loop().create_future()
@@ -834,9 +916,7 @@ MAX_CONTINUATION_WINDOW = int(os.getenv("MAX_CONTINUATION_WINDOW", "10"))
 MAX_PROMPT_LENGTH = int(os.getenv("MAX_PROMPT_LENGTH", "8000"))
 
 
-def _build_history_prompt(
-    history: list[dict[str, Any]], user_message: str
-) -> str:
+def _build_history_prompt(history: list[dict[str, Any]], user_message: str) -> str:
     """Build a multi-turn conversation prompt from history + new message.
 
     Controls:
@@ -900,10 +980,12 @@ def _format_first_message_prompt(user_message: str, attached_files: list[str] | 
     return f"{user_message}\n\n(Attached files: {paths})"
 
 
-
 async def run_agent_task(
-    user_id: str, session_id: str, user_message: str,
-    is_continuation: bool = False, attached_files: list[str] | None = None,
+    user_id: str,
+    session_id: str,
+    user_message: str,
+    is_continuation: bool = False,
+    attached_files: list[str] | None = None,
 ) -> None:
     """Run the agent using ClaudeSDKClient for bidirectional interaction.
 
@@ -933,7 +1015,7 @@ async def run_agent_task(
             if file_path and not is_path_within_workspace(file_path, workspace):
                 return PermissionResultDeny(
                     message=f"File path '{file_path}' is outside the workspace. "
-                            f"All files must be saved within the workspace directory.",
+                    f"All files must be saved within the workspace directory.",
                 )
 
         # Block Bash commands that write to paths outside workspace
@@ -944,9 +1026,7 @@ async def run_agent_task(
                 return PermissionResultDeny(message=error)
 
         agent_log.tool_call(tool_name, tool_input, session_id=session_id)
-        result = await _can_use_tool_for_session(
-            session_id, tool_name, tool_input, ctx
-        )
+        result = await _can_use_tool_for_session(session_id, tool_name, tool_input, ctx)
         agent_log.tool_result(tool_name, str(result), session_id=session_id)
         return result
 
@@ -958,9 +1038,7 @@ async def run_agent_task(
             if f.is_file():
                 workspace_snapshot[str(f.relative_to(workspace))] = f.stat().st_mtime
 
-    options = build_sdk_options(
-        user_id, can_use_tool_callback=can_use_tool_cb
-    )
+    options = build_sdk_options(user_id, can_use_tool_callback=can_use_tool_cb)
 
     # Each turn creates a fresh client — CLI subprocess terminates after
     # receive_response() completes, so cached clients are invalid.
@@ -985,7 +1063,9 @@ async def run_agent_task(
 
             logger.info(
                 "WS continuation %s: prompt length=%d chars, window=%d",
-                session_id, len(full_prompt), len(history),
+                session_id,
+                len(full_prompt),
+                len(history),
             )
             await client.connect(prompt=prompt_stream())
         else:
@@ -1022,12 +1102,14 @@ async def run_agent_task(
                             size = len(content.encode("utf-8"))
                         except Exception:
                             size = len(content)
-                        generated_files.append({
-                            "filename": filename,
-                            "size": size,
-                            "generated_at": datetime.now(timezone.utc).isoformat(),
-                            "download_url": build_download_url(user_id, file_path, directory="outputs"),
-                        })
+                        generated_files.append(
+                            {
+                                "filename": filename,
+                                "size": size,
+                                "generated_at": datetime.now(timezone.utc).isoformat(),
+                                "download_url": build_download_url(user_id, file_path, directory="outputs"),
+                            }
+                        )
                 # Truncate oversized tool results
                 if event.get("type") == "tool_result":
                     from src.truncation import truncate_tool_output
@@ -1053,12 +1135,14 @@ async def run_agent_task(
                 if rel not in workspace_snapshot or mtime > workspace_snapshot[rel]:
                     if f.name not in seen_filenames:
                         seen_filenames.add(f.name)
-                        generated_files.append({
-                            "filename": f.name,
-                            "size": f.stat().st_size,
-                            "generated_at": datetime.fromtimestamp(mtime, tz=timezone.utc).isoformat(),
-                            "download_url": f"/api/users/{user_id}/download/{rel}",
-                        })
+                        generated_files.append(
+                            {
+                                "filename": f.name,
+                                "size": f.stat().st_size,
+                                "generated_at": datetime.fromtimestamp(mtime, tz=timezone.utc).isoformat(),
+                                "download_url": f"/api/users/{user_id}/download/{rel}",
+                            }
+                        )
 
         # 2. Scan workspace root for data files that should be in outputs/
         #    Only downloadable result files are included; scripts and logs are left in place
@@ -1078,12 +1162,14 @@ async def run_agent_task(
                         try:
                             shutil.move(str(f), str(dest))
                             seen_filenames.add(f.name)
-                            generated_files.append({
-                                "filename": f.name,
-                                "size": dest.stat().st_size,
-                                "generated_at": datetime.fromtimestamp(mtime, tz=timezone.utc).isoformat(),
-                                "download_url": f"/api/users/{user_id}/download/outputs/{f.name}",
-                            })
+                            generated_files.append(
+                                {
+                                    "filename": f.name,
+                                    "size": dest.stat().st_size,
+                                    "generated_at": datetime.fromtimestamp(mtime, tz=timezone.utc).isoformat(),
+                                    "download_url": f"/api/users/{user_id}/download/outputs/{f.name}",
+                                }
+                            )
                         except Exception as e:
                             logger.warning("Failed to relocate data file %s to outputs/: %s", f, e)
                     # Non-data files (scripts, logs, configs) are silently left in workspace root
@@ -1112,12 +1198,14 @@ async def run_agent_task(
                         try:
                             shutil.move(str(f), str(dest))
                             seen_filenames.add(f.name)
-                            generated_files.append({
-                                "filename": f.name,
-                                "size": dest.stat().st_size,
-                                "generated_at": datetime.fromtimestamp(mtime, tz=timezone.utc).isoformat(),
-                                "download_url": f"/api/users/{user_id}/download/outputs/{f.name}",
-                            })
+                            generated_files.append(
+                                {
+                                    "filename": f.name,
+                                    "size": dest.stat().st_size,
+                                    "generated_at": datetime.fromtimestamp(mtime, tz=timezone.utc).isoformat(),
+                                    "download_url": f"/api/users/{user_id}/download/outputs/{f.name}",
+                                }
+                            )
                         except Exception as e:
                             logger.warning("Failed to relocate stray file %s: %s", f, e)
 
@@ -1126,31 +1214,41 @@ async def run_agent_task(
         # session_state_changed:completed, so it appears before "Session completed"
         # in both live streaming and DB replay.
         # Filter out infrastructure files (logs, caches, etc.) and invalid filenames
-        generated_files = [f for f in generated_files if f.get("filename") and should_include_generated_file(f["filename"])]
+        generated_files = [
+            f for f in generated_files if f.get("filename") and should_include_generated_file(f["filename"])
+        ]
         if generated_files:
             # Ensure all file entries have download_url
             for f in generated_files:
                 if "download_url" not in f:
                     f["download_url"] = build_download_url(user_id, f["filename"], directory="outputs")
-            buffer.add_message(session_id, {
-                "type": "file_result",
-                "content": "",
-                "session_id": session_id,
-                "user_id": user_id,
-                "data": generated_files,
-            })
+            buffer.add_message(
+                session_id,
+                {
+                    "type": "file_result",
+                    "content": "",
+                    "session_id": session_id,
+                    "user_id": user_id,
+                    "data": generated_files,
+                },
+            )
 
         logger.info(
             "Agent task %s: completed with %d messages in %.1fs",
-            session_id, msg_count, time.time() - start_time,
+            session_id,
+            msg_count,
+            time.time() - start_time,
         )
         # Add state change BEFORE mark_done() so the subscribe loop's
         # final pull (after is_done() returns True) catches the message.
-        buffer.add_message(session_id, {
-            "type": "system",
-            "subtype": "session_state_changed",
-            "state": "completed",
-        })
+        buffer.add_message(
+            session_id,
+            {
+                "type": "system",
+                "subtype": "session_state_changed",
+                "state": "completed",
+            },
+        )
         # Re-add the buffered SDK result AFTER file_result and state_change
         # so "Session completed" appears as the last visible message.
         if buffered_result is not None:
@@ -1160,44 +1258,62 @@ async def run_agent_task(
         agent_log.end_session(session_id, status="completed")
 
     except asyncio.TimeoutError:
-        buffer.add_message(session_id, {
-            "type": "system",
-            "subtype": "session_timeout",
-            "message": "Agent task timed out. The agent may be stuck processing a file.",
-        })
-        buffer.add_message(session_id, {
-            "type": "system",
-            "subtype": "session_state_changed",
-            "state": "error",
-        })
+        buffer.add_message(
+            session_id,
+            {
+                "type": "system",
+                "subtype": "session_timeout",
+                "message": "Agent task timed out. The agent may be stuck processing a file.",
+            },
+        )
+        buffer.add_message(
+            session_id,
+            {
+                "type": "system",
+                "subtype": "session_state_changed",
+                "state": "error",
+            },
+        )
         buffer.mark_done(session_id)
         agent_log.end_session(session_id, status="timeout")
     except asyncio.CancelledError:
-        buffer.add_message(session_id, {
-            "type": "system",
-            "subtype": "session_cancelled",
-            "message": "Session cancelled by user.",
-        })
+        buffer.add_message(
+            session_id,
+            {
+                "type": "system",
+                "subtype": "session_cancelled",
+                "message": "Session cancelled by user.",
+            },
+        )
         # Add state change BEFORE mark_done() for the same reason.
-        buffer.add_message(session_id, {
-            "type": "system",
-            "subtype": "session_state_changed",
-            "state": "cancelled",
-        })
+        buffer.add_message(
+            session_id,
+            {
+                "type": "system",
+                "subtype": "session_state_changed",
+                "state": "cancelled",
+            },
+        )
         buffer.mark_done(session_id)
         agent_log.end_session(session_id, status="cancelled")
     except Exception as e:
         logger.exception("Agent task failed for session %s", session_id)
-        buffer.add_message(session_id, {
-            "type": "error",
-            "message": str(e),
-        })
+        buffer.add_message(
+            session_id,
+            {
+                "type": "error",
+                "message": str(e),
+            },
+        )
         # Add state change BEFORE mark_done() so the error is delivered.
-        buffer.add_message(session_id, {
-            "type": "system",
-            "subtype": "session_state_changed",
-            "state": "error",
-        })
+        buffer.add_message(
+            session_id,
+            {
+                "type": "system",
+                "subtype": "session_state_changed",
+                "state": "error",
+            },
+        )
         buffer.mark_done(session_id)
         agent_log.end_session(session_id, status="error")
     # Note: do NOT disconnect — client is kept alive for follow-ups
@@ -1312,12 +1428,16 @@ async def handle_ws(websocket: WebSocket) -> None:
             # Send historical messages (reconnection recovery)
             history = buffer.get_history(session_id, after_index=last_index)
             for i, h in enumerate(history):
-                await websocket.send_text(json.dumps({
-                    **h,
-                    "index": last_index + i,
-                    "replay": True,
-                    "session_id": session_id,
-                }))
+                await websocket.send_text(
+                    json.dumps(
+                        {
+                            **h,
+                            "index": last_index + i,
+                            "replay": True,
+                            "session_id": session_id,
+                        }
+                    )
+                )
 
             # ── Recover: read-only replay + subscribe (no agent task) ────────
             if data.get("type") == "recover":
@@ -1356,12 +1476,16 @@ async def handle_ws(websocket: WebSocket) -> None:
                         new_messages = buffer.get_history(session_id, after_index=last_seen)
                         for i, h in enumerate(new_messages):
                             idx = last_seen + i
-                            await websocket.send_text(json.dumps({
-                                **h,
-                                "index": idx,
-                                "replay": False,
-                                "session_id": session_id,
-                            }))
+                            await websocket.send_text(
+                                json.dumps(
+                                    {
+                                        **h,
+                                        "index": idx,
+                                        "replay": False,
+                                        "session_id": session_id,
+                                    }
+                                )
+                            )
                         last_seen += len(new_messages)
 
                         # If session is done, final pull and exit
@@ -1369,12 +1493,16 @@ async def handle_ws(websocket: WebSocket) -> None:
                             final_messages = buffer.get_history(session_id, after_index=last_seen)
                             for i, h in enumerate(final_messages):
                                 idx = last_seen + i
-                                await websocket.send_text(json.dumps({
-                                    **h,
-                                    "index": idx,
-                                    "replay": False,
-                                    "session_id": session_id,
-                                }))
+                                await websocket.send_text(
+                                    json.dumps(
+                                        {
+                                            **h,
+                                            "index": idx,
+                                            "replay": False,
+                                            "session_id": session_id,
+                                        }
+                                    )
+                                )
                             break
 
                         event.clear()
@@ -1382,12 +1510,16 @@ async def handle_ws(websocket: WebSocket) -> None:
                             await asyncio.wait_for(event.wait(), timeout=HEARTBEAT_INTERVAL)
                         except asyncio.TimeoutError:
                             hb = make_heartbeat()
-                            await websocket.send_text(json.dumps({
-                                **hb,
-                                "index": last_seen,
-                                "replay": False,
-                                "session_id": session_id,
-                            }))
+                            await websocket.send_text(
+                                json.dumps(
+                                    {
+                                        **hb,
+                                        "index": last_seen,
+                                        "replay": False,
+                                        "session_id": session_id,
+                                    }
+                                )
+                            )
                             continue
                 finally:
                     buffer.unsubscribe(session_id, event)
@@ -1421,16 +1553,21 @@ async def handle_ws(websocket: WebSocket) -> None:
                     buffer.add_message(session_id, user_msg_buf)
 
                     # Broadcast running state to frontend via WebSocket
-                    buffer.add_message(session_id, {
-                        "type": "system",
-                        "subtype": "session_state_changed",
-                        "state": "running",
-                    })
+                    buffer.add_message(
+                        session_id,
+                        {
+                            "type": "system",
+                            "subtype": "session_state_changed",
+                            "state": "running",
+                        },
+                    )
 
                     task = asyncio.create_task(
                         asyncio.wait_for(
                             run_agent_task(
-                                user_id, session_id, user_message,
+                                user_id,
+                                session_id,
+                                user_message,
                                 is_continuation=is_continuation,
                                 attached_files=attached_files,
                             ),
@@ -1440,7 +1577,8 @@ async def handle_ws(websocket: WebSocket) -> None:
                     active_tasks[task_key] = task
                     logger.info(
                         "WS: created new task for session %s (continuation=%s)",
-                        session_id, is_continuation,
+                        session_id,
+                        is_continuation,
                     )
                 else:
                     logger.debug("WS: reusing existing task for session %s", session_id)
@@ -1475,12 +1613,14 @@ async def handle_ws(websocket: WebSocket) -> None:
                             if user_message:
                                 logger.info("WS: new message for active session %s", session_id)
                                 # Add the new user message and let the running task handle it
-                                buffer.add_message(session_id, {
-                                    "type": "user",
-                                    "content": user_message,
-                                    "data": item.get("files") or None
-                                    and [{"filename": f} for f in item["files"]],
-                                })
+                                buffer.add_message(
+                                    session_id,
+                                    {
+                                        "type": "user",
+                                        "content": user_message,
+                                        "data": item.get("files") or None and [{"filename": f} for f in item["files"]],
+                                    },
+                                )
                     except asyncio.QueueEmpty:
                         pass
 
@@ -1492,14 +1632,20 @@ async def handle_ws(websocket: WebSocket) -> None:
                         if msg_type == "system" and msg_subtype == "session_state_changed":
                             logger.debug(
                                 "WS: sending state_change=%s for session %s (idx=%d)",
-                                h.get("state", "?"), session_id, idx,
+                                h.get("state", "?"),
+                                session_id,
+                                idx,
                             )
-                        await websocket.send_text(json.dumps({
-                            **h,
-                            "index": idx,
-                            "replay": False,
-                            "session_id": session_id,
-                        }))
+                        await websocket.send_text(
+                            json.dumps(
+                                {
+                                    **h,
+                                    "index": idx,
+                                    "replay": False,
+                                    "session_id": session_id,
+                                }
+                            )
+                        )
                     last_seen += len(new_messages)
 
                     # If session is done, pull one final time to ensure
@@ -1509,12 +1655,16 @@ async def handle_ws(websocket: WebSocket) -> None:
                         final_messages = buffer.get_history(session_id, after_index=last_seen)
                         for i, h in enumerate(final_messages):
                             idx = last_seen + i
-                            await websocket.send_text(json.dumps({
-                                **h,
-                                "index": idx,
-                                "replay": False,
-                                "session_id": session_id,
-                            }))
+                            await websocket.send_text(
+                                json.dumps(
+                                    {
+                                        **h,
+                                        "index": idx,
+                                        "replay": False,
+                                        "session_id": session_id,
+                                    }
+                                )
+                            )
                         break
 
                     event.clear()
@@ -1522,12 +1672,16 @@ async def handle_ws(websocket: WebSocket) -> None:
                         await asyncio.wait_for(event.wait(), timeout=HEARTBEAT_INTERVAL)
                     except asyncio.TimeoutError:
                         hb = make_heartbeat()
-                        await websocket.send_text(json.dumps({
-                            **hb,
-                            "index": last_seen,
-                            "replay": False,
-                            "session_id": session_id,
-                        }))
+                        await websocket.send_text(
+                            json.dumps(
+                                {
+                                    **hb,
+                                    "index": last_seen,
+                                    "replay": False,
+                                    "session_id": session_id,
+                                }
+                            )
+                        )
                         # Heartbeats are synthetic — do NOT increment last_seen.
                         # Incrementing it would drift the cursor past the actual
                         # buffer end, causing the final pull to miss messages.
@@ -1541,10 +1695,14 @@ async def handle_ws(websocket: WebSocket) -> None:
     except Exception as e:
         logger.exception("WebSocket error")
         try:
-            await websocket.send_text(json.dumps({
-                "type": "error",
-                "message": str(e),
-            }))
+            await websocket.send_text(
+                json.dumps(
+                    {
+                        "type": "error",
+                        "message": str(e),
+                    }
+                )
+            )
         except Exception:
             pass
     finally:
@@ -1605,10 +1763,7 @@ async def list_sessions(user_id: str) -> list[dict[str, Any]]:
                 state = buffer.get_session_state(session_file.stem)
 
                 # Check for custom title in meta file
-                title = (
-                    data.get("message", {}).get("content", "")[:100]
-                    or session_file.stem
-                )
+                title = data.get("message", {}).get("content", "")[:100] or session_file.stem
                 meta_file = sessions_dir / f"{session_file.stem}.meta.json"
                 if meta_file.exists():
                     try:
@@ -1618,36 +1773,42 @@ async def list_sessions(user_id: str) -> list[dict[str, Any]]:
                     except (json.JSONDecodeError, OSError):
                         pass
 
-                sessions.append({
-                    "session_id": session_file.stem,
-                    "created_at": data.get("timestamp", ""),
-                    "title": title,
-                    "status": state.get("state", "completed"),
-                    "cost_usd": state.get("cost_usd", 0),
-                    "size_mb": round(session_file.stat().st_size / (1024 * 1024), 2),
-                })
+                sessions.append(
+                    {
+                        "session_id": session_file.stem,
+                        "created_at": data.get("timestamp", ""),
+                        "title": title,
+                        "status": state.get("state", "completed"),
+                        "cost_usd": state.get("cost_usd", 0),
+                        "size_mb": round(session_file.stat().st_size / (1024 * 1024), 2),
+                    }
+                )
             except (json.JSONDecodeError, OSError):
                 state = buffer.get_session_state(session_file.stem)
-                sessions.append({
-                    "session_id": session_file.stem,
-                    "created_at": "",
-                    "title": session_file.stem,
-                    "status": state.get("state", "completed"),
-                    "cost_usd": state.get("cost_usd", 0),
-                    "size_mb": 0,
-                })
+                sessions.append(
+                    {
+                        "session_id": session_file.stem,
+                        "created_at": "",
+                        "title": session_file.stem,
+                        "status": state.get("state", "completed"),
+                        "cost_usd": state.get("cost_usd", 0),
+                        "size_mb": 0,
+                    }
+                )
 
     # Also include in-memory sessions not yet on disk
     for sid in buffer.sessions:
         if user_id in sid and not any(s["session_id"] == sid for s in sessions):
             state = buffer.get_session_state(sid)
-            sessions.append({
-                "session_id": sid,
-                "title": sid[:50],
-                "status": state["state"],
-                "cost_usd": state["cost_usd"],
-                "last_active": state["last_active"],
-            })
+            sessions.append(
+                {
+                    "session_id": sid,
+                    "title": sid[:50],
+                    "status": state["state"],
+                    "cost_usd": state["cost_usd"],
+                    "last_active": state["last_active"],
+                }
+            )
 
     return sessions
 
@@ -1665,8 +1826,7 @@ async def get_session_history(user_id: str, session_id: str) -> list[dict[str, A
         messages = await session_store.get_session_history(session_id=session_id)
         state = buffer.get_session_state(session_id)
         return [
-            {**msg, "index": msg.get("seq", i), "session_id": session_id,
-             "session_state": state.get("state", "idle")}
+            {**msg, "index": msg.get("seq", i), "session_id": session_id, "session_state": state.get("state", "idle")}
             for i, msg in enumerate(messages)
         ]
 
@@ -1674,8 +1834,7 @@ async def get_session_history(user_id: str, session_id: str) -> list[dict[str, A
     messages = buffer.get_history(session_id, after_index=0)
     state = buffer.get_session_state(session_id)
     return [
-        {**msg, "index": i, "session_id": session_id,
-         "session_state": state.get("state", "idle")}
+        {**msg, "index": i, "session_id": session_id, "session_state": state.get("state", "idle")}
         for i, msg in enumerate(messages)
     ]
 
@@ -1695,12 +1854,16 @@ async def get_session_files(user_id: str, session_id: str) -> list[dict[str, Any
                     fname = f.get("filename", "")
                     if fname and fname not in seen and should_include_generated_file(fname):
                         seen.add(fname)
-                        generated.append({
-                            "filename": fname,
-                            "size": f.get("size", 0),
-                            "generated_at": f.get("generated_at", ""),
-                            "download_url": f.get("download_url", build_download_url(user_id, fname, directory="outputs")),
-                        })
+                        generated.append(
+                            {
+                                "filename": fname,
+                                "size": f.get("size", 0),
+                                "generated_at": f.get("generated_at", ""),
+                                "download_url": f.get(
+                                    "download_url", build_download_url(user_id, fname, directory="outputs")
+                                ),
+                            }
+                        )
 
     # Also scan the workspace/uploads and workspace/outputs directories for files created during this session
     workspace = user_data_dir(user_id) / "workspace"
@@ -1711,12 +1874,14 @@ async def get_session_files(user_id: str, session_id: str) -> list[dict[str, Any
                 if f.is_file() and f.name not in seen and should_include_generated_file(f.name):
                     stat = f.stat()
                     seen.add(f.name)
-                    generated.append({
-                        "filename": f.name,
-                        "size": stat.st_size,
-                        "generated_at": datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat(),
-                        "download_url": f"/api/users/{user_id}/download/{scan_dir_name}/{f.name}",
-                    })
+                    generated.append(
+                        {
+                            "filename": f.name,
+                            "size": stat.st_size,
+                            "generated_at": datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat(),
+                            "download_url": f"/api/users/{user_id}/download/{scan_dir_name}/{f.name}",
+                        }
+                    )
 
     # Sort by generation time descending
     generated.sort(key=lambda x: x.get("generated_at", ""), reverse=True)
@@ -1734,12 +1899,14 @@ async def get_all_generated_files(user_id: str) -> list[dict[str, Any]]:
         for f in scan_dir.iterdir():
             if f.is_file() and should_include_generated_file(f.name):
                 stat = f.stat()
-                generated.append({
-                    "filename": f.name,
-                    "size": stat.st_size,
-                    "generated_at": datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat(),
-                    "download_url": f"/api/users/{user_id}/download/outputs/{f.name}",
-                })
+                generated.append(
+                    {
+                        "filename": f.name,
+                        "size": stat.st_size,
+                        "generated_at": datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat(),
+                        "download_url": f"/api/users/{user_id}/download/outputs/{f.name}",
+                    }
+                )
 
     # Sort by generation time descending
     generated.sort(key=lambda x: x.get("generated_at", ""), reverse=True)
@@ -1867,11 +2034,13 @@ async def upload_file(user_id: str, file: UploadFile = File(...)) -> JSONRespons
     dest = upload_dir / filename
     dest.write_bytes(content)
 
-    return JSONResponse({
-        "status": "ok",
-        "filename": filename,
-        "size": len(content),
-    })
+    return JSONResponse(
+        {
+            "status": "ok",
+            "filename": filename,
+            "size": len(content),
+        }
+    )
 
 
 @app.get("/api/users/{user_id}/files")
@@ -1883,10 +2052,12 @@ async def list_files(user_id: str) -> list[dict[str, Any]]:
         for f in workspace.rglob("*"):
             if f.is_file():
                 rel = f.relative_to(workspace)
-                files.append({
-                    "path": str(rel),
-                    "size": f.stat().st_size,
-                })
+                files.append(
+                    {
+                        "path": str(rel),
+                        "size": f.stat().st_size,
+                    }
+                )
     return files
 
 
@@ -1956,7 +2127,7 @@ def _extract_zip_to_dir(data: bytes, target_dir: Path) -> list[str]:
                 raise HTTPException(status_code=400, detail="Symlinks not allowed in zip")
             rel_path = entry.filename
             if strip_prefix and rel_path.startswith(strip_prefix):
-                rel_path = rel_path[len(strip_prefix):]
+                rel_path = rel_path[len(strip_prefix) :]
             target = (target_dir / rel_path).resolve()
             if not str(target).startswith(str(target_dir_resolved)):
                 raise HTTPException(status_code=400, detail=f"Invalid path in zip: {entry.filename}")
@@ -1986,15 +2157,19 @@ async def list_shared_skills() -> list[SkillInfo]:
         if not d.is_dir() or not (d / "SKILL.md").exists():
             continue
         created_at, created_by = _read_skill_meta(d)
-        results.append(SkillInfo(
-            name=d.name,
-            source=SkillSource.SHARED,
-            content=(d / "SKILL.md").read_text(),
-            description="",
-            path=str(d),
-            created_at=created_at,
-            created_by=created_by,
-        ))
+        content = (d / "SKILL.md").read_text()
+        frontmatter = parse_skill_frontmatter(content)
+        results.append(
+            SkillInfo(
+                name=d.name,
+                source=SkillSource.SHARED,
+                content=content,
+                description=frontmatter.get("description") or "",
+                path=str(d),
+                created_at=created_at,
+                created_by=created_by,
+            )
+        )
     return results
 
 
@@ -2027,14 +2202,19 @@ async def list_user_skills(user_id: str) -> list[SkillInfo]:
         if not skill_file.exists():
             continue
         created_at, created_by = _read_skill_meta(d)
-        results.append(SkillInfo(
-            name=d.name,
-            source=SkillSource.PERSONAL,
-            content=skill_file.read_text(),
-            path=str(d),
-            created_at=created_at,
-            created_by=created_by,
-        ))
+        content = skill_file.read_text()
+        frontmatter = parse_skill_frontmatter(content)
+        results.append(
+            SkillInfo(
+                name=d.name,
+                source=SkillSource.PERSONAL,
+                content=content,
+                description=frontmatter.get("description") or "",
+                path=str(d),
+                created_at=created_at,
+                created_by=created_by,
+            )
+        )
     return results
 
 
@@ -2070,10 +2250,7 @@ def _extract_zip_to_dir(zip_data: bytes, target_dir: Path) -> list[str]:
     # Detect if all files are under a single root directory (nested zip)
     # e.g., skill-creator.zip contains skill-creator/SKILL.md
     skill_name = target_dir.name
-    all_under_skill_root = all(
-        e.filename.startswith(f"{skill_name}/") or e.is_dir()
-        for e in entries
-    )
+    all_under_skill_root = all(e.filename.startswith(f"{skill_name}/") or e.is_dir() for e in entries)
     prefix_to_strip = f"{skill_name}/" if all_under_skill_root else ""
 
     for entry in entries:
@@ -2087,7 +2264,7 @@ def _extract_zip_to_dir(zip_data: bytes, target_dir: Path) -> list[str]:
         # Strip nested prefix if detected
         rel_path = entry.filename
         if prefix_to_strip and rel_path.startswith(prefix_to_strip):
-            rel_path = rel_path[len(prefix_to_strip):]
+            rel_path = rel_path[len(prefix_to_strip) :]
 
         if not rel_path:  # empty after stripping
             continue
@@ -2143,11 +2320,16 @@ async def upload_skill_files(
     # Write metadata
     meta_path = skill_dir / "skill-meta.json"
     if not meta_path.exists():  # don't overwrite if zip already contained one
-        meta_path.write_text(json.dumps({
-            "source": "upload",
-            "created_at": datetime.now(timezone.utc).isoformat(),
-            "zip_filename": file.filename,
-        }, indent=2))
+        meta_path.write_text(
+            json.dumps(
+                {
+                    "source": "upload",
+                    "created_at": datetime.now(timezone.utc).isoformat(),
+                    "zip_filename": file.filename,
+                },
+                indent=2,
+            )
+        )
 
     return {"status": "ok", "skill_name": skill_name, "files": extracted}
 
@@ -2176,11 +2358,16 @@ async def upload_shared_skill(file: UploadFile = File(...)) -> dict[str, Any]:
     # Write metadata
     meta_path = skill_dir / "skill-meta.json"
     if not meta_path.exists():
-        meta_path.write_text(json.dumps({
-            "source": "upload",
-            "created_at": datetime.now(timezone.utc).isoformat(),
-            "zip_filename": file.filename,
-        }, indent=2))
+        meta_path.write_text(
+            json.dumps(
+                {
+                    "source": "upload",
+                    "created_at": datetime.now(timezone.utc).isoformat(),
+                    "zip_filename": file.filename,
+                },
+                indent=2,
+            )
+        )
 
     return {"status": "ok", "skill_name": skill_name, "files": extracted}
 
@@ -2294,9 +2481,7 @@ class TaskUpdateRequest(BaseModel):
 
 
 @app.post("/api/users/{user_id}/tasks")
-async def create_task(
-    user_id: str, req: TaskCreateRequest
-) -> dict[str, str]:
+async def create_task(user_id: str, req: TaskCreateRequest) -> dict[str, str]:
     """Create a new sub-agent task."""
     from src.sub_agent import SubAgentManager
 
@@ -2312,9 +2497,7 @@ async def create_task(
 
 
 @app.get("/api/users/{user_id}/tasks")
-async def list_tasks(
-    user_id: str, status: str | None = None
-) -> list[dict[str, Any]]:
+async def list_tasks(user_id: str, status: str | None = None) -> list[dict[str, Any]]:
     """List all tasks for the user, optionally filtered by status."""
     from src.sub_agent import SubAgentManager
 
@@ -2333,9 +2516,7 @@ async def get_task(user_id: str, task_id: str) -> JSONResponse:
 
 
 @app.patch("/api/users/{user_id}/tasks/{task_id}")
-async def update_task(
-    user_id: str, task_id: str, req: TaskUpdateRequest
-) -> JSONResponse:
+async def update_task(user_id: str, task_id: str, req: TaskUpdateRequest) -> JSONResponse:
     """Update a task's status or fields."""
     from src.sub_agent import SubAgentManager
 
@@ -2386,6 +2567,7 @@ async def submit_skill_feedback(
     # Use DB-backed manager if database is available
     if _db is not None:
         from src.skill_feedback import DBSkillFeedbackManager
+
         mgr = DBSkillFeedbackManager(db=_db)
         entry = await mgr.submit_feedback(
             skill_name,
@@ -2397,6 +2579,7 @@ async def submit_skill_feedback(
         )
     else:
         from src.skill_feedback import SkillFeedbackManager
+
         mgr = SkillFeedbackManager()
         entry = mgr.submit_feedback(
             skill_name,
@@ -2413,10 +2596,12 @@ async def get_skill_analytics(skill_name: str) -> dict[str, Any]:
     """Get aggregated analytics for a skill."""
     if _db is not None:
         from src.skill_feedback import DBSkillFeedbackManager
+
         mgr = DBSkillFeedbackManager(db=_db)
         return await mgr.get_analytics(skill_name)
 
     from src.skill_feedback import SkillFeedbackManager
+
     mgr = SkillFeedbackManager()
     return mgr.get_analytics(skill_name)
 
@@ -2683,10 +2868,12 @@ async def run_evolution_agent(
         generated_files = []
         for f in version_dir.rglob("*"):
             if f.is_file():
-                generated_files.append({
-                    "path": str(f.relative_to(version_dir)),
-                    "size": f.stat().st_size,
-                })
+                generated_files.append(
+                    {
+                        "path": str(f.relative_to(version_dir)),
+                        "size": f.stat().st_size,
+                    }
+                )
 
         return {
             "task_id": task_id,
@@ -2696,10 +2883,13 @@ async def run_evolution_agent(
         }
     except Exception as e:
         logger.error("run_evolution_agent failed for %s: %s", skill_name, e)
-        buffer.add_message(task_id, {
-            "type": "error",
-            "message": str(e),
-        })
+        buffer.add_message(
+            task_id,
+            {
+                "type": "error",
+                "message": str(e),
+            },
+        )
         return {"task_id": task_id, "status": "failed", "reason": str(e)}
 
 
@@ -2848,10 +3038,7 @@ async def get_evolution_status(
     # Check the message buffer for completion
     history = buffer.get_history(task_id, after_index=0)
     is_error = any(m.get("type") == "error" for m in history)
-    is_done = any(
-        m.get("type") == "result" or "EVOLUTION_COMPLETE" in str(m.get("content", ""))
-        for m in history
-    )
+    is_done = any(m.get("type") == "result" or "EVOLUTION_COMPLETE" in str(m.get("content", "")) for m in history)
 
     if is_error:
         return {"status": "failed", "task_id": task_id, "messages": history[-5:]}
@@ -2867,10 +3054,12 @@ async def get_evolution_status(
                 files = []
                 for f in version_dir.rglob("*"):
                     if f.is_file():
-                        files.append({
-                            "path": str(f.relative_to(version_dir)),
-                            "size": f.stat().st_size,
-                        })
+                        files.append(
+                            {
+                                "path": str(f.relative_to(version_dir)),
+                                "size": f.stat().st_size,
+                            }
+                        )
                 return {"status": "complete", "task_id": task_id, "files": files}
 
     return {"status": "running", "task_id": task_id}
@@ -2896,11 +3085,13 @@ async def get_version_files(
     for f in version_dir.rglob("*"):
         if f.is_file():
             rel = str(f.relative_to(version_dir))
-            files.append({
-                "path": rel,
-                "size": f.stat().st_size,
-                "is_skill_md": rel == "SKILL.md",
-            })
+            files.append(
+                {
+                    "path": rel,
+                    "size": f.stat().st_size,
+                    "is_skill_md": rel == "SKILL.md",
+                }
+            )
 
     return {"status": "ok", "version": version_number, "files": files}
 
@@ -2964,6 +3155,7 @@ async def list_all_feedback(
 
     if _db is not None:
         from src.skill_feedback import DBSkillFeedbackManager
+
         mgr = DBSkillFeedbackManager(db=_db)
         items = await mgr.get_all_feedback()
 
@@ -2978,11 +3170,13 @@ async def list_all_feedback(
 
         stats = []
         for s in stats_map.values():
-            stats.append({
-                "skill_name": s["skill_name"],
-                "count": s["count"],
-                "avg_rating": round(s["total_rating"] / s["count"], 2),
-            })
+            stats.append(
+                {
+                    "skill_name": s["skill_name"],
+                    "count": s["count"],
+                    "avg_rating": round(s["total_rating"] / s["count"], 2),
+                }
+            )
 
         return {"stats": stats, "items": items, "total_count": len(items)}
 
@@ -3039,6 +3233,7 @@ async def get_ab_test_results(
     test_dir = DATA_ROOT / "training" / "skill_outcomes"
     test_dir.mkdir(parents=True, exist_ok=True)
     import glob as _glob
+
     matches = list(test_dir.glob(f"{skill_name}_ab_test.jsonl"))
     if not matches:
         return {"status": "not_found", "skill_name": skill_name}
@@ -3276,7 +3471,7 @@ async def _check_stdio_mcp(cfg: dict[str, Any]) -> tuple[str, str | None, list[s
 
     try:
         async with asyncio.timeout(30):
-            async with stdio_client(params, errlog=open(os.devnull, 'w')) as (read, write):
+            async with stdio_client(params, errlog=open(os.devnull, "w")) as (read, write):
                 async with ClientSession(read, write) as session:
                     await session.initialize()
                     tools_result = await session.list_tools()
@@ -3308,84 +3503,101 @@ async def get_mcp_servers_status(
         enabled = cfg.get("enabled", True)
 
         if not enabled:
-            results.append({
-                "name": server_name,
-                "type": server_type,
-                "enabled": False,
-                "status": "disabled",
-                "error": None,
-                "tool_count": 0,
-            })
+            results.append(
+                {
+                    "name": server_name,
+                    "type": server_type,
+                    "enabled": False,
+                    "status": "disabled",
+                    "error": None,
+                    "tool_count": 0,
+                }
+            )
             continue
 
         if server_type == "stdio":
             command = cfg.get("command", "")
             if not command:
-                results.append({
-                    "name": server_name,
-                    "type": server_type,
-                    "enabled": True,
-                    "status": "error",
-                    "error": "No command specified",
-                    "tool_count": 0,
-                })
-            else:
-                status, error, tool_names = await _check_stdio_mcp(cfg)
-                results.append({
-                    "name": server_name,
-                    "type": server_type,
-                    "enabled": True,
-                    "status": status,
-                    "error": error,
-                    "tool_count": len(tool_names),
-                })
-        elif server_type == "http":
-            url = cfg.get("url", "")
-            if not url:
-                results.append({
-                    "name": server_name,
-                    "type": server_type,
-                    "enabled": True,
-                    "status": "error",
-                    "error": "No URL specified",
-                })
-            else:
-                try:
-                    import httpx
-                    async with httpx.AsyncClient() as client:
-                        resp = await client.get(url, timeout=3.0)
-                        if resp.status_code < 500:
-                            results.append({
-                                "name": server_name,
-                                "type": server_type,
-                                "enabled": True,
-                                "status": "connected",
-                                "error": None,
-                            })
-                        else:
-                            results.append({
-                                "name": server_name,
-                                "type": server_type,
-                                "enabled": True,
-                                "status": "disconnected",
-                                "error": f"HTTP {resp.status_code}",
-                            })
-                except Exception as e:
-                    results.append({
+                results.append(
+                    {
                         "name": server_name,
                         "type": server_type,
                         "enabled": True,
-                        "status": "disconnected",
-                        "error": str(e),
-                    })
+                        "status": "error",
+                        "error": "No command specified",
+                        "tool_count": 0,
+                    }
+                )
+            else:
+                status, error, tool_names = await _check_stdio_mcp(cfg)
+                results.append(
+                    {
+                        "name": server_name,
+                        "type": server_type,
+                        "enabled": True,
+                        "status": status,
+                        "error": error,
+                        "tool_count": len(tool_names),
+                    }
+                )
+        elif server_type == "http":
+            url = cfg.get("url", "")
+            if not url:
+                results.append(
+                    {
+                        "name": server_name,
+                        "type": server_type,
+                        "enabled": True,
+                        "status": "error",
+                        "error": "No URL specified",
+                    }
+                )
+            else:
+                try:
+                    import httpx
+
+                    async with httpx.AsyncClient() as client:
+                        resp = await client.get(url, timeout=3.0)
+                        if resp.status_code < 500:
+                            results.append(
+                                {
+                                    "name": server_name,
+                                    "type": server_type,
+                                    "enabled": True,
+                                    "status": "connected",
+                                    "error": None,
+                                }
+                            )
+                        else:
+                            results.append(
+                                {
+                                    "name": server_name,
+                                    "type": server_type,
+                                    "enabled": True,
+                                    "status": "disconnected",
+                                    "error": f"HTTP {resp.status_code}",
+                                }
+                            )
+                except Exception as e:
+                    results.append(
+                        {
+                            "name": server_name,
+                            "type": server_type,
+                            "enabled": True,
+                            "status": "disconnected",
+                            "error": str(e),
+                        }
+                    )
         else:
-            results.append({
-                "name": server_name,
-                "type": server_type,
-                "enabled": enabled,
-                "status": "error",
-                "error": f"Unknown server type: {server_type}",
-            })
+            results.append(
+                {
+                    "name": server_name,
+                    "type": server_type,
+                    "enabled": enabled,
+                    "status": "error",
+                    "error": f"Unknown server type: {server_type}",
+                }
+            )
 
     return results
 
@@ -3408,11 +3620,16 @@ async def submit_feedback(user_id: str, feedback: dict[str, Any]) -> dict[str, s
 
     feedback_file = training_dir / f"{time.time()}_{feedback.get('session_id', 'unknown')}.jsonl"
     with open(feedback_file, "w", encoding="utf-8") as f:
-        f.write(json.dumps({
-            **feedback,
-            "user_id": user_id,
-            "timestamp": time.time(),
-        }, ensure_ascii=False))
+        f.write(
+            json.dumps(
+                {
+                    **feedback,
+                    "user_id": user_id,
+                    "timestamp": time.time(),
+                },
+                ensure_ascii=False,
+            )
+        )
     return {"status": "ok"}
 
 
@@ -3421,6 +3638,7 @@ async def get_user_feedback(user_id: str) -> dict[str, Any]:
     """Get user's feedback records and stats."""
     if _db is not None:
         from src.skill_feedback import DBSkillFeedbackManager
+
         mgr = DBSkillFeedbackManager(db=_db)
         items = await mgr.get_user_feedback(user_id)
         stats_result = await mgr.get_user_feedback_stats(user_id)
@@ -3540,11 +3758,13 @@ async def get_user_resources(user_id: str) -> JSONResponse:
     """Get resource stats for a specific user's container."""
     from src.resource_manager import check_quota, get_container_stats, get_disk_usage
 
-    return JSONResponse({
-        "container": get_container_stats(user_id),
-        "disk": get_disk_usage(user_id),
-        "quota": check_quota(user_id),
-    })
+    return JSONResponse(
+        {
+            "container": get_container_stats(user_id),
+            "disk": get_disk_usage(user_id),
+            "quota": check_quota(user_id),
+        }
+    )
 
 
 # ── Audit Logs ────────────────────────────────────────────────────
@@ -3564,7 +3784,10 @@ async def query_audit_logs(
     from src.audit_logger import get_audit_logger
 
     return get_audit_logger().query(
-        category, date=date, user_id=user_id, action=action,
+        category,
+        date=date,
+        user_id=user_id,
+        action=action,
     )
 
 
@@ -3595,8 +3818,13 @@ async def health() -> dict[str, str]:
 async def startup() -> None:
     """Start background cleanup tasks and initialize DB if configured."""
     # Ensure training data directories exist
-    for subdir in ["training/qa", "training/skill-feedback", "training/preferences",
-                    "training/skill_outcomes", "training/corrections"]:
+    for subdir in [
+        "training/qa",
+        "training/skill-feedback",
+        "training/preferences",
+        "training/skill_outcomes",
+        "training/corrections",
+    ]:
         (DATA_ROOT / subdir).mkdir(parents=True, exist_ok=True)
 
     # Initialize SQLite + SessionStore if DATA_DB_PATH is set
@@ -3611,6 +3839,7 @@ async def startup() -> None:
         from src.database import Database
         from src.mcp_store import MCPServerStore, migrate_from_file
         from src.session_store import SessionStore
+
         _db = Database(db_path=db_path)
         await _db.init()
         buffer.db = _db  # Wire DB into message buffer
@@ -3633,6 +3862,7 @@ async def startup() -> None:
         # Migrate any existing JSONL feedback files to SQLite
         try:
             from src.skill_feedback import DBSkillFeedbackManager
+
             feedback_dir = DATA_ROOT / "training" / "skill-feedback"
             mgr = DBSkillFeedbackManager(db=_db)
             migrated = await mgr.migrate_from_jsonl(feedback_dir)
