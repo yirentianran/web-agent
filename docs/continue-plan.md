@@ -4,7 +4,7 @@
 
 ### **已完成 (Phase 1 全部完成)**
 - **项目脚手架**: pyproject.toml, Dockerfile, docker-compose.yml, .env.example
-- **后端核心**: main_server.py, agent_server.py (已迁移到真实 claude_agent_sdk)
+- **后端核心**: main_server.py (已迁移到真实 claude_agent_sdk)
 - **共享模块**: message_buffer.py, models.py, cost.py, container_manager.py, hooks/
 - **前端骨架**: React + Vite, 组件 (Sidebar, ChatArea, MessageBubble, InputBar), hooks (useWebSocket), types
 - **REST API**: 全部 20+ 端点已实现 (sessions, files, skills, memory, MCP, feedback, health)

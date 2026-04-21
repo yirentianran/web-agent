@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -35,6 +37,38 @@ class TestDeepMerge:
         assert result == {"a": 1}
 
 
+def _make_db(tmp_path: Path, user_id: str, initial: dict | None = None) -> MagicMock:
+    """Create a mock DB with a real SQLite backing file."""
+    db_path = tmp_path / "test.db"
+    conn = sqlite3.connect(str(db_path))
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS user_memory
+           (user_id TEXT PRIMARY KEY, preferences TEXT, entity_memory TEXT,
+            audit_context TEXT, file_memory TEXT, updated_at REAL)"""
+    )
+    if initial:
+        conn.execute(
+            """INSERT OR REPLACE INTO user_memory
+               (user_id, preferences, entity_memory, audit_context, file_memory, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (
+                user_id,
+                json.dumps(initial.get("preferences", {})),
+                json.dumps(initial.get("entity_memory", {})),
+                json.dumps(initial.get("audit_context", {})),
+                json.dumps(initial.get("file_memory", [])),
+                0.0,
+            ),
+        )
+    conn.commit()
+    conn.close()
+
+    mock_db = MagicMock()
+    mock_db._pool = MagicMock()
+    mock_db.db_path = db_path
+    return mock_db
+
+
 class TestMemoryManager:
     def test_read_empty_returns_default(self, tmp_path: Path) -> None:
         mgr = MemoryManager(user_id="alice", data_root=tmp_path)
@@ -42,13 +76,15 @@ class TestMemoryManager:
         assert data["user_id"] == "alice"
 
     def test_update_and_read(self, tmp_path: Path) -> None:
-        mgr = MemoryManager(user_id="alice", data_root=tmp_path)
+        mock_db = _make_db(tmp_path, "alice")
+        mgr = MemoryManager(user_id="alice", data_root=tmp_path, db=mock_db)
         mgr.update({"preferences": {"theme": "dark"}})
         data = mgr.read()
         assert data["preferences"]["theme"] == "dark"
 
     def test_deep_merge_on_update(self, tmp_path: Path) -> None:
-        mgr = MemoryManager(user_id="alice", data_root=tmp_path)
+        mock_db = _make_db(tmp_path, "alice")
+        mgr = MemoryManager(user_id="alice", data_root=tmp_path, db=mock_db)
         mgr.update({"entity_memory": {"name": "Acme"}})
         mgr.update({"entity_memory": {"industry": "Tech"}})
         data = mgr.read()
@@ -56,12 +92,22 @@ class TestMemoryManager:
         assert data["entity_memory"]["industry"] == "Tech"
 
     def test_replace(self, tmp_path: Path) -> None:
-        mgr = MemoryManager(user_id="alice", data_root=tmp_path)
-        mgr.update({"old": "data"})
-        mgr.replace({"new": "data"})
+        mock_db = _make_db(tmp_path, "alice", {"old": "data"})
+        mgr = MemoryManager(user_id="alice", data_root=tmp_path, db=mock_db)
+        mgr.replace({"preferences": {"new": "data"}})
         data = mgr.read()
-        assert "old" not in data
-        assert data["new"] == "data"
+        assert "old" not in data.get("preferences", {})
+        assert data["preferences"]["new"] == "data"
+
+    def test_update_without_db_raises(self, tmp_path: Path) -> None:
+        mgr = MemoryManager(user_id="alice", data_root=tmp_path)
+        with pytest.raises(RuntimeError, match="requires a database"):
+            mgr.update({"preferences": {"theme": "dark"}})
+
+    def test_replace_without_db_raises(self, tmp_path: Path) -> None:
+        mgr = MemoryManager(user_id="alice", data_root=tmp_path)
+        with pytest.raises(RuntimeError, match="requires a database"):
+            mgr.replace({"preferences": {"theme": "dark"}})
 
     def test_agent_notes_crud(self, tmp_path: Path) -> None:
         mgr = MemoryManager(user_id="alice", data_root=tmp_path)
@@ -95,9 +141,3 @@ class TestMemoryManager:
     def test_load_empty_agent_memory(self, tmp_path: Path) -> None:
         mgr = MemoryManager(user_id="alice", data_root=tmp_path)
         assert mgr.load_agent_memory_for_prompt() == ""
-
-    def test_corrupted_memory_file(self, tmp_path: Path) -> None:
-        mgr = MemoryManager(user_id="alice", data_root=tmp_path)
-        mgr._memory_file.write_text("not valid json{{{")
-        data = mgr.read()
-        assert data == {"user_id": "alice"}

@@ -472,7 +472,7 @@ uvicorn main_server:app --host 0.0.0.0 --port 8000
 | 文件 | 职责 |
 |------|------|
 | `main_server.py` | 主服务器：REST API、WebSocket 桥接、容器管理、会话管理 |
-| `agent_server.py` | 容器内 Agent 服务：SDK 子进程、技能加载、记忆注入 |
+| `agent_server.py` | ~~容器内 Agent 服务~~（已删除，Phase 2+ 未实现） |
 | `src/message_buffer.py` | 消息缓冲：内存+磁盘双层，支持会话恢复 |
 | `src/websocket_bridge.py` | WebSocket 双向代理：浏览器 ↔ Agent |
 | `src/auth.py` | JWT 认证 |

@@ -19,6 +19,7 @@ export default function SkillsPanel({ authToken, userId, onClose, embedded }: Sk
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [uploading, setUploading] = useState(false)
+  const [viewingSkill, setViewingSkill] = useState<Skill | null>(null)
   const zipInputRef = useRef<HTMLInputElement>(null)
 
   const fetchSkills = useCallback(async () => {
@@ -65,6 +66,7 @@ export default function SkillsPanel({ authToken, userId, onClose, embedded }: Sk
         await api.delete(name)
       }
       await fetchSkills()
+      setViewingSkill(null)
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to delete skill')
     }
@@ -78,6 +80,35 @@ export default function SkillsPanel({ authToken, userId, onClose, embedded }: Sk
 
   const skills = tab === 'shared' ? sharedSkills : personalSkills
   const isPersonal = tab === 'personal'
+
+  // ── Detail View ────────────────────────────────────────────────
+
+  if (viewingSkill) {
+    return (
+      <div className={`skills-panel ${embedded ? 'embedded' : ''}`}>
+        <div className="skill-view">
+          <div className="skill-view-header">
+            <button className="btn-back" onClick={() => setViewingSkill(null)} type="button">
+              ← Back
+            </button>
+            <div className="skill-view-title">
+              <h3>{viewingSkill.name}</h3>
+              <span className={`skill-badge ${viewingSkill.source}`}>{viewingSkill.source}</span>
+            </div>
+            {viewingSkill.description && (
+              <div className="skill-description" style={{ marginTop: 8, color: 'var(--color-text-secondary)', fontSize: '0.875rem' }}>
+                {viewingSkill.description}
+              </div>
+            )}
+            <div className="skill-meta" style={{ marginTop: 8, fontSize: '0.8rem', color: 'var(--color-text-secondary)' }}>
+              Path: {viewingSkill.path}
+            </div>
+          </div>
+          <div className="skill-content">{viewingSkill.content}</div>
+        </div>
+      </div>
+    )
+  }
 
   return (
     <div className={`skills-panel ${embedded ? 'embedded' : ''}`}>
@@ -120,7 +151,7 @@ export default function SkillsPanel({ authToken, userId, onClose, embedded }: Sk
           {isPersonal ? 'No personal skills yet.' : 'No shared skills available.'}
         </div>
       ) : (
-        <SkillList skills={skills} onDelete={handleDelete} />
+        <SkillList skills={skills} onDelete={handleDelete} onView={setViewingSkill} />
       )}
     </div>
   )
@@ -131,9 +162,10 @@ export default function SkillsPanel({ authToken, userId, onClose, embedded }: Sk
 interface SkillListProps {
   skills: Skill[]
   onDelete: (name: string) => void
+  onView: (skill: Skill) => void
 }
 
-function SkillList({ skills, onDelete }: SkillListProps) {
+function SkillList({ skills, onDelete, onView }: SkillListProps) {
   return (
     <div className="skill-list">
       {skills.map((skill) => (
@@ -145,7 +177,7 @@ function SkillList({ skills, onDelete }: SkillListProps) {
           </div>
           <div className="skill-meta">Created: {skill.created_at ? new Date(skill.created_at).toLocaleDateString() : 'N/A'}</div>
           <div className="skill-actions">
-            <button className="skill-view-btn" type="button">View</button>
+            <button className="skill-view-btn" onClick={() => onView(skill)} type="button">View</button>
             <button className="skill-delete-btn" onClick={() => onDelete(skill.name)} type="button">Delete</button>
           </div>
         </div>

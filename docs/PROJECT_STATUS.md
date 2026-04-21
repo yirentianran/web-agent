@@ -52,7 +52,7 @@
 | **7.12.4** | L4 容器日志 | 完成 | Docker logging driver (json-file, max 10MB, 3 files) | 无 | — |
 | **7.12.5** | 日志清理 | 完成 | `src/log_cleanup.py` — 4 层保留期驱逐 | 无 | — |
 | **8.1** | Main Server | 完成 | `main_server.py` — 1,466 行，45+ 端点 | 无 | — |
-| **8.2** | Container Agent Server | 完成 | `agent_server.py` — 431 行，完整 SDK 集成 | 无 | — |
+| **8.2** | ~~Container Agent Server~~ | **已删除** | `agent_server.py` — Phase 2+ 容器架构，当前未使用 |
 | **8.3** | Dockerfile | **部分** | 35 行，python:3.12-slim, Claude CLI | **缺非 root USER** | **关键** |
 | **9.1** | Docker Compose Dev | 完成 | `docker-compose.yml` — 热重载、环境变量 | **缺 MCP 服务** | 低 |
 | **9.2** | Docker Compose Prod | 完成 | `docker-compose.prod.yml` — 健康检查、resource limits | **缺 TLS/HTTPS** | 中 |

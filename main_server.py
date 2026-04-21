@@ -269,14 +269,11 @@ def load_skills(user_id: str) -> dict[str, dict[str, Any]]:
 
 
 def load_memory(user_id: str) -> str:
-    """Load L1 platform memory from memory.json."""
-    mem_file = user_data_dir(user_id) / "memory.json"
-    if not mem_file.exists():
-        return ""
-    try:
-        data = json.loads(mem_file.read_text())
-    except (json.JSONDecodeError, OSError):
-        return ""
+    """Load L1 platform memory via MemoryManager (SQLite primary, file fallback)."""
+    from src.memory import MemoryManager
+
+    mgr = MemoryManager(user_id=user_id, data_root=DATA_ROOT, db=_db)
+    data = mgr.read()
 
     parts: list[str] = []
 
@@ -305,6 +302,12 @@ def load_memory(user_id: str) -> str:
         parts.append("\n## Frequently Used Files\n")
         for f in files:
             parts.append(f"- {f.get('filename', '')} (last used: {f.get('last_used', '')})\n")
+
+    prefs = data.get("preferences", {})
+    if prefs:
+        parts.append("\n## User Preferences\n")
+        for key, val in prefs.items():
+            parts.append(f"- {key}: {val}\n")
 
     return "\n".join(parts)
 

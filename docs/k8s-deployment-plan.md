@@ -44,7 +44,6 @@
 ```
 web-agent/
 ├── main_server.py          # FastAPI 主应用 (REST + WebSocket)
-├── agent_server.py         # Agent 子进程 FastAPI 端点
 ├── src/                    # 后端模块
 │   ├── message_buffer.py   # 消息持久化
 │   ├── memory.py           # 用户记忆
@@ -230,7 +229,7 @@ RUN pip install uv && uv sync --frozen --no-dev
 
 # 复制应用代码
 COPY src/ ./src/
-COPY main_server.py agent_server.py ./
+COPY main_server.py ./
 
 # 复制构建好的前端
 COPY --from=frontend-builder /app/src/static/ ./src/static/
