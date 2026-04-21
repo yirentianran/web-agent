@@ -373,6 +373,23 @@ export default function MessageBubble({ message, sessionId, onAnswer, onFileClic
     const toolName = event.tool_name as string | undefined
     const progressMsg = event.message as string | undefined
 
+    // content_block_delta — streaming text output
+    if (eventType === 'content_block_delta') {
+      const delta = event.delta as Record<string, unknown> | undefined
+      if (!delta) return null
+      const deltaType = delta.type as string | undefined
+      if (deltaType !== 'text_delta') return null
+      const text = delta.text as string | undefined
+      if (!text) return null
+      // Render streaming text as a simple text fragment
+      // Note: aggregation of multiple deltas happens in App.tsx
+      return (
+        <div className="message stream-event stream-event--text">
+          <span className="streaming-text">{text}</span>
+        </div>
+      )
+    }
+
     if (eventType === 'tool_use' && toolName) {
       const icon = getToolIcon(toolName)
       return (

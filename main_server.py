@@ -739,6 +739,7 @@ def build_sdk_options(
         mcp_servers=mcp_servers if mcp_servers else None,
         can_use_tool=can_use_tool_callback,
         hooks=hooks,
+        include_partial_messages=True,  # Enable streaming text output
     )
 
 
