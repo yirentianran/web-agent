@@ -5,23 +5,30 @@ Multi-user web agent powered by Claude Agent SDK. Each user gets an isolated wor
 ## Features
 
 - **Multi-user isolation** — each user has independent sessions, files, and workspace
-- **Real-time chat** — WebSocket-based streaming with progress indicators
+- **Real-time chat** — WebSocket-based streaming with progress indicators and tool call visualization
 - **Session management** — create, switch, delete, and fork sessions with full history
 - **File upload & download** — upload files for agent context, download agent-generated outputs
-- **Skill system** — create, share, and apply custom skills across users
+- **Skill system** — create, share, and apply custom skills across users with feedback/ratings
 - **User memory** — persistent preferences and entity memory per user
 - **MCP server registry** — admin-managed MCP tool servers
-- **Feedback & ratings** — user feedback collection per session
+- **Streaming output** — progressive text display as the agent generates content
+- **Timer persistence** — session timers survive page refresh via localStorage
 
 ## Tech Stack
 
 | Layer | Technology |
 |-------|-----------|
-| Backend | Python 3.12, FastAPI, Uvicorn |
+| Backend | Python 3.12, FastAPI, Uvicorn, aiosqlite |
 | AI Agent | Claude Agent SDK |
-| Frontend | React 18, TypeScript, Vite |
+| Frontend | React 18, TypeScript, Vite, Vitest + Testing Library |
 | Communication | WebSocket (real-time) + REST API |
-| Testing | pytest (backend), Vitest + Testing Library (frontend) |
+| Testing | pytest (backend), Vitest (frontend) |
+
+## System Requirements
+
+- Python 3.12+
+- Node.js 18+
+- npm 9+
 
 ## Quick Start
 
@@ -33,18 +40,26 @@ cd web-agent
 ./setup.sh
 ```
 
-### 2. Configure your API key
+### 2. Configure environment
 
-Edit `.env` and set your API key:
+```bash
+cp .env.example .env
+```
+
+Edit `.env` with your settings:
 
 ```env
-# For direct Anthropic API:
-ANTHROPIC_API_KEY=sk-ant-api03-...
+# Anthropic API key
+# For direct Anthropic API: sk-ant-api03-...
+# For Alibaba Cloud Bailian: sk-sp-...
+ANTHROPIC_API_KEY=sk-...
 
-# For Alibaba Cloud Bailian (Anthropic-compatible):
-ANTHROPIC_API_KEY=sk-sp-...
-ANTHROPIC_BASE_URL=https://coding.dashscope.aliyuncs.com/apps/anthropic
-MODEL=qwen3.6-plus
+# Anthropic base URL (optional)
+# For Alibaba Cloud Bailian: https://coding.dashscope.aliyuncs.com/apps/anthropic
+# ANTHROPIC_BASE_URL=https://coding.dashscope.aliyuncs.com/apps/anthropic
+
+# Model name (default: claude-sonnet-4-6)
+# MODEL=qwen3.6-plus
 ```
 
 ### 3. Start the dev server
@@ -54,41 +69,205 @@ MODEL=qwen3.6-plus
 ```
 
 This starts:
-- Backend on `http://localhost:8000`
-- Frontend on `http://localhost:3000`
+- Backend on `http://localhost:8000` (with auto-reload)
+- Frontend on `http://localhost:3000` (Vite dev server with proxy)
+
+Open `http://localhost:3000` in your browser and log in with a user ID.
+
+## Architecture
+
+```
+┌─────────────┐     REST/WS      ┌──────────────────────────────────────┐
+│   Browser   │ ────────────────► │  FastAPI (main_server.py)            │
+│  (React)    │ ◄──────────────── │                                      │
+└─────────────┘                   │  ┌────────────┐  ┌────────────────┐ │
+                                  │  │ Session    │  │ MessageBuffer  │ │
+                                  │  │ Manager    │  │ (in-memory +   │ │
+                                  │  │            │  │  JSONL disk)   │ │
+                                  │  └─────┬──────┘  └───────┬────────┘ │
+                                  │        │                 │          │
+                                  │  ┌─────▼──────┐  ┌───────▼────────┐ │
+                                  │  │ Session    │  │ SQLite DB      │ │
+                                  │  │ Store      │  │ (sessions,     │ │
+                                  │  │ (JSON)     │  │  messages)     │ │
+                                  │  └────────────┘  └────────────────┘ │
+                                  │                                      │
+                                  │  ┌────────────────────────────────┐ │
+                                  │  │ Claude Agent SDK (subprocess)  │ │
+                                  │  │ → tools, hooks, streaming      │ │
+                                  │  └────────────────────────────────┘ │
+                                  └──────────────────────────────────────┘
+```
+
+### Key Components
+
+| Component | Purpose |
+|-----------|---------|
+| `main_server.py` | FastAPI entry point — REST endpoints, WebSocket bridge, session lifecycle |
+| `MessageBuffer` | In-memory message queue with JSONL disk persistence; manages session state, heartbeats, and history |
+| `SessionStore` | JSON-based session metadata persistence on disk |
+| `SQLite DB` | Persistent storage for messages and session data |
+| `useWebSocket` | React hook handling connection, reconnection, message queue, and send tracking |
+| `useStreamingText` | Aggregates `content_block_delta` stream events into progressive text display |
 
 ## Project Structure
 
 ```
 web-agent/
-├── main_server.py          # FastAPI server (REST + WebSocket)
-├── agent_server.py         # Agent subprocess endpoint
-├── src/                    # Backend modules
-│   ├── auth.py             # Authentication & JWT
-│   ├── message_buffer.py   # Session message persistence
-│   ├── memory.py           # User memory management
-│   ├── file_validation.py  # Upload file validation
-│   ├── hooks/              # Tool call hooks (Write, Bash, etc.)
+├── main_server.py              # FastAPI server (REST + WebSocket)
+├── agent_server.py             # Agent subprocess endpoint
+├── src/                        # Backend modules
+│   ├── auth.py                 # Authentication & JWT
+│   ├── message_buffer.py       # Session message persistence & state
+│   ├── memory.py               # User memory management
+│   ├── file_validation.py      # Upload file validation
+│   ├── truncation.py           # Tool output truncation
+│   ├── models.py               # Pydantic models
+│   ├── hooks/                  # Tool call hooks (Write, Bash, etc.)
 │   └── ...
-├── frontend/               # React frontend
+├── frontend/                   # React frontend
 │   ├── src/
-│   │   ├── components/     # React components
-│   │   ├── hooks/          # Custom hooks (useWebSocket)
-│   │   ├── lib/            # Utilities
-│   │   └── styles/         # CSS
+│   │   ├── components/         # React components
+│   │   │   ├── ChatArea.tsx    # Main chat display with streaming text
+│   │   │   ├── MessageBubble.tsx # Message rendering (Markdown, tools, etc.)
+│   │   │   └── StatusSpinner.tsx # Agent working indicator with timer
+│   │   ├── hooks/
+│   │   │   ├── useWebSocket.ts # WebSocket connection & message handling
+│   │   │   └── useStreamingText.ts # Text delta aggregation
+│   │   ├── lib/                # Utilities & type definitions
+│   │   └── styles/             # Global CSS
 │   └── package.json
-├── tests/                  # Backend tests
-│   └── unit/
-├── docs/                   # Architecture docs
-├── scripts/                # Management scripts
-│   ├── manage.sh           # Production server control (start/stop/restart)
-│   └── build.sh            # Frontend build script
-└── setup.sh                # One-time setup script
+├── tests/                      # Backend & frontend tests
+│   ├── unit/                   # pytest backend tests
+│   └── ...                     # Vitest frontend tests
+├── skills/                     # Custom skill definitions
+├── docs/                       # Architecture & planning docs
+├── plans/                      # Fix & feature plans
+├── scripts/
+│   ├── manage.sh               # Production server control
+│   ├── build.sh                # Frontend build script
+│   └── cleanup_stale_files.py  # Cleanup utility
+├── data/                       # Runtime data (never committed)
+├── .env.example                # Environment configuration template
+├── setup.sh                    # One-time setup script
+└── start-dev.sh                # Development server launcher
 ```
 
-## Deployment
+## Environment Variables
 
-The project uses a **single-process architecture** — FastAPI serves both the API and the frontend static files. No Docker or Nginx required.
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `ANTHROPIC_API_KEY` | Yes | — | API key (Anthropic or Bailian) |
+| `ANTHROPIC_BASE_URL` | No | Anthropic default | Custom API endpoint |
+| `MODEL` | No | `claude-sonnet-4-6` | Model to use |
+| `DATA_ROOT` | No | `./data` | Runtime data directory |
+| `AGENT_TASK_TIMEOUT` | No | `18000` | Max agent task duration (seconds) |
+| `MAX_TURNS` | No | `500` | Max agent turns per session |
+| `LOG_LEVEL` | No | `info` | Logging level |
+
+## API
+
+### Authentication
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/api/auth/token` | Get JWT token for a user |
+
+### Sessions
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/api/users/{user_id}/sessions` | Create a session |
+| `GET` | `/api/users/{user_id}/sessions` | List sessions |
+| `DELETE` | `/api/users/{user_id}/sessions/{id}` | Delete a session |
+| `GET` | `/api/users/{user_id}/sessions/{id}/history` | Get session history |
+| `GET` | `/api/users/{user_id}/sessions/{id}/status` | Get live session state |
+| `PATCH` | `/api/users/{user_id}/sessions/{id}/title` | Auto-generate session title |
+| `POST` | `/api/users/{user_id}/sessions/{id}/cancel` | Cancel running session |
+| `POST` | `/api/users/{user_id}/sessions/{id}/fork` | Fork a session |
+
+### Files
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/api/users/{user_id}/upload` | Upload a file |
+| `GET` | `/api/users/{user_id}/generated-files` | List generated output files |
+| `GET` | `/api/users/{user_id}/download/{path}` | Download a file |
+
+### Skills
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/api/users/{user_id}/skills/upload` | Upload a skill (ZIP) |
+| `GET` | `/api/users/{user_id}/skills` | List skills |
+| `POST` | `/api/skills/{name}/feedback` | Submit skill feedback |
+
+### Memory
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `PUT` | `/api/users/{user_id}/memory` | Update user memory |
+| `GET` | `/api/users/{user_id}/memory` | Get user memory |
+
+### WebSocket
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `WS` | `/ws` | Real-time agent communication (supports `?token=` auth) |
+
+## Development
+
+### Running Tests
+
+```bash
+# Backend
+uv run pytest
+
+# Frontend
+cd frontend && npm test
+
+# All frontend tests with coverage
+cd frontend && npm test -- --coverage
+```
+
+### Code Formatting & Linting
+
+```bash
+# Backend (ruff)
+uv run ruff format
+uv run ruff check src/ main_server.py
+
+# Frontend (prettier + eslint + tsc)
+cd frontend
+npx prettier --write "src/**/*.{ts,tsx}"
+npx eslint --fix "src/**/*.{ts,tsx}"
+npx tsc --noEmit
+```
+
+### Development Workflow
+
+1. **Research & Reuse** — check GitHub, package registries, and existing skills first
+2. **Plan** — create a plan in `plans/` before implementing
+3. **TDD** — write tests first, then implement
+4. **Code Review** — review after writing code
+5. **Commit** — follow conventional commits format
+
+### Rules System
+
+This project uses a layered configuration system in `~/.claude/rules/`:
+
+```
+rules/
+├── common/          # Language-agnostic principles
+├── web/             # Web/frontend specific
+├── typescript/      # TypeScript/JavaScript specific
+├── python/          # Python specific
+└── zh/              # Chinese translations
+```
+
+Rules define coding standards, testing requirements, and development workflows. See `rules/README.md` for details.
+
+## Deployment
 
 ### Production Setup
 
@@ -102,59 +281,26 @@ The project uses a **single-process architecture** — FastAPI serves both the A
    ./scripts/manage.sh start
    ```
 
-3. **Manage the server**:
+3. **Server management**:
    | Command | Description |
    |---------|-------------|
    | `./scripts/manage.sh start` | Start server (background) |
-   | `./scripts/manage.sh stop` | Stop server (finds process by name) |
+   | `./scripts/manage.sh stop` | Stop server |
    | `./scripts/manage.sh restart` | Restart server |
    | `./scripts/manage.sh status` | Check server status |
    | `./scripts/manage.sh logs` | View server logs |
 
 4. **Access**: Open `http://<server-ip>:8000`
 
-## Development
+## Troubleshooting
 
-For local development with hot-reload:
-
-```bash
-./start-dev.sh
-```
-
-This starts:
-- Backend on `http://localhost:8000` (with auto-reload)
-- Frontend on `http://localhost:3000` (Vite dev server with proxy)
-
-### Running Tests
-
-**Backend**:
-```bash
-uv run pytest
-```
-
-**Frontend**:
-```bash
-cd frontend && npm test
-```
-
-## API
-
-Key endpoints:
-
-| Method | Path | Description |
-|--------|------|-------------|
-| `POST` | `/api/users/{user_id}/sessions` | Create a session |
-| `GET` | `/api/users/{user_id}/sessions` | List sessions |
-| `DELETE` | `/api/users/{user_id}/sessions/{id}` | Delete a session |
-| `GET` | `/api/users/{user_id}/sessions/{id}/history` | Get session history |
-| `POST` | `/api/users/{user_id}/upload` | Upload a file |
-| `GET` | `/api/users/{user_id}/generated-files` | List generated output files |
-| `GET` | `/api/users/{user_id}/download/{path}` | Download a file |
-| `POST` | `/api/users/{user_id}/skills/upload` | Upload a skill (ZIP) |
-| `GET` | `/api/users/{user_id}/skills` | List skills |
-| `PUT` | `/api/users/{user_id}/memory` | Update user memory |
-| `GET` | `/api/users/{user_id}/memory` | Get user memory |
-| `WS` | `/ws` | WebSocket for real-time agent communication |
+| Issue | Solution |
+|-------|----------|
+| Agent stuck on "working" after refresh | Timer recovery kicks in automatically after stale buffer detection (30s) |
+| Port already in use | Run `./scripts/manage.sh stop` or `pkill -f uvicorn` |
+| Frontend fails to connect | Verify backend is running on port 8000; check `.env` config |
+| Skill not loading | Ensure skill is in `skills/` directory and properly installed |
+| SQLite locked | Check no other process is holding the DB; remove `.lock` if stale |
 
 ## License
 
