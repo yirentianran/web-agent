@@ -37,10 +37,16 @@ export function processMessage(
   state: StreamingTextState,
   msg: any
 ): StreamingTextState {
+  // Debug log for stream_event
+  if (msg.type === 'stream_event') {
+    console.log('[STREAM_DEBUG] useStreamingText received:', msg.event?.type)
+  }
+
   // Handle stream_event.content_block_delta - accumulate text
   if (msg.type === 'stream_event' && msg.event?.type === 'content_block_delta') {
     const delta = msg.event.delta
     if (delta?.type === 'text_delta' && delta.text) {
+      console.log('[STREAM_DEBUG] Accumulating text:', delta.text.length, 'chars, total:', state.accumulatedText.length + delta.text.length)
       return {
         accumulatedText: state.accumulatedText + delta.text,
         streamingMessageId: state.streamingMessageId, // Keep existing

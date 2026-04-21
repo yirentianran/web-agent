@@ -326,10 +326,17 @@ function MainApp() {
       lastHeartbeatRef.current = Date.now()
     }
 
+    // Debug log for stream_event
+    if (msg.type === 'stream_event') {
+      const innerType = msg.event?.type || 'unknown'
+      console.log('[STREAM_DEBUG] App processing stream_event:', innerType, msg)
+    }
+
     // Process streaming text from content_block_delta events
     // Aggregate text deltas into a single streaming state for display
     const newStreamingState = useStreamingText.processMessage(streamingTextStateRef.current, msg)
     if (newStreamingState !== streamingTextStateRef.current) {
+      console.log('[STREAM_DEBUG] Streaming state updated:', newStreamingState.accumulatedText.length, 'chars')
       streamingTextStateRef.current = newStreamingState
       setStreamingTextState(newStreamingState)
     }

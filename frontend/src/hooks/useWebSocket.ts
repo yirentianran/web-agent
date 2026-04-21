@@ -93,6 +93,11 @@ export function useWebSocket({ userId, onMessage, onConnect, onDisconnect, token
     ws.onmessage = (event) => {
       try {
         const data = JSON.parse(event.data)
+        // Debug log for stream_event
+        if (data.type === 'stream_event') {
+          const innerType = data.event?.type || 'unknown'
+          console.log('[STREAM_DEBUG] WS received stream_event:', innerType, data)
+        }
         onMessage(data as Message)
       } catch {
         // ignore parse errors

@@ -18,6 +18,11 @@ interface ChatAreaProps {
 }
 
 export default function ChatArea({ messages, sessionId, sessionState, onAnswer, scrollPositions, onFileClick, authToken, streamingText }: ChatAreaProps) {
+  // Debug log for streaming text display
+  if (streamingText && streamingText.length > 0) {
+    console.log('[STREAM_DEBUG] ChatArea rendering streamingText:', streamingText.length, 'chars')
+  }
+
   const containerRef = useRef<HTMLDivElement>(null)
   const visitedRef = useRef<Set<string>>(new Set())
   const scrollRestoredRef = useRef(false)
@@ -291,7 +296,8 @@ export default function ChatArea({ messages, sessionId, sessionState, onAnswer, 
         ))}
 
         {/* Streaming text indicator — shows accumulated content_block_delta text */}
-        {streamingText && streamingText.trim() && !isAgentRunning && (
+        {/* Show streaming text WHILE agent is running for progressive display */}
+        {streamingText && streamingText.trim() && (
           <div className="message assistant-message streaming-message">
             <div className="bubble">
               <span className="streaming-text">{streamingText}</span>

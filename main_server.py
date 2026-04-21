@@ -729,7 +729,7 @@ def build_sdk_options(
         ],
     }
 
-    return ClaudeAgentOptions(
+    options = ClaudeAgentOptions(
         model=os.getenv("MODEL", "claude-sonnet-4-6"),
         cwd=str(user_dir / "workspace"),
         system_prompt=build_system_prompt(user_id, skills, workspace),
@@ -741,6 +741,8 @@ def build_sdk_options(
         hooks=hooks,
         include_partial_messages=True,  # Enable streaming text output
     )
+    logger.info("[STREAM_DEBUG] SDK options built: include_partial_messages=%s", options.include_partial_messages)
+    return options
 
 
 def message_to_dicts(msg: Any) -> Iterator[dict[str, Any]]:
@@ -861,6 +863,8 @@ def message_to_dicts(msg: Any) -> Iterator[dict[str, Any]]:
         return
 
     if isinstance(msg, StreamEvent):
+        event_type = msg.event.get("type", "unknown") if msg.event else "unknown"
+        logger.info("[STREAM_DEBUG] StreamEvent received: type=%s, uuid=%s", event_type, msg.uuid)
         result = {
             "type": "stream_event",
             "uuid": msg.uuid,
@@ -1126,6 +1130,10 @@ async def run_agent_task(
                     content = event.get("content", "")
                     if content and len(content) > 1000:
                         event["content"] = truncate_tool_output(content)
+                # Debug log for stream_event
+                if event.get("type") == "stream_event":
+                    inner_type = event.get("event", {}).get("type", "unknown")
+                    logger.info("[STREAM_DEBUG] Buffering stream_event: inner_type=%s, session=%s", inner_type, session_id)
                 buffer.add_message(session_id, event)
 
         # Detect files created/modified by Bash commands since the task started
@@ -1638,6 +1646,10 @@ async def handle_ws(websocket: WebSocket) -> None:
                         idx = last_seen + i
                         msg_type = h.get("type", "unknown")
                         msg_subtype = h.get("subtype", "")
+                        # Debug log for stream_event
+                        if msg_type == "stream_event":
+                            inner_type = h.get("event", {}).get("type", "unknown")
+                            logger.info("[STREAM_DEBUG] WS sending stream_event: inner_type=%s, idx=%d, session=%s", inner_type, idx, session_id)
                         if msg_type == "system" and msg_subtype == "session_state_changed":
                             logger.debug(
                                 "WS: sending state_change=%s for session %s (idx=%d)",
