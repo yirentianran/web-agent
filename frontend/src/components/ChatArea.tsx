@@ -14,15 +14,19 @@ function loadStartTimes(): Map<string, number> {
     const raw = localStorage.getItem(AGENT_START_TIME_KEY)
     if (!raw) return new Map()
     const parsed = JSON.parse(raw) as [string, number][]
+    console.log('[TIMER_DEBUG] loadStartTimes from localStorage:', parsed)
     return new Map(parsed)
   } catch {
+    console.log('[TIMER_DEBUG] loadStartTimes failed, returning empty Map')
     return new Map()
   }
 }
 
 function saveStartTimes(times: Map<string, number>) {
   try {
-    localStorage.setItem(AGENT_START_TIME_KEY, JSON.stringify(Array.from(times)))
+    const data = JSON.stringify(Array.from(times))
+    console.log('[TIMER_DEBUG] saveStartTimes to localStorage:', Array.from(times))
+    localStorage.setItem(AGENT_START_TIME_KEY, data)
   } catch {
     // localStorage full — ignore
   }
@@ -104,6 +108,7 @@ export default function ChatArea({ messages, sessionId, sessionState, onAnswer, 
   const sessionStartTimesRef = useRef<Map<string, number>>(loadStartTimes())
 
   useEffect(() => {
+    console.log('[TIMER_DEBUG] useEffect triggered: sessionId=', sessionId, 'sessionState=', sessionState, 'prevSessionState=', prevSessionStateRef.current)
     // Session changed — save previous session's start time, restore new session's
     if (agentSessionIdRef.current !== sessionId) {
       agentSessionIdRef.current = sessionId
@@ -111,6 +116,7 @@ export default function ChatArea({ messages, sessionId, sessionState, onAnswer, 
 
       if (sessionState === 'running' && sessionId) {
         const savedStart = sessionStartTimesRef.current.get(sessionId)
+        console.log('[TIMER_DEBUG] Session changed to running, savedStart=', savedStart)
         if (savedStart !== undefined) {
           setAgentStartTime(savedStart)
         } else {
@@ -121,23 +127,33 @@ export default function ChatArea({ messages, sessionId, sessionState, onAnswer, 
           setAgentStartTime(now)
         }
       } else {
+        console.log('[TIMER_DEBUG] Session changed but not running, agentStartTime=null')
         setAgentStartTime(null)
       }
       return
     }
 
-    // Detect transition TO running — always reset the start time
+    // Detect transition TO running — restore saved time if available
     if (sessionState === 'running' && prevSessionStateRef.current !== 'running') {
-      const now = Date.now()
-      if (sessionId) {
-        sessionStartTimesRef.current.set(sessionId, now)
-        saveStartTimes(sessionStartTimesRef.current)
+      const savedStart = sessionId ? sessionStartTimesRef.current.get(sessionId) : undefined
+      console.log('[TIMER_DEBUG] Transition to running, savedStart=', savedStart)
+      if (savedStart !== undefined) {
+        // Use saved start time from localStorage (preserves timer on page refresh)
+        setAgentStartTime(savedStart)
+      } else {
+        // No saved time — record now
+        const now = Date.now()
+        if (sessionId) {
+          sessionStartTimesRef.current.set(sessionId, now)
+          saveStartTimes(sessionStartTimesRef.current)
+        }
+        setAgentStartTime(now)
       }
-      setAgentStartTime(now)
     }
     // Transition AWAY from running — clear start time for this session
     // (new runs will get a fresh timestamp)
     if (prevSessionStateRef.current === 'running' && sessionState !== 'running') {
+      console.log('[TIMER_DEBUG] Transition away from running, clearing startTime')
       if (sessionId) {
         sessionStartTimesRef.current.delete(sessionId)
         saveStartTimes(sessionStartTimesRef.current)
