@@ -586,6 +586,22 @@ body {
   opacity: 0.8;
 }
 
+/* Streaming text display — accumulated content_block_delta */
+.streaming-message {
+  opacity: 0.95;
+}
+
+.streaming-message .bubble {
+  background: var(--color-surface);
+  border-left: 3px solid var(--color-primary, #3b82f6);
+}
+
+.streaming-text {
+  font-family: var(--font-mono, monospace);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 .tool-message details,
 .tool-result details {
   background: var(--color-surface);

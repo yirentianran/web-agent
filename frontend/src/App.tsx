@@ -12,6 +12,7 @@ import DesignPreviewPage from './DesignPreviewPage'
 import SettingsPreviewPage from './SettingsPreviewPage'
 import TechPreviewPage from './TechPreviewPage'
 import { useWebSocket } from './hooks/useWebSocket'
+import { useStreamingText, type StreamingTextState } from './hooks/useStreamingText'
 import type { Message, SessionItem, MessageSendState } from './lib/types'
 import { mergeSessionStates, computeRecoverIndex, saveLastKnownIndex, loadLastKnownIndex, clearLastKnownIndex } from './lib/session-state'
 
@@ -143,6 +144,16 @@ function MainApp() {
     }
   }, [activeSession])
   const [sessionStates, setSessionStates] = useState<Map<string, string>>(new Map())
+
+  // Streaming text aggregation state — accumulates content_block_delta events
+  const [streamingTextState, setStreamingTextState] = useState<StreamingTextState>(
+    useStreamingText.createInitialState()
+  )
+  const streamingTextStateRef = useRef<StreamingTextState>(streamingTextState)
+  // Keep ref in sync for handleIncomingMessage
+  useEffect(() => {
+    streamingTextStateRef.current = streamingTextState
+  }, [streamingTextState])
 
   // Per-session state setter — updates only the specified session.
   // Also syncs to sessionStatesRef to avoid stale closure bugs in
@@ -313,6 +324,14 @@ function MainApp() {
     // Track heartbeat for staleness detection
     if (msg.type === 'heartbeat') {
       lastHeartbeatRef.current = Date.now()
+    }
+
+    // Process streaming text from content_block_delta events
+    // Aggregate text deltas into a single streaming state for display
+    const newStreamingState = useStreamingText.processMessage(streamingTextStateRef.current, msg)
+    if (newStreamingState !== streamingTextStateRef.current) {
+      streamingTextStateRef.current = newStreamingState
+      setStreamingTextState(newStreamingState)
     }
 
     // Update last_known_index for persistence
@@ -635,6 +654,8 @@ function MainApp() {
     clearThresholdRef.current = Number.MAX_SAFE_INTEGER
     replayStartedRef.current = false
     highestUserMsgIndexRef.current = -1
+    // Reset streaming text state for new session
+    setStreamingTextState(useStreamingText.createInitialState())
   }, [])
 
   const handleSelectSession = useCallback(async (id: string) => {
@@ -657,6 +678,8 @@ function MainApp() {
     clearThresholdRef.current = Number.MAX_SAFE_INTEGER
     replayStartedRef.current = false
     highestUserMsgIndexRef.current = -1
+    // Reset streaming text state for new session
+    setStreamingTextState(useStreamingText.createInitialState())
 
     // Restore pending message for this session so the user sees their
     // message immediately, even if the backend hasn't received the
@@ -894,6 +917,7 @@ function MainApp() {
             scrollPositions={sessionScrollPositions}
             onFileClick={handleFileClick}
             authToken={authToken}
+            streamingText={streamingTextState.accumulatedText}
           />
           <InputBar
             key={activeSession}

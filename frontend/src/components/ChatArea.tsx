@@ -14,9 +14,10 @@ interface ChatAreaProps {
   scrollPositions: Map<string, number>
   onFileClick?: (filename: string) => void
   authToken?: string | null
+  streamingText?: string  // Accumulated streaming text from content_block_delta
 }
 
-export default function ChatArea({ messages, sessionId, sessionState, onAnswer, scrollPositions, onFileClick, authToken }: ChatAreaProps) {
+export default function ChatArea({ messages, sessionId, sessionState, onAnswer, scrollPositions, onFileClick, authToken, streamingText }: ChatAreaProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const visitedRef = useRef<Set<string>>(new Set())
   const scrollRestoredRef = useRef(false)
@@ -288,6 +289,15 @@ export default function ChatArea({ messages, sessionId, sessionState, onAnswer, 
             lastTodoWriteIndex={lastTodoWriteIndex}
           />
         ))}
+
+        {/* Streaming text indicator — shows accumulated content_block_delta text */}
+        {streamingText && streamingText.trim() && !isAgentRunning && (
+          <div className="message assistant-message streaming-message">
+            <div className="bubble">
+              <span className="streaming-text">{streamingText}</span>
+            </div>
+          </div>
+        )}
 
         {/* Show agent spinner when session is running */}
         {isAgentRunning && (
