@@ -3508,6 +3508,27 @@ async def _check_stdio_mcp(cfg: dict[str, Any]) -> tuple[str, str | None, list[s
         return ("disconnected", error_msg, [])
 
 
+async def _sync_tools_to_db(
+    server_name: str,
+    discovered_tools: list[str],
+    mcp_store: "MCPServerStore",
+) -> bool:
+    """Persist discovered tools to DB if they differ from stored tools.
+
+    Returns True if tools were updated, False if no change needed.
+    """
+    existing = await mcp_store.get_by_name(server_name)
+    if existing is None:
+        return False
+
+    stored_tools = existing.get("tools", [])
+    if set(discovered_tools) == set(stored_tools):
+        return False
+
+    await mcp_store.update(server_name, {"tools": discovered_tools})
+    return True
+
+
 @app.get("/api/admin/mcp-servers/status")
 async def get_mcp_servers_status(
     authorization: str | None = Header(None),
@@ -3552,6 +3573,9 @@ async def get_mcp_servers_status(
                 )
             else:
                 status, error, tool_names = await _check_stdio_mcp(cfg)
+                # Auto-persist discovered tools to DB so agent can use them
+                if _mcp_store is not None:
+                    await _sync_tools_to_db(server_name, tool_names, _mcp_store)
                 results.append(
                     {
                         "name": server_name,
