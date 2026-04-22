@@ -527,18 +527,46 @@ describe('MessageBubble - tool result rendering', () => {
     expect(container.firstChild).toBeNull()
   })
 
-  it('shows tool_result when content is empty but is_error is true', () => {
+  it('shows tool_result when is_error is true', () => {
     const message: Message = {
       type: 'tool_result',
-      content: '',
+      content: 'fatal: pathspec did not match any files',
       index: 5,
       name: 'Bash',
       is_error: true,
     }
 
     const { container } = renderMessage(message)
-    // Should render the details element even with empty content
-    expect(container.querySelector('details.tool-result')).toBeInTheDocument()
+    const details = container.querySelector('details.tool-result')
+    expect(details).toBeInTheDocument()
+    expect(details?.querySelector('summary')).toHaveTextContent('Result: Bash')
+    expect(screen.getByText('fatal: pathspec did not match any files')).toBeInTheDocument()
+  })
+
+  it('shows error type message as bubble', () => {
+    const message: Message = {
+      type: 'error',
+      content: '',
+      message: 'Connection refused: timeout',
+      index: 10,
+    }
+
+    const { container } = renderMessage(message)
+    expect(container.querySelector('.error-message')).toBeInTheDocument()
+    expect(container.querySelector('.bubble.error')).toBeInTheDocument()
+    expect(screen.getByText('Connection refused: timeout')).toBeInTheDocument()
+  })
+
+  it('falls back to content field for error messages when message field is empty', () => {
+    const message: Message = {
+      type: 'error',
+      content: 'Task execution failed',
+      index: 11,
+    }
+
+    const { container } = renderMessage(message)
+    expect(container.querySelector('.error-message')).toBeInTheDocument()
+    expect(screen.getByText('Task execution failed')).toBeInTheDocument()
   })
 })
 

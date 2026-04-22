@@ -198,7 +198,7 @@ export default function MessageBubble({ message, sessionId, onAnswer, onFileClic
     const hiddenSubtypes = [
       'hook_started', 'hook_response', 'hook_error',
       'init', 'session_state_changed', 'session_cancelled',
-      'task_started', 'progress',
+      'task_started', 'task_updated', 'task_notification', 'progress',
       'interrupt', 'can_use_tool', 'initialize',
       'set_permission_mode', 'hook_callback',
       'mcp_message', 'mcp_reconnect', 'mcp_toggle',
@@ -206,7 +206,7 @@ export default function MessageBubble({ message, sessionId, onAnswer, onFileClic
       'success', 'error', 'status',
     ]
     const subtype = message.subtype || ''
-    if (hiddenSubtypes.includes(subtype) || subtype.startsWith('task_started.')) {
+    if (hiddenSubtypes.includes(subtype) || subtype.startsWith('task_started.') || subtype.startsWith('task_')) {
       return null
     }
     const displayText = message.content
@@ -317,11 +317,11 @@ export default function MessageBubble({ message, sessionId, onAnswer, onFileClic
 
   if (message.type === 'tool_result') {
     const content = message.content || ''
-    // Hide empty tool results (e.g., TaskOutput with no content)
+    // Hide empty tool results (e.g., TaskOutput with no content) unless it's an error
     if (!content && !message.is_error) return null
     const isJson = /^\s*[{[]/.test(content)
     return (
-      <details className="message tool-result">
+      <details className={`message tool-result${message.is_error ? ' tool-result--error' : ''}`}>
         <summary>Result: {message.name || 'unknown'}</summary>
         {isJson ? (
           <pre className="tool-output tool-output-json"><code>{content}</code></pre>
@@ -335,9 +335,10 @@ export default function MessageBubble({ message, sessionId, onAnswer, onFileClic
   }
 
   if (message.type === 'error') {
+    const errorText = message.content || message.message || 'An error occurred'
     return (
       <div className="message error-message">
-        <div className="bubble error">{message.content || 'An error occurred'}</div>
+        <div className="bubble error">{errorText}</div>
       </div>
     )
   }
