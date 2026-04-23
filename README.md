@@ -34,10 +34,18 @@ Multi-user web agent powered by Claude Agent SDK. Each user gets an isolated wor
 
 ### 1. Clone and setup
 
+**Linux/macOS:**
 ```bash
 git clone <repo-url>
 cd web-agent
 ./setup.sh
+```
+
+**Windows (PowerShell):**
+```powershell
+git clone <repo-url>
+cd web-agent
+.\setup.ps1
 ```
 
 ### 2. Configure environment
@@ -64,8 +72,14 @@ ANTHROPIC_API_KEY=sk-...
 
 ### 3. Start the dev server
 
+**Linux/macOS:**
 ```bash
 ./start-dev.sh
+```
+
+**Windows (PowerShell):**
+```powershell
+.\start-dev.ps1
 ```
 
 This starts:
@@ -149,8 +163,10 @@ web-agent/
 │   └── cleanup_stale_files.py  # Cleanup utility
 ├── data/                       # Runtime data (never committed)
 ├── .env.example                # Environment configuration template
-├── setup.sh                    # One-time setup script
-└── start-dev.sh                # Development server launcher
+├── setup.sh                    # One-time setup script (Linux/macOS)
+├── setup.ps1                   # One-time setup script (Windows)
+├── start-dev.sh                # Development server launcher (Linux/macOS)
+└── start-dev.ps1               # Development server launcher (Windows)
 ```
 
 ## Environment Variables
@@ -297,10 +313,11 @@ Rules define coding standards, testing requirements, and development workflows. 
 | Issue | Solution |
 |-------|----------|
 | Agent stuck on "working" after refresh | Timer recovery kicks in automatically after stale buffer detection (30s) |
-| Port already in use | Run `./scripts/manage.sh stop` or `pkill -f uvicorn` |
+| Port already in use | Linux/macOS: `./scripts/manage.sh stop` or `pkill -f uvicorn`<br>Windows: `Get-Process uvicorn \| Stop-Process -Force` |
 | Frontend fails to connect | Verify backend is running on port 8000; check `.env` config |
 | Skill not loading | Ensure skill is in `skills/` directory and properly installed |
 | SQLite locked | Check no other process is holding the DB; remove `.lock` if stale |
+| PowerShell script blocked | Run `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` first |
 
 ## License
 

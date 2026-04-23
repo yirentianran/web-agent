@@ -95,6 +95,62 @@ class TestUploadZipHappy:
         assert (sd / "helpers" / "utils.py").exists()
         assert (sd / "config" / "settings.yaml").exists()
 
+    def test_single_level_nested_zip(self, client: TestClient):
+        """Zip with skill-name/SKILL.md should extract SKILL.md to skill root."""
+        import main_server
+        zip_bytes = make_zip({
+            "test-skill/SKILL.md": b"# Nested\n",
+            "test-skill/helper.py": b"pass\n",
+        })
+        resp = upload_zip(client, "alice", "test-skill.zip", zip_bytes)
+        assert resp.status_code == 200
+
+        sd = skill_dir_for(main_server.DATA_ROOT, "alice", "test-skill")
+        assert (sd / "SKILL.md").exists()
+        assert (sd / "helper.py").exists()
+
+    def test_double_nested_zip(self, client: TestClient):
+        """Zip with skill-name/skill-name/SKILL.md should auto-flatten to root."""
+        import main_server
+        zip_bytes = make_zip({
+            "using-superpowers/using-superpowers/SKILL.md": b"# Double\n",
+            "using-superpowers/using-superpowers/lib.py": b"pass\n",
+        })
+        resp = upload_zip(client, "alice", "using-superpowers.zip", zip_bytes)
+        assert resp.status_code == 200
+
+        sd = skill_dir_for(main_server.DATA_ROOT, "alice", "using-superpowers")
+        assert (sd / "SKILL.md").exists()
+        assert (sd / "lib.py").exists()
+
+    def test_triple_nested_zip(self, client: TestClient):
+        """Zip with 3 levels of same-prefix nesting should flatten all."""
+        import main_server
+        zip_bytes = make_zip({
+            "foo/foo/foo/SKILL.md": b"# Triple\n",
+            "foo/foo/foo/sub/a.py": b"pass\n",
+        })
+        resp = upload_zip(client, "alice", "foo.zip", zip_bytes)
+        assert resp.status_code == 200
+
+        sd = skill_dir_for(main_server.DATA_ROOT, "alice", "foo")
+        assert (sd / "SKILL.md").exists()
+        assert (sd / "sub" / "a.py").exists()
+
+    def test_mixed_nesting_preserves_inner_structure(self, client: TestClient):
+        """When files don't all share the same prefix, no stripping occurs."""
+        import main_server
+        zip_bytes = make_zip({
+            "SKILL.md": b"# Root\n",
+            "foo/inner/SKILL.md": b"# Inner\n",
+        })
+        resp = upload_zip(client, "alice", "mixed-skill.zip", zip_bytes)
+        assert resp.status_code == 200
+
+        sd = skill_dir_for(main_server.DATA_ROOT, "alice", "mixed-skill")
+        assert (sd / "SKILL.md").exists()
+        assert (sd / "foo" / "inner" / "SKILL.md").exists()
+
     def test_skill_name_from_filename_with_underscores(self, client: TestClient):
         import main_server
         zip_bytes = make_zip({"SKILL.md": b"# Test\n"})

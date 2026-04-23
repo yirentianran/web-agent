@@ -27,13 +27,15 @@ export function useMCPServers(authToken: string | null) {
 
   return useMemo(() => ({
     listServers: (): Promise<McpServer[]> => fetchJSON(baseUrl),
-    createServer: (server: Omit<McpServer, 'enabled'> & { enabled?: boolean }): Promise<{ status: string }> =>
+    createServer: (server: Omit<McpServer, 'enabled'> & { enabled?: boolean }): Promise<{ status: string; discover_status?: string; discover_error?: string }> =>
       fetchJSON(baseUrl, { method: 'POST', body: JSON.stringify(server) }),
-    updateServer: (name: string, server: McpServer): Promise<{ status: string }> =>
+    updateServer: (name: string, server: McpServer): Promise<{ status: string; discover_status?: string; discover_error?: string }> =>
       fetchJSON(`${baseUrl}/${encodeURIComponent(name)}`, { method: 'PUT', body: JSON.stringify(server) }),
     deleteServer: (name: string): Promise<{ status: string }> =>
       fetchJSON(`${baseUrl}/${encodeURIComponent(name)}`, { method: 'DELETE' }),
     toggleServer: (name: string, enabled: boolean): Promise<{ status: string }> =>
       fetchJSON(`${baseUrl}/${encodeURIComponent(name)}/toggle?enabled=${enabled}`, { method: 'PATCH' }),
+    reconnectServer: (name: string): Promise<{ status: string; error?: string; tools?: string[]; tool_count?: number }> =>
+      fetchJSON(`${baseUrl}/${encodeURIComponent(name)}/discover-tools`, { method: 'POST' }),
   }), [fetchJSON, baseUrl])
 }

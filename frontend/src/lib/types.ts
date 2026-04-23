@@ -97,4 +97,6 @@ export interface McpServer {
   tools: string[]
   description: string
   enabled: boolean
+  discoverStatus?: 'connected' | 'disconnected'
+  discoverError?: string
 }

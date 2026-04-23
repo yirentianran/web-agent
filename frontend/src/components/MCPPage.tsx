@@ -131,6 +131,8 @@ export default function MCPPage({ userId: _userId, authToken, onBack }: MCPPageP
     error: '',
   })
   const [actionLoading, setActionLoading] = useState<string | null>(null)
+  const [saveFeedback, setSaveFeedback] = useState<{ status?: string; error?: string } | null>(null)
+  const [serverStatuses, setServerStatuses] = useState<Record<string, { status?: string; error?: string }>>({})
 
   const loadServers = useCallback(async () => {
     try {
@@ -160,6 +162,7 @@ export default function MCPPage({ userId: _userId, authToken, onBack }: MCPPageP
   const handleSave = async (e: FormEvent) => {
     e.preventDefault()
     setActionLoading('save')
+    setSaveFeedback(null)
 
     // Parse and validate JSON
     let parsed: McpServer
@@ -178,10 +181,14 @@ export default function MCPPage({ userId: _userId, authToken, onBack }: MCPPageP
     }
 
     try {
-      if (modal.mode === 'add') {
-        await api.createServer(parsed)
-      } else {
-        await api.updateServer(modal.server.name, parsed)
+      const resp = modal.mode === 'add'
+        ? await api.createServer(parsed)
+        : await api.updateServer(modal.server.name, parsed)
+      // Capture auto-discover feedback
+      if (resp.discover_status === 'disconnected' && resp.discover_error) {
+        setSaveFeedback({ error: resp.discover_error })
+      } else if (resp.discover_status === 'connected') {
+        setSaveFeedback({ status: 'Tools discovered successfully' })
       }
       closeModal()
       await loadServers()
@@ -212,6 +219,31 @@ export default function MCPPage({ userId: _userId, authToken, onBack }: MCPPageP
     } catch {
       await loadServers()
     }
+  }
+
+  const handleReconnect = async (name: string) => {
+    setActionLoading(`reconnect-${name}`)
+    setServerStatuses(prev => ({ ...prev, [name]: { status: 'checking...', error: undefined } }))
+    try {
+      const result = await api.reconnectServer(name)
+      setServerStatuses(prev => ({ ...prev, [name]: { status: result.status, error: result.error } }))
+      await loadServers()
+    } catch (err) {
+      setServerStatuses(prev => ({
+        ...prev,
+        [name]: { error: err instanceof Error ? err.message : 'Reconnect failed' },
+      }))
+    } finally {
+      setActionLoading(null)
+    }
+  }
+
+  const handleDismissServerStatus = (name: string) => {
+    setServerStatuses(prev => {
+      const next = { ...prev }
+      delete next[name]
+      return next
+    })
   }
 
   const handleFormat = () => {
@@ -249,6 +281,18 @@ export default function MCPPage({ userId: _userId, authToken, onBack }: MCPPageP
       </div>
 
       {error && <div className="mcp-error">{error}</div>}
+      {saveFeedback?.error && (
+        <div className="mcp-feedback-banner mcp-feedback-banner--error">
+          Auto-discover failed: {saveFeedback.error}
+          <button className="mcp-dismiss-btn" onClick={() => setSaveFeedback(null)} type="button">&times;</button>
+        </div>
+      )}
+      {saveFeedback?.status && (
+        <div className="mcp-feedback-banner mcp-feedback-banner--success">
+          {saveFeedback.status}
+          <button className="mcp-dismiss-btn" onClick={() => setSaveFeedback(null)} type="button">&times;</button>
+        </div>
+      )}
 
       <div className="mcp-content">
         {servers.length === 0 ? (
@@ -257,7 +301,9 @@ export default function MCPPage({ userId: _userId, authToken, onBack }: MCPPageP
           </div>
         ) : (
           <div className="mcp-list">
-            {servers.map(server => (
+            {servers.map(server => {
+              const connStatus = serverStatuses[server.name]
+              return (
               <div key={server.name} className={`mcp-card ${!server.enabled ? 'mcp-card--disabled' : ''}`}>
                 <div className="mcp-card-header">
                   <div className="mcp-card-name">
@@ -276,6 +322,15 @@ export default function MCPPage({ userId: _userId, authToken, onBack }: MCPPageP
                       />
                       <span className="mcp-toggle-track" />
                     </label>
+                    <button
+                      className="mcp-btn-reconnect"
+                      onClick={() => handleReconnect(server.name)}
+                      disabled={actionLoading === `reconnect-${server.name}`}
+                      type="button"
+                      title="Reconnect / Discover Tools"
+                    >
+                      {actionLoading === `reconnect-${server.name}` ? '...' : '\u21bb'}
+                    </button>
                     <button className="mcp-btn-edit" onClick={() => openEditModal(server)} type="button" title="Edit">
                       &#9998;
                     </button>
@@ -294,8 +349,17 @@ export default function MCPPage({ userId: _userId, authToken, onBack }: MCPPageP
                 <div className="mcp-card-tools">
                   <strong>{server.tools.length}</strong> tool{server.tools.length !== 1 ? 's' : ''}: {server.tools.join(', ')}
                 </div>
+                {connStatus && (
+                  <div className={`mcp-conn-status mcp-conn-status--${connStatus.error ? 'error' : 'ok'}`}>
+                    {connStatus.error
+                      ? `Connection failed: ${connStatus.error}`
+                      : `Connected — ${server.tools.length} tool${server.tools.length !== 1 ? 's' : ''} discovered`}
+                    <button className="mcp-dismiss-btn" onClick={() => handleDismissServerStatus(server.name)} type="button">&times;</button>
+                  </div>
+                )}
               </div>
-            ))}
+              )
+            })}
           </div>
         )}
       </div>

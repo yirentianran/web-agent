@@ -3325,6 +3325,87 @@ body {
   color: #dc2626;
 }
 
+.mcp-feedback-banner {
+  padding: 10px 40px 10px 16px;
+  border-radius: 6px;
+  margin: 8px 24px;
+  position: relative;
+  font-size: 14px;
+}
+
+.mcp-feedback-banner--error {
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  color: #dc2626;
+}
+
+.mcp-feedback-banner--success {
+  background: #f0fdf4;
+  border: 1px solid #bbf7d0;
+  color: #166534;
+}
+
+.mcp-dismiss-btn {
+  position: absolute;
+  right: 8px;
+  top: 50%;
+  transform: translateY(-50%);
+  background: none;
+  border: none;
+  font-size: 18px;
+  cursor: pointer;
+  color: inherit;
+  opacity: 0.5;
+  padding: 0 4px;
+}
+
+.mcp-dismiss-btn:hover {
+  opacity: 1;
+}
+
+.mcp-btn-reconnect {
+  background: none;
+  border: 1px solid var(--color-border, #d1d5db);
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 16px;
+  padding: 4px 8px;
+  line-height: 1;
+  color: var(--color-text-secondary, #6b7280);
+  transition: all 0.15s ease;
+}
+
+.mcp-btn-reconnect:hover {
+  background: var(--color-primary);
+  border-color: var(--color-primary);
+  color: #fff;
+}
+
+.mcp-btn-reconnect:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.mcp-conn-status {
+  margin-top: 8px;
+  padding: 6px 32px 6px 10px;
+  border-radius: 4px;
+  font-size: 13px;
+  position: relative;
+}
+
+.mcp-conn-status--ok {
+  background: #f0fdf4;
+  border: 1px solid #bbf7d0;
+  color: #166534;
+}
+
+.mcp-conn-status--error {
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  color: #dc2626;
+}
+
 .mcp-empty-btn {
   padding: 8px 20px;
   background: var(--color-primary);

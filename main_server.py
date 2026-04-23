@@ -2110,64 +2110,6 @@ async def delete_file(user_id: str, filename: str) -> dict[str, str]:
 # ── Skills API ───────────────────────────────────────────────────
 
 
-def _extract_zip_to_dir(data: bytes, target_dir: Path) -> list[str]:
-    """Extract a zip into target_dir, stripping a single top-level folder if present.
-    Returns list of extracted relative paths. Raises HTTPException on error.
-    """
-    try:
-        zf = zipfile.ZipFile(io.BytesIO(data))
-    except zipfile.BadZipFile:
-        raise HTTPException(status_code=400, detail="Invalid zip file")
-
-    entries = zf.infolist()
-    if len(entries) > MAX_SKILL_FILES:
-        raise HTTPException(status_code=400, detail=f"Too many files (max {MAX_SKILL_FILES})")
-
-    total_uncompressed = sum(e.file_size for e in entries)
-    if total_uncompressed > MAX_UNCOMPRESSED:
-        raise HTTPException(status_code=400, detail="Zip too large when uncompressed (max 100MB)")
-
-    target_dir_resolved = target_dir.resolve()
-
-    # Detect and strip top-level directory
-    top_dirs = set()
-    for entry in entries:
-        parts = Path(entry.filename).parts
-        if parts:
-            top_dirs.add(parts[0])
-    strip_prefix = ""
-    if len(top_dirs) == 1:
-        strip_prefix = top_dirs.pop() + "/"
-
-    extracted: list[str] = []
-    try:
-        for entry in entries:
-            if entry.is_dir():
-                continue
-            file_type = (entry.external_attr >> 16) & 0o170000
-            if file_type == 0o120000:
-                raise HTTPException(status_code=400, detail="Symlinks not allowed in zip")
-            rel_path = entry.filename
-            if strip_prefix and rel_path.startswith(strip_prefix):
-                rel_path = rel_path[len(strip_prefix) :]
-            target = (target_dir / rel_path).resolve()
-            if not str(target).startswith(str(target_dir_resolved)):
-                raise HTTPException(status_code=400, detail=f"Invalid path in zip: {entry.filename}")
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_bytes(zf.read(entry))
-            extracted.append(rel_path)
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Extraction failed: {e}")
-
-    if not (target_dir / "SKILL.md").exists():
-        shutil.rmtree(target_dir)
-        raise HTTPException(status_code=400, detail="SKILL.md is required in the zip")
-
-    return extracted
-
-
 @app.get("/api/shared-skills", response_model=list[SkillInfo])
 async def list_shared_skills() -> list[SkillInfo]:
     """List all shared (public) skills."""
@@ -2250,8 +2192,11 @@ MAX_SKILL_FILES = 100
 def _extract_zip_to_dir(zip_data: bytes, target_dir: Path) -> list[str]:
     """Safely extract a zip file into target_dir. Returns list of extracted paths.
 
-    Handles nested directory structure: if all files are under a single root directory
-    matching the skill name, strips that prefix.
+    Automatically strips ALL common leading directory prefixes so that
+    SKILL.md ends up at the root of target_dir. E.g.:
+    - using-superpowers/using-superpowers/SKILL.md → SKILL.md
+    - foo/bar/baz/SKILL.md → SKILL.md (all files share same prefix)
+    - mixed/a/SKILL.md + mixed/b/README.md → a/SKILL.md + b/README.md
     """
     try:
         zf = zipfile.ZipFile(io.BytesIO(zip_data))
@@ -2269,11 +2214,19 @@ def _extract_zip_to_dir(zip_data: bytes, target_dir: Path) -> list[str]:
     target_resolved = target_dir.resolve()
     extracted: list[str] = []
 
-    # Detect if all files are under a single root directory (nested zip)
-    # e.g., skill-creator.zip contains skill-creator/SKILL.md
-    skill_name = target_dir.name
-    all_under_skill_root = all(e.filename.startswith(f"{skill_name}/") or e.is_dir() for e in entries)
-    prefix_to_strip = f"{skill_name}/" if all_under_skill_root else ""
+    # Collect all file paths and compute the common leading directory prefix
+    file_paths = [e.filename for e in entries if not e.is_dir() and e.filename]
+    dirs_per_file = [p.split("/")[:-1] for p in file_paths]
+    common_prefix = ""
+    if dirs_per_file and all(len(d) > 0 for d in dirs_per_file):
+        min_len = min(len(d) for d in dirs_per_file)
+        common_parts: list[str] = []
+        for i in range(min_len):
+            if len(set(d[i] for d in dirs_per_file)) == 1:
+                common_parts.append(dirs_per_file[0][i])
+            else:
+                break
+        common_prefix = "/".join(common_parts) + "/" if common_parts else ""
 
     for entry in entries:
         if entry.is_dir():
@@ -2283,12 +2236,12 @@ def _extract_zip_to_dir(zip_data: bytes, target_dir: Path) -> list[str]:
         if file_type == 0o120000:
             raise HTTPException(status_code=400, detail="Symlinks not allowed in zip")
 
-        # Strip nested prefix if detected
+        # Strip common leading prefix so SKILL.md lands at target root
         rel_path = entry.filename
-        if prefix_to_strip and rel_path.startswith(prefix_to_strip):
-            rel_path = rel_path[len(prefix_to_strip) :]
+        if common_prefix and rel_path.startswith(common_prefix):
+            rel_path = rel_path[len(common_prefix) :]
 
-        if not rel_path:  # empty after stripping
+        if not rel_path:
             continue
 
         # Path traversal check
@@ -2302,7 +2255,7 @@ def _extract_zip_to_dir(zip_data: bytes, target_dir: Path) -> list[str]:
     return extracted
 
 
-# ── Skill upload endpoints ────────────────────────────────────────
+# ── Skill upload endpoints
 
 
 @app.post("/api/users/{user_id}/skills/upload")
@@ -3340,7 +3293,7 @@ async def list_mcp_servers(
 async def register_mcp_server(
     server: McpServerConfig,
     authorization: str | None = Header(None),
-) -> dict[str, str]:
+) -> dict[str, Any]:
     """Register a new MCP server. Admin only."""
     global _mcp_store
     user_id = _get_user_id_from_header(authorization)
@@ -3348,10 +3301,16 @@ async def register_mcp_server(
     server_dict = server.model_dump()
 
     # Auto-discover tools for stdio servers when not explicitly provided
+    discover_status = None
+    discover_error = None
     if server_dict.get("type") == "stdio" and not server_dict.get("tools"):
         status, _error, tool_names = await _check_stdio_mcp(server_dict)
         if status == "connected" and tool_names:
             server_dict["tools"] = tool_names
+            discover_status = status
+        elif _error:
+            discover_status = status
+            discover_error = _error
 
     if _mcp_store is not None:
         await _mcp_store.create(server_dict)
@@ -3359,7 +3318,7 @@ async def register_mcp_server(
         registry = load_mcp_config_sync()
         registry["mcpServers"][server.name] = server_dict
         save_mcp_config(registry)
-    return {"status": "ok"}
+    return {"status": "ok", "discover_status": discover_status, "discover_error": discover_error}
 
 
 @app.put("/api/admin/mcp-servers/{server_name}")
@@ -3367,7 +3326,7 @@ async def update_mcp_server(
     server_name: str,
     server: McpServerConfig,
     authorization: str | None = Header(None),
-) -> dict[str, str]:
+) -> dict[str, Any]:
     """Update an existing MCP server. Admin only."""
     global _mcp_store
     user_id = _get_user_id_from_header(authorization)
@@ -3375,10 +3334,16 @@ async def update_mcp_server(
     server_dict = server.model_dump()
 
     # Auto-discover tools for stdio servers when not explicitly provided
+    discover_status = None
+    discover_error = None
     if server_dict.get("type") == "stdio" and not server_dict.get("tools"):
         status, _error, tool_names = await _check_stdio_mcp(server_dict)
         if status == "connected" and tool_names:
             server_dict["tools"] = tool_names
+            discover_status = status
+        elif _error:
+            discover_status = status
+            discover_error = _error
 
     if _mcp_store is not None:
         result = await _mcp_store.update(server_name, server_dict)
@@ -3392,7 +3357,7 @@ async def update_mcp_server(
         if server.name != server_name:
             registry["mcpServers"].pop(server_name, None)
         save_mcp_config(registry)
-    return {"status": "ok"}
+    return {"status": "ok", "discover_status": discover_status, "discover_error": discover_error}
 
 
 @app.post("/api/admin/mcp-servers/{server_name}/discover-tools")
