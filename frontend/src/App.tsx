@@ -264,6 +264,9 @@ function MainApp() {
           return [];
         })
         .then((data) => {
+          // Guard against stale mount-time fetch: if user switched sessions
+          // via handleSelectSession, the ref will point to a different session
+          if (activeSessionRef.current !== activeSession) return;
           const msgs = (data as any[]).map((m: any) => ({
             ...m,
             // Use backend's absolute index; fallback to enumerate position
@@ -298,6 +301,7 @@ function MainApp() {
           })
             .then((resp) => resp.json())
             .then((status) => {
+              if (activeSessionRef.current !== activeSession) return;
               if (status.state === "running" && (status.buffer_age ?? 0) < 30) {
                 setSessionStateFor(activeSession, "running");
               } else if (
