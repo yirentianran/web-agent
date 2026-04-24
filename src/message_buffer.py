@@ -316,7 +316,17 @@ class MessageBuffer:
 
     def mark_done(self, session_id: str) -> None:
         self._ensure_buf(session_id)["done"] = True
-        self.sessions[session_id]["state"] = "completed"
+        # Don't overwrite an already-set terminal state (e.g., 'cancelled'
+        # from cancel()). Only set 'completed' if the session wasn't already
+        # in a different terminal state.
+        current_state = self.sessions[session_id].get("state", "idle")
+        if current_state not in ("cancelled", "error"):
+            self.sessions[session_id]["state"] = "completed"
+        # Wake up waiting consumers so subscribe loop detects completion
+        # immediately instead of waiting for the next 30s heartbeat.
+        buf = self.sessions[session_id]
+        for event in list(buf.get("consumers", set())):
+            event.set()
 
     def is_done(self, session_id: str) -> bool:
         return self._ensure_buf(session_id).get("done", False)

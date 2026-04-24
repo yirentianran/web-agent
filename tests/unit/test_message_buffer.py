@@ -110,6 +110,18 @@ class TestMarkDone:
         state = buffer.get_session_state("s1")
         assert state["state"] == "completed"
 
+    def test_mark_done_wakes_consumers(self, buffer: MessageBuffer) -> None:
+        """mark_done() must wake up waiting consumers immediately, not wait
+        for the next heartbeat."""
+        buffer.add_message("s1", {"type": "system", "subtype": "progress"})
+        event = buffer.subscribe("s1")
+        assert not event.is_set()
+
+        buffer.mark_done("s1")
+
+        # Consumer must be woken immediately — not wait 30s for heartbeat
+        assert event.is_set(), "mark_done() did not wake consumers"
+
 
 # ── cancel ─────────────────────────────────────────────────────────
 
@@ -131,6 +143,23 @@ class TestCancel:
     def test_cancel_sets_done(self, buffer: MessageBuffer) -> None:
         buffer.cancel("s1")
         assert buffer.is_done("s1")
+
+    def test_mark_done_does_not_overwrite_cancelled_state(self, buffer: MessageBuffer) -> None:
+        """When cancel() sets state to 'cancelled', a subsequent mark_done()
+        must NOT overwrite it to 'completed'. The cancel() call represents an
+        explicit terminal state and should be preserved."""
+        buffer.add_message("s1", {"type": "system", "subtype": "progress"})
+        buffer.cancel("s1")
+        assert buffer.get_session_state("s1")["state"] == "cancelled"
+
+        # mark_done() is called by the CancelledError handler — it must
+        # not overwrite the already-set cancelled state.
+        buffer.mark_done("s1")
+        state = buffer.get_session_state("s1")
+        assert state["state"] == "cancelled", (
+            f"Expected 'cancelled' after mark_done(), got '{state['state']}'"
+        )
+        assert buffer.is_done("s1") is True
 
 
 # ── subscribe / unsubscribe ────────────────────────────────────────
