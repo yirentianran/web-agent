@@ -128,6 +128,38 @@ pending_answers: dict[str, asyncio.Future] = {}
 _task_locks: dict[str, asyncio.Lock] = {}
 
 
+async def _emit_synthetic_state_change_if_missing(
+    websocket: WebSocket,
+    session_id: str,
+    last_seen: int,
+) -> int:
+    """Emit a synthetic session_state_changed if buffer is in a terminal
+    state but the buffer contains no such message. Returns updated last_seen."""
+    buf_state = buffer.get_session_state(session_id)
+    if buf_state["state"] in ("completed", "error", "cancelled"):
+        all_buffer_msgs = buffer.get_history(session_id)
+        has_state_change = any(
+            m.get("type") == "system"
+            and m.get("subtype") == "session_state_changed"
+            for m in all_buffer_msgs
+        )
+        if not has_state_change:
+            await websocket.send_text(
+                json.dumps(
+                    {
+                        "type": "system",
+                        "subtype": "session_state_changed",
+                        "state": buf_state["state"],
+                        "index": last_seen,
+                        "replay": False,
+                        "session_id": session_id,
+                    }
+                )
+            )
+            last_seen += 1
+    return last_seen
+
+
 async def cleanup_session_client(session_id: str) -> None:
     """No-op placeholder — CLI subprocess terminates after each turn,
     so we create a fresh client every time."""
@@ -1522,39 +1554,17 @@ async def handle_ws(websocket: WebSocket) -> None:
                                 )
                             last_seen += len(final_messages)
 
-                            # Safety: if buffer state is terminal but no
-                            # session_state_changed exists in the buffer at all,
-                            # emit a synthetic one so the frontend can
-                            # transition away from "running"
-                            buf_state = buffer.get_session_state(session_id)
-                            if buf_state["state"] in ("completed", "error", "cancelled"):
-                                all_buffer_msgs = buffer.get_history(session_id)
-                                has_state_change = any(
-                                    m.get("type") == "system"
-                                    and m.get("subtype") == "session_state_changed"
-                                    for m in all_buffer_msgs
-                                )
-                                if not has_state_change:
-                                    await websocket.send_text(
-                                        json.dumps(
-                                            {
-                                                "type": "system",
-                                                "subtype": "session_state_changed",
-                                                "state": buf_state["state"],
-                                                "index": last_seen,
-                                                "replay": False,
-                                                "session_id": session_id,
-                                            }
-                                        )
-                                    )
-                            break
+                        last_seen = await _emit_synthetic_state_change_if_missing(
+                            websocket, session_id, last_seen
+                        )
+                        break
 
-                        event.clear()
-                        try:
-                            await asyncio.wait_for(event.wait(), timeout=HEARTBEAT_INTERVAL)
-                        except asyncio.TimeoutError:
-                            hb = make_heartbeat()
-                            await websocket.send_text(
+                    event.clear()
+                    try:
+                        await asyncio.wait_for(event.wait(), timeout=HEARTBEAT_INTERVAL)
+                    except asyncio.TimeoutError:
+                        hb = make_heartbeat()
+                        await websocket.send_text(
                                 json.dumps(
                                     {
                                         **hb,
@@ -1564,7 +1574,7 @@ async def handle_ws(websocket: WebSocket) -> None:
                                     }
                                 )
                             )
-                            continue
+                        continue
                 finally:
                     buffer.unsubscribe(session_id, event)
                     current_session_id = None
@@ -1715,31 +1725,9 @@ async def handle_ws(websocket: WebSocket) -> None:
                             )
                         last_seen += len(final_messages)
 
-                        # Safety: if buffer state is terminal but no
-                        # session_state_changed exists in the buffer at all,
-                        # emit a synthetic one so the frontend can
-                        # transition away from "running"
-                        buf_state = buffer.get_session_state(session_id)
-                        if buf_state["state"] in ("completed", "error", "cancelled"):
-                            all_buffer_msgs = buffer.get_history(session_id)
-                            has_state_change = any(
-                                m.get("type") == "system"
-                                and m.get("subtype") == "session_state_changed"
-                                for m in all_buffer_msgs
-                            )
-                            if not has_state_change:
-                                await websocket.send_text(
-                                    json.dumps(
-                                        {
-                                            "type": "system",
-                                            "subtype": "session_state_changed",
-                                            "state": buf_state["state"],
-                                            "index": last_seen,
-                                            "replay": False,
-                                            "session_id": session_id,
-                                        }
-                                    )
-                                )
+                        last_seen = await _emit_synthetic_state_change_if_missing(
+                            websocket, session_id, last_seen
+                        )
                         break
 
                     event.clear()
