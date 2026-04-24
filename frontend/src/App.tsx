@@ -617,6 +617,31 @@ function MainApp() {
     [userId, updateSendState],
   );
 
+  // Refs to break circular dependency between handleIncomingMessage and useWebSocket
+  const confirmSendRef = useRef<(clientMsgId: string) => void>(() => {});
+  const sendStateMapRef = useRef<Map<string, MessageSendState>>(new Map());
+  // Mirror of sessionStates for use in handleIncomingMessage — avoids
+  // stale closure bugs when WebSocket messages arrive between React
+  // scheduling a state update and applying it (the "spinner disappears
+  // after send" bug).
+  const sessionStatesRef = useRef<Map<string, string>>(new Map());
+  // Track the highest index of any user message received. Used to filter
+  // out old state changes from previous runs — they have lower indices
+  // than the user message that started the current run. The subscribe
+  // loop sends old state changes with replay: False, so replay protection
+  // doesn't catch them. Index-based filtering blocks them instead.
+  const highestUserMsgIndexRef = useRef(-1);
+
+  // Reset all running/waiting sessions to idle on WebSocket disconnect —
+  // the agent tasks are no longer connected to this client
+  const handleDisconnect = useCallback(() => {
+    for (const [sid, state] of sessionStatesRef.current) {
+      if (state === "running" || state === "waiting_user") {
+        setSessionStateFor(sid, "idle");
+      }
+    }
+  }, [setSessionStateFor]);
+
   const {
     status,
     connected,
@@ -627,6 +652,7 @@ function MainApp() {
   } = useWebSocket({
     userId,
     onMessage: handleIncomingMessage,
+    onDisconnect: handleDisconnect,
     token: authToken ?? undefined,
   });
 
@@ -678,20 +704,6 @@ function MainApp() {
     return () => clearInterval(checkInterval);
   }, [activeSessionState, messages, sendRecover]);
 
-  // Refs to break circular dependency between handleIncomingMessage and useWebSocket
-  const confirmSendRef = useRef<(clientMsgId: string) => void>(() => {});
-  const sendStateMapRef = useRef<Map<string, MessageSendState>>(new Map());
-  // Mirror of sessionStates for use in handleIncomingMessage — avoids
-  // stale closure bugs when WebSocket messages arrive between React
-  // scheduling a state update and applying it (the "spinner disappears
-  // after send" bug).
-  const sessionStatesRef = useRef<Map<string, string>>(new Map());
-  // Track the highest index of any user message received. Used to filter
-  // out old state changes from previous runs — they have lower indices
-  // than the user message that started the current run. The subscribe
-  // loop sends old state changes with replay: False, so replay protection
-  // doesn't catch them. Index-based filtering blocks them instead.
-  const highestUserMsgIndexRef = useRef(-1);
 
   const handleSend = useCallback(
     async (message: string, files?: File[]) => {
