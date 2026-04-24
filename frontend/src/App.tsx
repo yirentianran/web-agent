@@ -388,6 +388,11 @@ function MainApp() {
       // Track heartbeat for staleness detection
       if (msg.type === "heartbeat") {
         lastHeartbeatRef.current = Date.now();
+        // Agent task no longer exists — trigger immediate recovery
+        // instead of waiting for 60s staleness timeout
+        if (msg.agent_alive === false && activeSessionRef.current) {
+          sendRecoverRef.current(activeSessionRef.current, messages.length);
+        }
       }
 
       // Process streaming text from content_block_delta events
@@ -619,6 +624,7 @@ function MainApp() {
 
   // Refs to break circular dependency between handleIncomingMessage and useWebSocket
   const confirmSendRef = useRef<(clientMsgId: string) => void>(() => {});
+  const sendRecoverRef = useRef<(sessionId: string, afterIndex: number) => void>(() => {});
   const sendStateMapRef = useRef<Map<string, MessageSendState>>(new Map());
   // Mirror of sessionStates for use in handleIncomingMessage — avoids
   // stale closure bugs when WebSocket messages arrive between React
@@ -671,6 +677,11 @@ function MainApp() {
   useEffect(() => {
     confirmSendRef.current = confirmSend;
   }, [confirmSend]);
+
+  // Sync sendRecover to ref (so handleIncomingMessage can use it)
+  useEffect(() => {
+    sendRecoverRef.current = sendRecover;
+  }, [sendRecover]);
 
   // Auto-recover message history when WebSocket reconnects
   // Skip recovery on initial page load if REST already populated messages

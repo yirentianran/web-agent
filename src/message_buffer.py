@@ -23,11 +23,18 @@ STALE_THRESHOLD = 60  # seconds of inactivity before session is considered stale
 HEARTBEAT_INTERVAL = 30  # seconds between heartbeat signals
 
 
-def make_heartbeat() -> dict[str, Any]:
-    """Create a heartbeat message to signal the session is still alive."""
+def make_heartbeat(agent_alive: bool = True) -> dict[str, Any]:
+    """Create a heartbeat message to signal the session is still alive.
+
+    Args:
+        agent_alive: Whether the backend agent task is still running.
+            Defaults to True. Set to False when the task has exited/crashed
+            so the frontend can trigger recovery immediately.
+    """
     return {
         "type": "heartbeat",
         "timestamp": time.time(),
+        "agent_alive": agent_alive,
     }
 
 

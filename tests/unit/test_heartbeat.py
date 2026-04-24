@@ -64,3 +64,30 @@ class TestSessionStaleDetection:
         from src.message_buffer import STALE_THRESHOLD
 
         assert STALE_THRESHOLD == 60
+
+
+class TestHeartbeatAgentAlive:
+    """verify that heartbeat messages include agent_alive status."""
+
+    def test_heartbeat_defaults_agent_alive_to_true(self) -> None:
+        """Heartbeat should default agent_alive to True when not specified."""
+        from src.message_buffer import make_heartbeat
+
+        msg = make_heartbeat()
+        assert msg["agent_alive"] is True
+
+    def test_heartbeat_agent_alive_false(self) -> None:
+        """Heartbeat can signal agent is no longer alive."""
+        from src.message_buffer import make_heartbeat
+
+        msg = make_heartbeat(agent_alive=False)
+        assert msg["type"] == "heartbeat"
+        assert msg["agent_alive"] is False
+        assert "timestamp" in msg
+
+    def test_heartbeat_agent_alive_true_explicit(self) -> None:
+        """Heartbeat can explicitly signal agent is alive."""
+        from src.message_buffer import make_heartbeat
+
+        msg = make_heartbeat(agent_alive=True)
+        assert msg["agent_alive"] is True

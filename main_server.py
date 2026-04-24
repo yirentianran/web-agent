@@ -1563,7 +1563,9 @@ async def handle_ws(websocket: WebSocket) -> None:
                     try:
                         await asyncio.wait_for(event.wait(), timeout=HEARTBEAT_INTERVAL)
                     except asyncio.TimeoutError:
-                        hb = make_heartbeat()
+                        task_key = f"task_{session_id}"
+                        agent_alive = task_key in active_tasks and not active_tasks[task_key].done()
+                        hb = make_heartbeat(agent_alive=agent_alive)
                         await websocket.send_text(
                                 json.dumps(
                                     {
@@ -1734,7 +1736,9 @@ async def handle_ws(websocket: WebSocket) -> None:
                     try:
                         await asyncio.wait_for(event.wait(), timeout=HEARTBEAT_INTERVAL)
                     except asyncio.TimeoutError:
-                        hb = make_heartbeat()
+                        task_key = f"task_{session_id}"
+                        agent_alive = task_key in active_tasks and not active_tasks[task_key].done()
+                        hb = make_heartbeat(agent_alive=agent_alive)
                         await websocket.send_text(
                             json.dumps(
                                 {

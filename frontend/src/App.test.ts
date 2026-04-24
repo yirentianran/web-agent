@@ -2276,3 +2276,100 @@ describe('handleDisconnect resets running sessions', () => {
     expect(setSessionStatesCalls[0].get('s3')).toBe('idle')
   })
 })
+
+// ── agent_alive flag in heartbeat ────────────────────────────────
+
+/**
+ * When the backend detects that the agent task has exited/crashed,
+ * it sets agent_alive=false in the heartbeat. The frontend should
+ * trigger immediate recovery instead of waiting for the 60s
+ * staleness timeout.
+ */
+
+function createAgentAliveHandler() {
+  let lastHeartbeat = Date.now()
+  let recoverCalled = false
+  let recoverSessionId: string | null = null
+  let recoverIndex = 0
+  let activeSessionRef = { current: 'test-session' as string | null }
+  let messages: Message[] = [
+    { type: 'user', content: 'hello', index: 0 },
+    { type: 'assistant', content: 'hi', index: 1 },
+  ]
+
+  function handleHeartbeat(msg: Message) {
+    if (msg.type === 'heartbeat') {
+      lastHeartbeat = Date.now()
+      if (msg.agent_alive === false && activeSessionRef.current) {
+        recoverCalled = true
+        recoverSessionId = activeSessionRef.current
+        recoverIndex = messages.length
+      }
+    }
+  }
+
+  return {
+    handleHeartbeat,
+    getLastHeartbeat: () => lastHeartbeat,
+    getRecoverCalled: () => recoverCalled,
+    getRecoverSessionId: () => recoverSessionId,
+    getRecoverIndex: () => recoverIndex,
+    setActiveSession: (sid: string | null) => { activeSessionRef.current = sid },
+  }
+}
+
+describe('agent_alive flag in heartbeat', () => {
+  it('triggers recovery when agent_alive is false', () => {
+    const handler = createAgentAliveHandler()
+
+    handler.handleHeartbeat({
+      type: 'heartbeat',
+      content: '',
+      index: -1,
+      agent_alive: false,
+    })
+
+    expect(handler.getRecoverCalled()).toBe(true)
+    expect(handler.getRecoverSessionId()).toBe('test-session')
+    expect(handler.getRecoverIndex()).toBe(2)
+  })
+
+  it('does NOT trigger recovery when agent_alive is true', () => {
+    const handler = createAgentAliveHandler()
+
+    handler.handleHeartbeat({
+      type: 'heartbeat',
+      content: '',
+      index: -1,
+      agent_alive: true,
+    })
+
+    expect(handler.getRecoverCalled()).toBe(false)
+  })
+
+  it('does NOT trigger recovery when agent_alive is missing (backward compat)', () => {
+    const handler = createAgentAliveHandler()
+
+    handler.handleHeartbeat({
+      type: 'heartbeat',
+      content: '',
+      index: -1,
+    })
+
+    expect(handler.getRecoverCalled()).toBe(false)
+  })
+
+  it('does NOT trigger recovery when no active session', () => {
+    const handler = createAgentAliveHandler()
+    handler.setActiveSession(null)
+
+    handler.handleHeartbeat({
+      type: 'heartbeat',
+      content: '',
+      index: -1,
+      agent_alive: false,
+    })
+
+    expect(handler.getRecoverCalled()).toBe(false)
+  })
+})

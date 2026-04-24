@@ -28,6 +28,8 @@ export interface Message {
   clientMsgId?: string
   // Send state for optimistic user messages
   sendState?: MessageSendState
+  // Heartbeat: whether the backend agent task is still running
+  agent_alive?: boolean
 }
 
 /** Send state machine for user messages */
