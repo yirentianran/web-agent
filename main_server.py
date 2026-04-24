@@ -132,9 +132,9 @@ async def _emit_synthetic_state_change_if_missing(
     websocket: WebSocket,
     session_id: str,
     last_seen: int,
-) -> int:
+) -> tuple[int, bool]:
     """Emit a synthetic session_state_changed if buffer is in a terminal
-    state but the buffer contains no such message. Returns updated last_seen."""
+    state but the buffer contains no such message. Returns (updated last_seen, success)."""
     buf_state = buffer.get_session_state(session_id)
     if buf_state["state"] in ("completed", "error", "cancelled"):
         all_buffer_msgs = buffer.get_history(session_id)
@@ -144,20 +144,17 @@ async def _emit_synthetic_state_change_if_missing(
             for m in all_buffer_msgs
         )
         if not has_state_change:
-            await websocket.send_text(
-                json.dumps(
-                    {
-                        "type": "system",
-                        "subtype": "session_state_changed",
-                        "state": buf_state["state"],
-                        "index": last_seen,
-                        "replay": False,
-                        "session_id": session_id,
-                    }
-                )
-            )
+            if not await _safe_ws_send(websocket, {
+                "type": "system",
+                "subtype": "session_state_changed",
+                "state": buf_state["state"],
+                "index": last_seen,
+                "replay": False,
+                "session_id": session_id,
+            }):
+                return last_seen, False
             last_seen += 1
-    return last_seen
+    return last_seen, True
 
 
 async def cleanup_session_client(session_id: str) -> None:
@@ -1544,16 +1541,13 @@ async def handle_ws(websocket: WebSocket) -> None:
                         new_messages = buffer.get_history(session_id, after_index=last_seen)
                         for i, h in enumerate(new_messages):
                             idx = last_seen + i
-                            await websocket.send_text(
-                                json.dumps(
-                                    {
-                                        **h,
-                                        "index": idx,
-                                        "replay": False,
-                                        "session_id": session_id,
-                                    }
-                                )
-                            )
+                            if not await _safe_ws_send(websocket, {
+                                **h,
+                                "index": idx,
+                                "replay": False,
+                                "session_id": session_id,
+                            }):
+                                break
                         last_seen += len(new_messages)
 
                         # If session is done, final pull and exit
@@ -1561,21 +1555,20 @@ async def handle_ws(websocket: WebSocket) -> None:
                             final_messages = buffer.get_history(session_id, after_index=last_seen)
                             for i, h in enumerate(final_messages):
                                 idx = last_seen + i
-                                await websocket.send_text(
-                                    json.dumps(
-                                        {
-                                            **h,
-                                            "index": idx,
-                                            "replay": False,
-                                            "session_id": session_id,
-                                        }
-                                    )
-                                )
+                                if not await _safe_ws_send(websocket, {
+                                    **h,
+                                    "index": idx,
+                                    "replay": False,
+                                    "session_id": session_id,
+                                }):
+                                    break
                             last_seen += len(final_messages)
 
-                        last_seen = await _emit_synthetic_state_change_if_missing(
+                        last_seen, ok = await _emit_synthetic_state_change_if_missing(
                             websocket, session_id, last_seen
                         )
+                        if not ok:
+                            break
                         break
 
                     event.clear()
@@ -1585,16 +1578,13 @@ async def handle_ws(websocket: WebSocket) -> None:
                         task_key = f"task_{session_id}"
                         agent_alive = task_key in active_tasks and not active_tasks[task_key].done()
                         hb = make_heartbeat(agent_alive=agent_alive)
-                        await websocket.send_text(
-                                json.dumps(
-                                    {
-                                        **hb,
-                                        "index": last_seen,
-                                        "replay": False,
-                                        "session_id": session_id,
-                                    }
-                                )
-                            )
+                        if not await _safe_ws_send(websocket, {
+                            **hb,
+                            "index": last_seen,
+                            "replay": False,
+                            "session_id": session_id,
+                        }):
+                            break
                         continue
                 finally:
                     buffer.unsubscribe(session_id, event)
@@ -1720,16 +1710,13 @@ async def handle_ws(websocket: WebSocket) -> None:
                                 session_id,
                                 idx,
                             )
-                        await websocket.send_text(
-                            json.dumps(
-                                {
-                                    **h,
-                                    "index": idx,
-                                    "replay": False,
-                                    "session_id": session_id,
-                                }
-                            )
-                        )
+                        if not await _safe_ws_send(websocket, {
+                            **h,
+                            "index": idx,
+                            "replay": False,
+                            "session_id": session_id,
+                        }):
+                            break
                     last_seen += len(new_messages)
 
                     # If session is done, pull one final time to ensure
@@ -1739,21 +1726,20 @@ async def handle_ws(websocket: WebSocket) -> None:
                         final_messages = buffer.get_history(session_id, after_index=last_seen)
                         for i, h in enumerate(final_messages):
                             idx = last_seen + i
-                            await websocket.send_text(
-                                json.dumps(
-                                    {
-                                        **h,
-                                        "index": idx,
-                                        "replay": False,
-                                        "session_id": session_id,
-                                    }
-                                )
-                            )
+                            if not await _safe_ws_send(websocket, {
+                                **h,
+                                "index": idx,
+                                "replay": False,
+                                "session_id": session_id,
+                            }):
+                                break
                         last_seen += len(final_messages)
 
-                        last_seen = await _emit_synthetic_state_change_if_missing(
+                        last_seen, ok = await _emit_synthetic_state_change_if_missing(
                             websocket, session_id, last_seen
                         )
+                        if not ok:
+                            break
                         break
 
                     event.clear()
