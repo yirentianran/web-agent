@@ -26,6 +26,8 @@ import type { Message, SessionItem, MessageSendState } from "./lib/types";
 import {
   mergeSessionStates,
   computeRecoverIndex,
+  isFreshRunningState,
+  isStaleRunningState,
   saveLastKnownIndex,
   loadLastKnownIndex,
   clearLastKnownIndex,
@@ -382,6 +384,8 @@ function MainApp() {
 
   const handleIncomingMessage = useCallback(
     (msg: Message) => {
+      const TERMINAL_STATES = new Set(["completed", "error", "cancelled"]);
+
       // Track heartbeat for staleness detection
       if (msg.type === "heartbeat") {
         lastHeartbeatRef.current = Date.now();
@@ -498,8 +502,9 @@ function MainApp() {
           msg.session_id
         ) {
           const newState = msg.state || msg.content || "completed";
-          // Index-based filtering: block state changes from previous runs
-          if (msg.index != null && msg.index < highestUserMsgIndexRef.current) {
+          const isTerminal = TERMINAL_STATES.has(newState);
+          // Accept terminal state changes even if index is slightly lower
+          if (msg.index != null && msg.index < highestUserMsgIndexRef.current && !isTerminal) {
             // Skip — this state change is older than the current run's user message
           } else if (msg.replay) {
             const currentState = sessionStatesRef.current.get(msg.session_id);
@@ -578,19 +583,19 @@ function MainApp() {
         msg.subtype === "session_state_changed" &&
         msg.session_id
       ) {
-        // Guard against old state changes from previous runs
-        if (msg.index == null || msg.index >= highestUserMsgIndexRef.current) {
+        const newState = msg.state || msg.content || "completed";
+        const isTerminal = TERMINAL_STATES.has(newState);
+        // Accept terminal state changes regardless of index
+        if (msg.index == null || msg.index >= highestUserMsgIndexRef.current || isTerminal) {
           setSessionStateFor(
             msg.session_id,
-            msg.state || msg.content || "completed",
+            newState,
           );
         }
       }
       if (msg.type === "result" && msg.session_id) {
-        // Guard against old result messages from previous runs
-        if (msg.index == null || msg.index >= highestUserMsgIndexRef.current) {
-          setSessionStateFor(msg.session_id, "completed");
-        }
+        // result is always terminal — accept regardless of index
+        setSessionStateFor(msg.session_id, "completed");
         // Auto-generate title from first message
         if (activeSessionRef.current && firstMessageRef.current) {
           fetch(
@@ -879,6 +884,7 @@ function MainApp() {
           // been flushed to DB yet (e.g., agent just started). Merge the
           // two states, preferring the more "active" one.
           let bufferState: string | undefined;
+          let bufferAge: number = 0;
           try {
             const statusResp = await fetch(
               `/api/users/${userId}/sessions/${id}/status`,
@@ -887,13 +893,29 @@ function MainApp() {
             if (statusResp.ok) {
               const status = await statusResp.json();
               bufferState = status.state;
+              bufferAge = status.buffer_age ?? 0;
             }
           } catch {
             // Status endpoint unavailable — fall back to DB-derived state
           }
 
-          const finalState = mergeSessionStates(bufferState, derivedState);
-          setSessionStateFor(id, finalState);
+          // If buffer says "running" but is stale (>30s), don't trust it —
+          // the agent likely exited and the completion signal was lost.
+          // Trigger recovery instead to get the real state.
+          if (isStaleRunningState(bufferState, bufferAge)) {
+            sendRecover(
+              id,
+              msgs.length > 0
+                ? computeRecoverIndex(msgs as unknown as Message[])
+                : 0,
+            );
+            didRecoverRef.current = true;
+            // Trust DB-derived state, not the stale "running"
+            setSessionStateFor(id, derivedState);
+          } else {
+            const finalState = mergeSessionStates(bufferState, derivedState);
+            setSessionStateFor(id, finalState);
+          }
 
           // After loading history, recover to catch up any live messages
           // from an active agent session. Use the max message index so
