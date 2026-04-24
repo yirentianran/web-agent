@@ -18,6 +18,7 @@ export const STATE_ORDER: Record<string, number> = {
   running: 2,
   waiting_user: 2,
   error: 3,
+  cancelled: 3,
 } as const
 
 /**
@@ -47,6 +48,43 @@ export function mergeSessionStates(
   const dbOrder = STATE_ORDER[dbState] ?? 0
 
   return bufferOrder > dbOrder ? bufferState : dbState
+}
+
+/**
+ * Staleness threshold (seconds) — if the buffer hasn't been updated in
+ * this long, a "running" state is likely stale (agent already exited).
+ */
+export const STALE_BUFFER_THRESHOLD = 30
+
+/**
+ * Check whether a "running" buffer state should be trusted.
+ *
+ * On page mount the staleness check already exists. This function
+ * centralises the logic so it can also be used during session switching.
+ *
+ * @param state - Buffer state from status endpoint
+ * @param bufferAge - Seconds since the buffer was last active
+ * @returns true if the running state is fresh and should be trusted
+ */
+export function isFreshRunningState(
+  state: string | undefined,
+  bufferAge: number,
+): boolean {
+  return state === 'running' && bufferAge < STALE_BUFFER_THRESHOLD
+}
+
+/**
+ * Check whether a buffer's running state is stale (likely agent already exited).
+ *
+ * @param state - Buffer state from status endpoint
+ * @param bufferAge - Seconds since the buffer was last active
+ * @returns true if the running state is stale and should NOT be trusted
+ */
+export function isStaleRunningState(
+  state: string | undefined,
+  bufferAge: number,
+): boolean {
+  return state === 'running' && bufferAge >= STALE_BUFFER_THRESHOLD
 }
 
 /**

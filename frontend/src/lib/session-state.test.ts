@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { mergeSessionStates, computeRecoverIndex, STATE_ORDER, saveLastKnownIndex, loadLastKnownIndex, clearLastKnownIndex } from '../lib/session-state'
+import { mergeSessionStates, computeRecoverIndex, STATE_ORDER, saveLastKnownIndex, loadLastKnownIndex, clearLastKnownIndex, isFreshRunningState, isStaleRunningState, STALE_BUFFER_THRESHOLD } from '../lib/session-state'
 
 describe('mergeSessionStates', () => {
   it('prefers running over idle', () => {
@@ -17,6 +17,15 @@ describe('mergeSessionStates', () => {
     expect(mergeSessionStates('error', 'running')).toBe('error')
     expect(mergeSessionStates('error', 'idle')).toBe('error')
     expect(mergeSessionStates('error', 'completed')).toBe('error')
+  })
+
+  it('prefers cancelled over non-terminal states', () => {
+    // cancelled should beat idle (it's a terminal state)
+    expect(mergeSessionStates('idle', 'cancelled')).toBe('cancelled')
+    // cancelled should beat completed (both terminal, but cancelled is more recent)
+    expect(mergeSessionStates('cancelled', 'completed')).toBe('cancelled')
+    // cancelled should beat running
+    expect(mergeSessionStates('running', 'cancelled')).toBe('cancelled')
   })
 
   it('prefers waiting_user over idle and completed', () => {
@@ -57,6 +66,7 @@ describe('STATE_ORDER', () => {
     expect(STATE_ORDER['running']).toBe(2)
     expect(STATE_ORDER['waiting_user']).toBe(2)
     expect(STATE_ORDER['error']).toBe(3)
+    expect(STATE_ORDER['cancelled']).toBe(3)
   })
 })
 
@@ -165,5 +175,50 @@ describe('last_known_index persistence', () => {
     if (originalSetItem) {
       Object.defineProperty(Storage.prototype, 'setItem', originalSetItem)
     }
+  })
+})
+
+// ── Staleness checks for session switching ────────────────────────
+
+describe('isFreshRunningState', () => {
+  it('returns true for running with fresh buffer', () => {
+    expect(isFreshRunningState('running', 5)).toBe(true)
+    expect(isFreshRunningState('running', 29)).toBe(true)
+  })
+
+  it('returns false for running with stale buffer', () => {
+    expect(isFreshRunningState('running', 30)).toBe(false)
+    expect(isFreshRunningState('running', 60)).toBe(false)
+  })
+
+  it('returns false for non-running states regardless of age', () => {
+    expect(isFreshRunningState('idle', 5)).toBe(false)
+    expect(isFreshRunningState('completed', 5)).toBe(false)
+    expect(isFreshRunningState('error', 5)).toBe(false)
+    expect(isFreshRunningState(undefined, 5)).toBe(false)
+  })
+})
+
+describe('isStaleRunningState', () => {
+  it('returns true for running with stale buffer', () => {
+    expect(isStaleRunningState('running', 30)).toBe(true)
+    expect(isStaleRunningState('running', 120)).toBe(true)
+  })
+
+  it('returns false for running with fresh buffer', () => {
+    expect(isStaleRunningState('running', 0)).toBe(false)
+    expect(isStaleRunningState('running', 29)).toBe(false)
+  })
+
+  it('returns false for non-running states', () => {
+    expect(isStaleRunningState('idle', 100)).toBe(false)
+    expect(isStaleRunningState('completed', 100)).toBe(false)
+    expect(isStaleRunningState(undefined, 100)).toBe(false)
+  })
+})
+
+describe('STALE_BUFFER_THRESHOLD', () => {
+  it('is 30 seconds', () => {
+    expect(STALE_BUFFER_THRESHOLD).toBe(30)
   })
 })
