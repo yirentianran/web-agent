@@ -1381,6 +1381,8 @@ async def _safe_ws_send(websocket: WebSocket, data: dict) -> bool:
         # WebSocket was already closed — connection lost.
         # Caller should exit the subscribe loop gracefully.
         return False
+    except asyncio.CancelledError:
+        raise  # Allow task cancellation to propagate
     except Exception:
         # Catch any other send errors (e.g., ConnectionClosed from websockets lib)
         return False
@@ -1481,6 +1483,7 @@ async def handle_ws(websocket: WebSocket) -> None:
             session_id = data.get("session_id")
             last_index = data.get("last_index", 0)
             attached_files = data.get("files") or None
+            client_msg_id = data.get("client_msg_id")  # Frontend UUID for dedup
 
             if not session_id:
                 session_id = f"session_{user_id}_{time.time()}_{uuid.uuid4().hex[:8]}"
@@ -1516,16 +1519,17 @@ async def handle_ws(websocket: WebSocket) -> None:
                             item = pending_ws_msgs.get_nowait()
                             if item is None:
                                 return  # WebSocket closed
-                            if item.get("session_id") and item.get("session_id") != session_id:
-                                # New session — break out to handle it (including its recover)
-                                pending_ws_msgs.put_nowait(item)
-                                break
+                            # Always process answers regardless of session — they're time-sensitive
                             if item.get("type") == "answer":
                                 sid = item.get("session_id", "")
                                 answers = item.get("answers", {})
                                 future = pending_answers.get(sid)
                                 if future and not future.done():
                                     future.set_result(answers)
+                            elif item.get("session_id") and item.get("session_id") != session_id:
+                                # Different session — re-queue for the outer loop to handle
+                                pending_ws_msgs.put_nowait(item)
+                                break
                             elif item.get("type") == "recover":
                                 continue  # ignore duplicate recover for SAME session
                             else:
@@ -1621,6 +1625,8 @@ async def handle_ws(websocket: WebSocket) -> None:
                     user_msg_buf: dict[str, Any] = {"type": "user", "content": user_message}
                     if attached_files:
                         user_msg_buf["data"] = [{"filename": f} for f in attached_files]
+                    if client_msg_id:
+                        user_msg_buf["client_msg_id"] = client_msg_id
                     buffer.add_message(session_id, user_msg_buf)
 
                     # Broadcast running state to frontend via WebSocket
@@ -1666,16 +1672,18 @@ async def handle_ws(websocket: WebSocket) -> None:
                         item = pending_ws_msgs.get_nowait()
                         if item is None:
                             return  # WebSocket closed
-                        if item.get("session_id") and item.get("session_id") != session_id:
-                            # New session — break out to handle it (including its recover)
-                            pending_ws_msgs.put_nowait(item)
-                            break
+                        # Always process answers regardless of session — they're time-sensitive
                         if item.get("type") == "answer":
                             sid = item.get("session_id", "")
                             answers = item.get("answers", {})
                             future = pending_answers.get(sid)
                             if future and not future.done():
                                 future.set_result(answers)
+                        elif item.get("session_id") and item.get("session_id") != session_id:
+                            # Different session — re-queue for the outer loop to handle
+                            # after this subscribe loop exits
+                            pending_ws_msgs.put_nowait(item)
+                            break
                         elif item.get("type") == "recover":
                             continue  # ignore duplicate recover for SAME session
                         else:
@@ -1689,7 +1697,8 @@ async def handle_ws(websocket: WebSocket) -> None:
                                     {
                                         "type": "user",
                                         "content": user_message,
-                                        "data": item.get("files") or None and [{"filename": f} for f in item["files"]],
+                                        "data": [{"filename": f} for f in item["files"]] if item.get("files") else None,
+                                        "client_msg_id": item.get("client_msg_id"),
                                     },
                                 )
                     except asyncio.QueueEmpty:
@@ -1754,16 +1763,14 @@ async def handle_ws(websocket: WebSocket) -> None:
                         task_key = f"task_{session_id}"
                         agent_alive = task_key in active_tasks and not active_tasks[task_key].done()
                         hb = make_heartbeat(agent_alive=agent_alive)
-                        await websocket.send_text(
-                            json.dumps(
-                                {
-                                    **hb,
-                                    "index": last_seen,
-                                    "replay": False,
-                                    "session_id": session_id,
-                                }
-                            )
-                        )
+                        if not await _safe_ws_send(websocket, {
+                            **hb,
+                            "index": last_seen,
+                            "replay": False,
+                            "session_id": session_id,
+                        }):
+                            # WebSocket closed — exit subscribe loop gracefully
+                            break
                         # Heartbeats are synthetic — do NOT increment last_seen.
                         # Incrementing it would drift the cursor past the actual
                         # buffer end, causing the final pull to miss messages.
@@ -3959,6 +3966,10 @@ async def _cleanup_loop() -> None:
     while True:
         await asyncio.sleep(300)
         buffer.cleanup_expired()
+        # Retry unpersisted messages (after transient DB failures)
+        flushed = buffer.flush_unpersisted()
+        if flushed:
+            logger.info("MessageBuffer: flushed %d unpersisted messages to SQLite", flushed)
         # Session disk cleanup
         from src.session_cleanup import cleanup_old_sessions
 
