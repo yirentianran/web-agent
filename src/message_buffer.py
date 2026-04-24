@@ -84,6 +84,23 @@ class MessageBuffer:
                         if row and row[0] == "result":
                             buf["done"] = True
                             buf["state"] = "completed"
+                        elif row and row[0] == "system":
+                            # Last message is a system message — check for
+                            # session_state_changed with a terminal state.
+                            # Covers crash scenarios where result wasn't written.
+                            cursor2 = self._sync_conn.execute(
+                                "SELECT payload FROM messages WHERE session_id = ? "
+                                "AND type = 'system' AND subtype = 'session_state_changed' "
+                                "ORDER BY seq DESC LIMIT 1",
+                                (session_id,),
+                            )
+                            row2 = cursor2.fetchone()
+                            if row2:
+                                payload = json.loads(row2[0])
+                                terminal_state = payload.get("state")
+                                if terminal_state in ("completed", "error", "cancelled"):
+                                    buf["done"] = True
+                                    buf["state"] = terminal_state
                     except Exception:
                         pass  # DB unavailable — keep defaults
 

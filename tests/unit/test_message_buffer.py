@@ -364,3 +364,123 @@ class TestRestartRecovery:
         # Adding another result message should preserve done=True
         buf.add_message(session_id, {"type": "result", "content": "done again"})
         assert buf.is_done(session_id) is True
+
+    def test_ensure_buf_restores_cancelled_from_db(
+        self, tmp_path: Path
+    ) -> None:
+        """After restart, a session that was cancelled (crash without result
+        message) should restore the cancelled state from session_state_changed."""
+        import json
+
+        db_path = tmp_path / "test.db"
+        session_id = "cancelled-session"
+        conn = sqlite3.connect(str(db_path))
+        try:
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS messages ("
+                "  id INTEGER PRIMARY KEY AUTOINCREMENT,"
+                "  session_id TEXT NOT NULL,"
+                "  seq INTEGER NOT NULL,"
+                "  type TEXT NOT NULL,"
+                "  subtype TEXT,"
+                "  name TEXT,"
+                "  content TEXT,"
+                "  payload TEXT,"
+                "  usage TEXT,"
+                "  created_at REAL NOT NULL DEFAULT 0"
+                ")"
+            )
+            conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_session_seq "
+                "ON messages(session_id, seq)"
+            )
+            # Write a conversation that was cancelled — no result message
+            conn.execute(
+                "INSERT INTO messages (session_id, seq, type, content, created_at) "
+                "VALUES (?, 0, 'user', 'hello', ?)",
+                (session_id, time.time() - 100),
+            )
+            conn.execute(
+                "INSERT INTO messages (session_id, seq, type, content, created_at) "
+                "VALUES (?, 1, 'system', 'working...', ?)",
+                (session_id, time.time() - 50),
+            )
+            # session_state_changed with cancelled state
+            payload = json.dumps({"type": "system", "subtype": "session_state_changed", "state": "cancelled"})
+            conn.execute(
+                "INSERT INTO messages (session_id, seq, type, subtype, content, payload, created_at) "
+                "VALUES (?, 2, 'system', 'session_state_changed', 'state changed', ?, ?)",
+                (session_id, payload, time.time() - 10),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        # Simulate restart: new MessageBuffer with DB attached
+        buf = MessageBuffer(base_dir=tmp_path / "buf", db=type("FakeDB", (), {"db_path": db_path})())  # type: ignore[arg-type]
+        buf._sync_conn = sqlite3.connect(str(db_path))
+
+        # Accessing the session should restore done=True and state=cancelled from DB
+        assert buf.is_done(session_id) is True
+        state = buf.get_session_state(session_id)
+        assert state["state"] == "cancelled"
+
+    def test_ensure_buf_restores_error_from_db(
+        self, tmp_path: Path
+    ) -> None:
+        """After restart, a session that errored (crash without result message)
+        should restore the error state from session_state_changed."""
+        import json
+
+        db_path = tmp_path / "test.db"
+        session_id = "error-session"
+        conn = sqlite3.connect(str(db_path))
+        try:
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS messages ("
+                "  id INTEGER PRIMARY KEY AUTOINCREMENT,"
+                "  session_id TEXT NOT NULL,"
+                "  seq INTEGER NOT NULL,"
+                "  type TEXT NOT NULL,"
+                "  subtype TEXT,"
+                "  name TEXT,"
+                "  content TEXT,"
+                "  payload TEXT,"
+                "  usage TEXT,"
+                "  created_at REAL NOT NULL DEFAULT 0"
+                ")"
+            )
+            conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_session_seq "
+                "ON messages(session_id, seq)"
+            )
+            # Write a conversation that errored — no result message
+            conn.execute(
+                "INSERT INTO messages (session_id, seq, type, content, created_at) "
+                "VALUES (?, 0, 'user', 'hello', ?)",
+                (session_id, time.time() - 100),
+            )
+            conn.execute(
+                "INSERT INTO messages (session_id, seq, type, content, created_at) "
+                "VALUES (?, 1, 'system', 'working...', ?)",
+                (session_id, time.time() - 50),
+            )
+            # session_state_changed with error state
+            payload = json.dumps({"type": "system", "subtype": "session_state_changed", "state": "error"})
+            conn.execute(
+                "INSERT INTO messages (session_id, seq, type, subtype, content, payload, created_at) "
+                "VALUES (?, 2, 'system', 'session_state_changed', 'state changed', ?, ?)",
+                (session_id, payload, time.time() - 10),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        # Simulate restart: new MessageBuffer with DB attached
+        buf = MessageBuffer(base_dir=tmp_path / "buf", db=type("FakeDB", (), {"db_path": db_path})())  # type: ignore[arg-type]
+        buf._sync_conn = sqlite3.connect(str(db_path))
+
+        # Accessing the session should restore done=True and state=error from DB
+        assert buf.is_done(session_id) is True
+        state = buf.get_session_state(session_id)
+        assert state["state"] == "error"
