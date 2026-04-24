@@ -1492,16 +1492,13 @@ async def handle_ws(websocket: WebSocket) -> None:
             # Send historical messages (reconnection recovery)
             history = buffer.get_history(session_id, after_index=last_index)
             for i, h in enumerate(history):
-                await websocket.send_text(
-                    json.dumps(
-                        {
-                            **h,
-                            "index": last_index + i,
-                            "replay": True,
-                            "session_id": session_id,
-                        }
-                    )
-                )
+                if not await _safe_ws_send(websocket, {
+                    **h,
+                    "index": last_index + i,
+                    "replay": True,
+                    "session_id": session_id,
+                }):
+                    break
 
             # ── Recover: read-only replay + subscribe (no agent task) ────────
             if data.get("type") == "recover":
@@ -1539,6 +1536,7 @@ async def handle_ws(websocket: WebSocket) -> None:
 
                         # Pull new messages
                         new_messages = buffer.get_history(session_id, after_index=last_seen)
+                        sent_count = 0
                         for i, h in enumerate(new_messages):
                             idx = last_seen + i
                             if not await _safe_ws_send(websocket, {
@@ -1548,11 +1546,13 @@ async def handle_ws(websocket: WebSocket) -> None:
                                 "session_id": session_id,
                             }):
                                 break
-                        last_seen += len(new_messages)
+                            sent_count += 1
+                        last_seen += sent_count
 
                         # If session is done, final pull and exit
                         if buffer.is_done(session_id):
                             final_messages = buffer.get_history(session_id, after_index=last_seen)
+                            final_sent = 0
                             for i, h in enumerate(final_messages):
                                 idx = last_seen + i
                                 if not await _safe_ws_send(websocket, {
@@ -1562,7 +1562,8 @@ async def handle_ws(websocket: WebSocket) -> None:
                                     "session_id": session_id,
                                 }):
                                     break
-                            last_seen += len(final_messages)
+                                final_sent += 1
+                            last_seen += final_sent
 
                         last_seen, ok = await _emit_synthetic_state_change_if_missing(
                             websocket, session_id, last_seen
@@ -1695,6 +1696,7 @@ async def handle_ws(websocket: WebSocket) -> None:
                         pass
 
                     new_messages = buffer.get_history(session_id, after_index=last_seen)
+                    sent_count = 0
                     for i, h in enumerate(new_messages):
                         idx = last_seen + i
                         msg_type = h.get("type", "unknown")
@@ -1717,13 +1719,15 @@ async def handle_ws(websocket: WebSocket) -> None:
                             "session_id": session_id,
                         }):
                             break
-                    last_seen += len(new_messages)
+                        sent_count += 1
+                    last_seen += sent_count
 
                     # If session is done, pull one final time to ensure
                     # session_state_changed: completed is not missed
                     # (it may have been added after the get_history snapshot).
                     if buffer.is_done(session_id):
                         final_messages = buffer.get_history(session_id, after_index=last_seen)
+                        final_sent = 0
                         for i, h in enumerate(final_messages):
                             idx = last_seen + i
                             if not await _safe_ws_send(websocket, {
@@ -1733,7 +1737,8 @@ async def handle_ws(websocket: WebSocket) -> None:
                                 "session_id": session_id,
                             }):
                                 break
-                        last_seen += len(final_messages)
+                            final_sent += 1
+                        last_seen += final_sent
 
                         last_seen, ok = await _emit_synthetic_state_change_if_missing(
                             websocket, session_id, last_seen
@@ -1769,23 +1774,38 @@ async def handle_ws(websocket: WebSocket) -> None:
         logger.debug("WebSocket disconnected for user %s", user_id)
     except Exception as e:
         logger.exception("WebSocket error")
-        try:
-            await websocket.send_text(
-                json.dumps(
-                    {
-                        "type": "error",
-                        "message": str(e),
-                    }
-                )
-            )
-        except Exception:
-            pass
+        # Don't try to send error message — the connection is likely already closed
     finally:
         reader_task.cancel()
         try:
             await reader_task
         except asyncio.CancelledError:
             pass
+        # Clean up orphaned agent task — if the WS closed while the agent
+        # was still running, cancel it to prevent resource leaks.
+        task_key = f"task_{current_session_id}" if current_session_id else None
+        if task_key and task_key in active_tasks:
+            task = active_tasks[task_key]
+            if not task.done():
+                logger.info(
+                    "WS: cancelling orphaned agent task for session %s",
+                    current_session_id,
+                )
+                task.cancel()
+                try:
+                    await task
+                except (asyncio.CancelledError, Exception):
+                    pass
+                # Set error state so the frontend knows the session ended
+                buffer.add_message(
+                    current_session_id,
+                    {
+                        "type": "system",
+                        "subtype": "session_state_changed",
+                        "state": "error",
+                    },
+                )
+                buffer.mark_done(current_session_id)
 
 
 # ── Helper ───────────────────────────────────────────────────────
