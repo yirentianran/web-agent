@@ -1520,6 +1520,33 @@ async def handle_ws(websocket: WebSocket) -> None:
                                         }
                                     )
                                 )
+                            last_seen += len(final_messages)
+
+                            # Safety: if buffer state is terminal but no
+                            # session_state_changed exists in the buffer at all,
+                            # emit a synthetic one so the frontend can
+                            # transition away from "running"
+                            buf_state = buffer.get_session_state(session_id)
+                            if buf_state["state"] in ("completed", "error", "cancelled"):
+                                all_buffer_msgs = buffer.get_history(session_id)
+                                has_state_change = any(
+                                    m.get("type") == "system"
+                                    and m.get("subtype") == "session_state_changed"
+                                    for m in all_buffer_msgs
+                                )
+                                if not has_state_change:
+                                    await websocket.send_text(
+                                        json.dumps(
+                                            {
+                                                "type": "system",
+                                                "subtype": "session_state_changed",
+                                                "state": buf_state["state"],
+                                                "index": last_seen,
+                                                "replay": False,
+                                                "session_id": session_id,
+                                            }
+                                        )
+                                    )
                             break
 
                         event.clear()
@@ -1686,6 +1713,33 @@ async def handle_ws(websocket: WebSocket) -> None:
                                     }
                                 )
                             )
+                        last_seen += len(final_messages)
+
+                        # Safety: if buffer state is terminal but no
+                        # session_state_changed exists in the buffer at all,
+                        # emit a synthetic one so the frontend can
+                        # transition away from "running"
+                        buf_state = buffer.get_session_state(session_id)
+                        if buf_state["state"] in ("completed", "error", "cancelled"):
+                            all_buffer_msgs = buffer.get_history(session_id)
+                            has_state_change = any(
+                                m.get("type") == "system"
+                                and m.get("subtype") == "session_state_changed"
+                                for m in all_buffer_msgs
+                            )
+                            if not has_state_change:
+                                await websocket.send_text(
+                                    json.dumps(
+                                        {
+                                            "type": "system",
+                                            "subtype": "session_state_changed",
+                                            "state": buf_state["state"],
+                                            "index": last_seen,
+                                            "replay": False,
+                                            "session_id": session_id,
+                                        }
+                                    )
+                                )
                         break
 
                     event.clear()
@@ -1991,6 +2045,12 @@ async def cancel_session(user_id: str, session_id: str) -> dict[str, str]:
     task = active_tasks.get(task_key)
     if task and not task.done():
         task.cancel()
+        # Wait for the task's CancelledError handler to finish so the
+        # buffer state is final and consistent when the client reads it.
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass  # Expected — the task was cancelled
     buffer.cancel(session_id)
     return {"status": "ok"}
 

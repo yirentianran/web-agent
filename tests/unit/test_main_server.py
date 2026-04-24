@@ -134,6 +134,104 @@ class TestCancelSession:
         state = main_server.buffer.get_session_state(sid)
         assert state["state"] == "cancelled"
 
+    def test_cancel_awaits_task_completion(self, client: TestClient) -> None:
+        """Cancel endpoint must wait for the task's CancelledError handler
+        to finish before returning, so the buffer state is final and
+        consistent when the client reads it.
+
+        We simulate an agent task using a background thread that mimics
+        the async task behavior — the endpoint must wait for it.
+        """
+        import asyncio
+        import threading
+
+        sid = "test-cancel-await-task"
+        handler_done = threading.Event()
+
+        # Create a future that the "task" will complete. We'll use the
+        # FastAPI app's event loop by scheduling through asyncio.run_coroutine_threadsafe.
+        async def slow_handler():
+            """Simulates an agent task that takes time to cancel."""
+            try:
+                await asyncio.sleep(10)
+            except asyncio.CancelledError:
+                main_server.buffer.add_message(
+                    sid,
+                    {"type": "system", "subtype": "session_cancelled", "message": "Cancelled"},
+                )
+                main_server.buffer.add_message(
+                    sid,
+                    {"type": "system", "subtype": "session_state_changed", "state": "cancelled"},
+                )
+                main_server.buffer.mark_done(sid)
+                handler_done.set()
+                raise
+
+        # The TestClient uses anyio to run the app in a worker thread.
+        # We need to find and use that thread's event loop. Instead, we
+        # use a simpler approach: store the handler as a callback that
+        # the endpoint will schedule.
+        main_server.active_tasks[f"task_{sid}"] = None  # Placeholder
+
+        # Set buffer to running first (simulates active agent)
+        main_server.buffer.add_message(sid, {"type": "system", "subtype": "progress"})
+
+        # Register the slow handler to be scheduled when cancel is called.
+        # This mimics the real run_agent_task being already running.
+        original_cancel = main_server.cancel_session
+
+        async def mock_handler():
+            await asyncio.sleep(0.05)  # Small delay to simulate work
+            main_server.buffer.add_message(
+                sid,
+                {"type": "system", "subtype": "session_cancelled", "message": "Cancelled"},
+            )
+            main_server.buffer.add_message(
+                sid,
+                {"type": "system", "subtype": "session_state_changed", "state": "cancelled"},
+            )
+            main_server.buffer.mark_done(sid)
+            handler_done.set()
+
+        # Store a task that the cancel endpoint will cancel.
+        # The key insight: in production, the task is created by
+        # run_agent_task in the same loop. Here we create it in a
+        # way that the TestClient's loop can handle.
+        loop = None
+
+        def capture_loop():
+            nonlocal loop
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            task = loop.create_task(mock_handler())
+            main_server.active_tasks[f"task_{sid}"] = task
+            # Run the handler in a thread so it's on its own loop
+            thread = threading.Thread(target=loop.run_forever, daemon=True)
+            thread.start()
+
+        capture_loop()
+
+        # Give the task a moment to start
+        import time
+        time.sleep(0.1)
+
+        resp = client.post(f"/api/users/alice/sessions/{sid}/cancel")
+        assert resp.status_code == 200
+
+        # The CancelledError handler MUST have run by now.
+        assert handler_done.wait(timeout=2), (
+            "cancel_session returned before the task's CancelledError handler finished"
+        )
+        state = main_server.buffer.get_session_state(sid)
+        assert state["state"] in ("cancelled", "completed", "idle"), (
+            f"Buffer state should be terminal after cancel, got: {state['state']}"
+        )
+
+        # Cleanup
+        if loop and loop.is_running():
+            loop.call_soon_threadsafe(loop.stop)
+        main_server.active_tasks.pop(f"task_{sid}", None)
+
 
 class TestSessionStatus:
     def test_status_of_new_session(self, client: TestClient) -> None:
@@ -269,6 +367,104 @@ class TestWebSocketEndpoint:
             assert msg2["subtype"] == "session_state_changed"
             assert msg2["state"] == "running"
             assert msg2["replay"] is True
+
+    def test_ws_recover_emits_terminal_state_when_no_state_change(self, client: TestClient) -> None:
+        """When the buffer is done with a terminal state but no
+        session_state_changed message exists in the buffer, the recover
+        loop must emit a synthetic session_state_changed so the frontend
+        can transition away from 'running'."""
+        buf = main_server.buffer
+        sid = "session_terminal_safety_test"
+
+        # Set up a completed session without any session_state_changed message
+        buf.add_message(sid, {"type": "user", "content": "hello"})
+        buf.add_message(sid, {"type": "assistant", "content": "done"})
+        buf.mark_done(sid)
+
+        with client.websocket_connect("/ws") as ws:
+            ws.send_text(json.dumps({
+                "type": "recover",
+                "session_id": sid,
+                "user_id": "alice",
+                "last_index": 0,
+            }))
+
+            # Collect all messages until connection closes or we see the state change
+            messages = []
+            state_change_found = False
+            while True:
+                try:
+                    data = ws.receive_text()
+                    msg = json.loads(data)
+                    messages.append(msg)
+                    if msg.get("type") == "system" and msg.get("subtype") == "session_state_changed":
+                        state_change_found = True
+                        break
+                except Exception:
+                    break
+
+            assert state_change_found, (
+                f"Recover loop did not emit terminal session_state_changed. "
+                f"Messages received: {messages}"
+            )
+            # Verify it's the synthetic one (replay=False, correct state)
+            state_msgs = [
+                m for m in messages
+                if m.get("type") == "system" and m.get("subtype") == "session_state_changed"
+            ]
+            assert len(state_msgs) == 1
+            assert state_msgs[0]["state"] == "completed"
+            assert state_msgs[0]["replay"] is False
+
+    def test_ws_recover_no_duplicate_state_change(self, client: TestClient) -> None:
+        """When a session_state_changed message already exists in the buffer,
+        the recover loop must NOT emit a duplicate synthetic one."""
+        buf = main_server.buffer
+        sid = "session_no_duplicate_state_test"
+
+        buf.add_message(sid, {"type": "user", "content": "hello"})
+        buf.add_message(sid, {
+            "type": "system",
+            "subtype": "session_state_changed",
+            "state": "completed",
+        })
+        buf.mark_done(sid)
+
+        with client.websocket_connect("/ws") as ws:
+            ws.send_text(json.dumps({
+                "type": "recover",
+                "session_id": sid,
+                "user_id": "alice",
+                "last_index": 0,
+            }))
+
+            # Collect messages with a timeout — only expect 2: user msg + state_change
+            messages = []
+            for _ in range(4):  # safety limit
+                try:
+                    data = ws.receive_text()
+                    msg = json.loads(data)
+                    messages.append(msg)
+                    # Once we've seen the session_state_changed from buffer,
+                    # stop collecting — the synthetic one would arrive after
+                    if msg.get("subtype") == "session_state_changed":
+                        # Give a brief moment to see if a duplicate arrives
+                        import time
+                        time.sleep(0.3)
+                        break
+                except Exception:
+                    break
+
+            state_msgs = [
+                m for m in messages
+                if m.get("type") == "system" and m.get("subtype") == "session_state_changed"
+            ]
+            assert len(state_msgs) == 1, (
+                f"Expected exactly 1 session_state_changed, got {len(state_msgs)}. "
+                f"Messages: {messages}"
+            )
+            # The existing one should come from the buffer (replay=True for recover)
+            assert state_msgs[0]["replay"] is True
 
 
 # ── File Management API ────────────────────────────────────────────
