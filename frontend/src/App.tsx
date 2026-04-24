@@ -26,7 +26,6 @@ import type { Message, SessionItem, MessageSendState } from "./lib/types";
 import {
   mergeSessionStates,
   computeRecoverIndex,
-  isFreshRunningState,
   isStaleRunningState,
   saveLastKnownIndex,
   loadLastKnownIndex,

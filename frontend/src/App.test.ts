@@ -1751,6 +1751,7 @@ function createMessageHandlerWithIndexFilter(opts?: {
   activeSessionRef?: { current: string | null }
   onSessionStateChange?: (sessionId: string, state: string) => void
 }) {
+  const TERMINAL_STATES = new Set(['completed', 'error', 'cancelled'])
   const activeSessionRef = opts?.activeSessionRef ?? { current: 'sess1' }
   const sessionStates = new Map<string, string>()
   const sessionStatesRef = new Map<string, string>()
@@ -1776,8 +1777,9 @@ function createMessageHandlerWithIndexFilter(opts?: {
     if (msg.session_id && msg.session_id !== activeSessionRef.current) {
       if (msg.type === 'system' && msg.subtype === 'session_state_changed') {
         const newState = msg.state || msg.content || 'completed'
-        if (msg.index != null && msg.index < highestUserMsgIndex) {
-          // Skip — old state change from previous run
+        const isTerminal = TERMINAL_STATES.has(newState)
+        if (msg.index != null && msg.index < highestUserMsgIndex && !isTerminal) {
+          // Skip — old state change from previous run (except terminal)
         } else if (msg.replay) {
           const currentState = sessionStatesRef.get(msg.session_id)
           if (currentState === 'running' && newState !== 'running' && newState !== 'error') {
@@ -1796,8 +1798,9 @@ function createMessageHandlerWithIndexFilter(opts?: {
     if (isInvisibleMessage) {
       if (msg.type === 'system' && msg.subtype === 'session_state_changed' && msg.session_id) {
         const newState = msg.state || msg.content || 'completed'
-        if (msg.index != null && msg.index < highestUserMsgIndex) {
-          // Skip — old state change from previous run
+        const isTerminal = TERMINAL_STATES.has(newState)
+        if (msg.index != null && msg.index < highestUserMsgIndex && !isTerminal) {
+          // Skip — old state change from previous run (except terminal)
         } else if (msg.replay) {
           const currentState = sessionStatesRef.get(msg.session_id)
           if (currentState === 'running' && newState !== 'running' && newState !== 'error') {
@@ -1817,8 +1820,10 @@ function createMessageHandlerWithIndexFilter(opts?: {
 
     // Also handle session_state_changed in the visible path
     if (msg.type === 'system' && msg.subtype === 'session_state_changed' && msg.session_id) {
-      if (msg.index == null || msg.index >= highestUserMsgIndex) {
-        setSessionStateFor(msg.session_id, msg.state || msg.content || 'completed')
+      const newState = msg.state || msg.content || 'completed'
+      const isTerminal = TERMINAL_STATES.has(newState)
+      if (msg.index == null || msg.index >= highestUserMsgIndex || isTerminal) {
+        setSessionStateFor(msg.session_id, newState)
       }
     }
   }
@@ -1834,7 +1839,7 @@ function createMessageHandlerWithIndexFilter(opts?: {
 }
 
 describe('index-based filtering for old state changes (server restart)', () => {
-  it('blocks old session_state_changed:completed from previous run after new user message', () => {
+  it('blocks old session_state_changed:running from previous run after new user message', () => {
     const handler = createMessageHandlerWithIndexFilter()
 
     // Step 1: User sends new message → state becomes 'running'
@@ -1851,19 +1856,19 @@ describe('index-based filtering for old state changes (server restart)', () => {
     expect(handler.getState('sess1')).toBe('running')
     expect(handler.getHighestUserMsgIndex()).toBe(5)
 
-    // Step 2: Subscribe loop sends old completed state from previous run
+    // Step 2: Subscribe loop sends old running state from previous run
     // This has replay: False but a lower index (e.g., 3)
     handler.handleIncomingMessage({
       type: 'system',
       subtype: 'session_state_changed',
-      state: 'completed',
+      state: 'running',
       content: '',
       index: 3,
       session_id: 'sess1',
       replay: false,
     })
 
-    // State should STILL be 'running' — old state change blocked by index filter
+    // State should STILL be 'running' — old non-terminal state change blocked by index filter
     expect(handler.getState('sess1')).toBe('running')
   })
 
@@ -1911,7 +1916,7 @@ describe('index-based filtering for old state changes (server restart)', () => {
     handler.handleIncomingMessage({
       type: 'system',
       subtype: 'session_state_changed',
-      state: 'completed',
+      state: 'running',
       content: '',
       index: 3,
       session_id: 'sess2',
@@ -1983,19 +1988,19 @@ describe('index-based filtering for old state changes (server restart)', () => {
     expect(handler.getState('sess1')).toBe('running')
     expect(handler.getMessages()).toHaveLength(2)
 
-    // Step 2: Subscribe loop sends old 'completed' state (index 0)
+    // Step 2: Subscribe loop sends old 'running' state (index 0)
     // This is the bug trigger — replay: False but old index
     handler.handleIncomingMessage({
       type: 'system',
       subtype: 'session_state_changed',
-      state: 'completed',
+      state: 'running',
       content: '',
       index: 0,
       session_id: 'sess1',
       replay: false,
     })
 
-    // Spinner should NOT disappear
+    // Spinner should NOT disappear — old non-terminal state blocked by index filter
     expect(handler.getState('sess1')).toBe('running')
 
     // Step 3: Agent starts working, new state arrives
@@ -2035,6 +2040,96 @@ describe('index-based filtering for old state changes (server restart)', () => {
 
     // Now completed should overwrite running (agent actually finished)
     expect(handler.getState('sess1')).toBe('completed')
+  })
+
+  it('allows terminal state changes below highestUserMsgIndex', () => {
+    // Terminal states (completed, error, cancelled) should bypass
+    // the index guard so agent completion is never blocked by old indices.
+    const handler = createMessageHandlerWithIndexFilter()
+
+    // User message at index 10
+    handler.handleIncomingMessage({
+      type: 'user',
+      content: 'new question',
+      index: 10,
+      session_id: 'sess1',
+    })
+    handler.setSessionStateFor('sess1', 'running')
+
+    // session_state_changed:completed at index 3 (below 10)
+    handler.handleIncomingMessage({
+      type: 'system',
+      subtype: 'session_state_changed',
+      state: 'completed',
+      content: '',
+      index: 3,
+      session_id: 'sess1',
+    })
+
+    // Should be accepted because 'completed' is terminal
+    expect(handler.getState('sess1')).toBe('completed')
+  })
+
+  it('still blocks non-terminal state changes below highestUserMsgIndex', () => {
+    // Non-terminal states (running, waiting_user) should still respect
+    // the index guard to prevent stale "running" from overwriting current state.
+    const handler = createMessageHandlerWithIndexFilter()
+
+    // User message at index 10
+    handler.handleIncomingMessage({
+      type: 'user',
+      content: 'new question',
+      index: 10,
+      session_id: 'sess1',
+    })
+    handler.setSessionStateFor('sess1', 'running')
+
+    // session_state_changed:running at index 3 (below 10)
+    handler.handleIncomingMessage({
+      type: 'system',
+      subtype: 'session_state_changed',
+      state: 'running',
+      content: '',
+      index: 3,
+      session_id: 'sess1',
+    })
+
+    // Should be blocked — old running state from previous run
+    expect(handler.getState('sess1')).toBe('running')
+  })
+
+  it('allows error and cancelled below highestUserMsgIndex', () => {
+    const handler = createMessageHandlerWithIndexFilter()
+
+    handler.handleIncomingMessage({
+      type: 'user',
+      content: 'hello',
+      index: 10,
+      session_id: 'sess1',
+    })
+    handler.setSessionStateFor('sess1', 'running')
+
+    // error at low index
+    handler.handleIncomingMessage({
+      type: 'system',
+      subtype: 'session_state_changed',
+      state: 'error',
+      content: '',
+      index: 2,
+      session_id: 'sess1',
+    })
+    expect(handler.getState('sess1')).toBe('error')
+
+    // cancelled at low index
+    handler.handleIncomingMessage({
+      type: 'system',
+      subtype: 'session_state_changed',
+      state: 'cancelled',
+      content: '',
+      index: 1,
+      session_id: 'sess1',
+    })
+    expect(handler.getState('sess1')).toBe('cancelled')
   })
 
   it('allows replayed state changes when no user message has been seen yet', () => {
