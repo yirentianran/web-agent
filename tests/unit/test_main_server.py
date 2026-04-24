@@ -2008,3 +2008,58 @@ class TestStreamingOutput:
             "StreamEvent not converted to stream_event dict — "
             "frontend won't receive streaming events"
         )
+
+
+# ── Safe WebSocket Send ──────────────────────────────────────────
+
+
+class TestSafeWsSend:
+    """_safe_ws_send() should catch RuntimeError from closed WebSocket
+    connections and return False instead of crashing the subscribe loop."""
+
+    @pytest.mark.asyncio
+    async def test_returns_false_on_runtime_error(self) -> None:
+        """When WebSocket is closed, _safe_ws_send returns False without raising."""
+        from unittest.mock import AsyncMock
+
+        from main_server import _safe_ws_send
+
+        mock_ws = MagicMock()
+        mock_ws.send_text = AsyncMock(
+            side_effect=RuntimeError(
+                "Unexpected ASGI message 'websocket.send', after sending 'websocket.close'"
+            )
+        )
+
+        result = await _safe_ws_send(mock_ws, {"type": "heartbeat"})
+        assert result is False
+        mock_ws.send_text.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_returns_true_on_success(self) -> None:
+        """When WebSocket is open, _safe_ws_send returns True."""
+        from unittest.mock import AsyncMock
+
+        from main_server import _safe_ws_send
+
+        mock_ws = MagicMock()
+        mock_ws.send_text = AsyncMock()
+
+        result = await _safe_ws_send(mock_ws, {"type": "heartbeat", "data": "test"})
+        assert result is True
+        mock_ws.send_text.assert_called_once()
+        call_arg = mock_ws.send_text.call_args[0][0]
+        assert '"type": "heartbeat"' in call_arg or '"type":"heartbeat"' in call_arg
+
+    @pytest.mark.asyncio
+    async def test_returns_false_on_generic_exception(self) -> None:
+        """Any unexpected exception should return False without propagating."""
+        from unittest.mock import AsyncMock
+
+        from main_server import _safe_ws_send
+
+        mock_ws = MagicMock()
+        mock_ws.send_text = AsyncMock(side_effect=ConnectionError("lost connection"))
+
+        result = await _safe_ws_send(mock_ws, {"type": "ping"})
+        assert result is False

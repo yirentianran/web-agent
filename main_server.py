@@ -1371,6 +1371,21 @@ async def run_agent_task(
 # ── WebSocket endpoint ───────────────────────────────────────────
 
 
+async def _safe_ws_send(websocket: WebSocket, data: dict) -> bool:
+    """Send a JSON message over WebSocket, returning False if the connection
+    is already closed. Prevents RuntimeError from crashing the subscribe loop."""
+    try:
+        await websocket.send_text(json.dumps(data))
+        return True
+    except RuntimeError:
+        # WebSocket was already closed — connection lost.
+        # Caller should exit the subscribe loop gracefully.
+        return False
+    except Exception:
+        # Catch any other send errors (e.g., ConnectionClosed from websockets lib)
+        return False
+
+
 @app.websocket("/ws")
 async def handle_ws(websocket: WebSocket) -> None:
     """Browser ↔ Agent WebSocket. Direct SDK integration (Phase 1)."""
