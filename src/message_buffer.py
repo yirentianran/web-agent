@@ -127,52 +127,89 @@ class MessageBuffer:
         """Synchronously append one message to the SQLite database.
 
         Uses a single cached sync connection to avoid per-message open/close
-        overhead and file-locking issues.
+        overhead and file-locking issues. Retries up to 3 times on transient
+        failures. If all retries fail, marks the session as unpersisted so
+        that the next flush can retry.
         """
         if self.db is None:
             return
 
         # Lazily create a single sync connection
         if self._sync_conn is None:
-            self._sync_conn = sqlite3.connect(str(self.db.db_path))
+            try:
+                self._sync_conn = sqlite3.connect(str(self.db.db_path))
+            except Exception:
+                self.sessions[session_id]["db_failed"] = True
+                import logging
+                logging.getLogger(__name__).warning(
+                    "MessageBuffer: failed to open SQLite for session %s — messages in memory only",
+                    session_id,
+                )
+                return
 
         conn = self._sync_conn
-        try:
-            # Determine next seq: check DB for existing messages (e.g. after
-            # migration) and use the higher of in-memory counter vs DB max.
-            cursor = conn.execute(
-                "SELECT COALESCE(MAX(seq), -1) FROM messages WHERE session_id = ?",
-                (session_id,),
-            )
-            db_max_seq = cursor.fetchone()[0]
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                # Determine next seq: check DB for existing messages (e.g. after
+                # migration) and use the higher of in-memory counter vs DB max.
+                cursor = conn.execute(
+                    "SELECT COALESCE(MAX(seq), -1) FROM messages WHERE session_id = ?",
+                    (session_id,),
+                )
+                db_max_seq = cursor.fetchone()[0]
 
-            next_seq = max(self._seq.get(session_id, 0), db_max_seq + 1)
-            self._seq[session_id] = next_seq + 1
+                next_seq = max(self._seq.get(session_id, 0), db_max_seq + 1)
+                self._seq[session_id] = next_seq + 1
 
-            usage_json = None
-            if message.get("usage"):
-                usage_json = json.dumps(message["usage"], ensure_ascii=False)
+                usage_json = None
+                if message.get("usage"):
+                    usage_json = json.dumps(message["usage"], ensure_ascii=False)
 
-            conn.execute(
-                """INSERT INTO messages
-                   (session_id, seq, type, subtype, name, content, payload, usage, created_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (
-                    session_id,
-                    next_seq,
-                    message.get("type", ""),
-                    message.get("subtype"),
-                    message.get("name"),
-                    message.get("content"),
-                    json.dumps(message, ensure_ascii=False),
-                    usage_json,
-                    time.time(),
-                ),
-            )
-            conn.commit()
-        except Exception:
-            conn.rollback()
-            raise
+                conn.execute(
+                    """INSERT INTO messages
+                       (session_id, seq, type, subtype, name, content, payload, usage, created_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        session_id,
+                        next_seq,
+                        message.get("type", ""),
+                        message.get("subtype"),
+                        message.get("name"),
+                        message.get("content"),
+                        json.dumps(message, ensure_ascii=False),
+                        usage_json,
+                        time.time(),
+                    ),
+                )
+                conn.commit()
+                # Success — clear any previous failure flag
+                self.sessions[session_id].pop("db_failed", None)
+                return
+            except Exception:
+                conn.rollback()
+                if attempt < max_retries - 1:
+                    import time as _time
+                    _time.sleep(0.1 * (attempt + 1))  # brief backoff
+                    # Try to reconnect in case connection was lost
+                    try:
+                        self._sync_conn = sqlite3.connect(str(self.db.db_path))
+                        conn = self._sync_conn
+                    except Exception:
+                        pass
+                else:
+                    # All retries exhausted — mark as unpersisted
+                    buf = self.sessions.get(session_id)
+                    if buf:
+                        buf["db_failed"] = True
+                        buf.setdefault("unpersisted_messages", []).append(message)
+                    import logging
+                    logging.getLogger(__name__).error(
+                        "MessageBuffer: SQLite write failed after %d retries for session %s — "
+                        "message kept in memory only",
+                        max_retries,
+                        session_id,
+                    )
 
     def _read_db_sync(self, session_id: str, after_index: int = 0) -> list[dict]:
         """Read messages from SQLite starting at *after_index*.
@@ -400,6 +437,29 @@ class MessageBuffer:
         ]
         for sid in expired:
             del self.sessions[sid]
+
+    def flush_unpersisted(self) -> int:
+        """Retry writing unpersisted messages to SQLite.
+
+        Called periodically or after a connection recovery. Returns the
+        number of messages successfully flushed.
+        """
+        flushed = 0
+        for sid, buf in list(self.sessions.items()):
+            pending = buf.get("unpersisted_messages", [])
+            if not pending:
+                continue
+            # Try writing each pending message
+            to_retry = list(pending)
+            buf["unpersisted_messages"] = []
+            for msg in to_retry:
+                try:
+                    self._write_db_sync(sid, msg)
+                    flushed += 1
+                except Exception:
+                    # Still failing — put back in queue
+                    buf["unpersisted_messages"].append(msg)
+        return flushed
 
     def close(self) -> None:
         """Close the cached sync database connection."""

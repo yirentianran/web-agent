@@ -638,30 +638,20 @@ function MainApp() {
   // doesn't catch them. Index-based filtering blocks them instead.
   const highestUserMsgIndexRef = useRef(-1);
 
-  // Reset all running/waiting sessions to idle on WebSocket disconnect —
-  // the agent tasks are no longer connected to this client
+  // On WebSocket disconnect, leave session states untouched.
+  // The backend agent tasks continue running independently — resetting
+  // to "idle" was misleading. On reconnect, the recovery mechanism will
+  // sync the real session states from the backend.
   const handleDisconnect = useCallback(() => {
-    // Batch into a single state update to avoid N re-renders
-    const updates: [string, string][] = [];
-    for (const [sid, state] of sessionStatesRef.current) {
-      if (state === "running" || state === "waiting_user") {
-        updates.push([sid, "idle"]);
-      }
-    }
-    if (updates.length > 0) {
-      setSessionStates((prev) => {
-        const next = new Map(prev);
-        for (const [sid, state] of updates) {
-          next.set(sid, state);
-        }
-        return next;
-      });
-    }
+    // No state mutation needed — connection status is already
+    // tracked by `status` from useWebSocket (reconnecting/failed).
+    void 0;
   }, []);
 
   const {
     status,
     connected,
+    queueFull,
     sendMessage,
     confirmSend,
     sendAnswer,
@@ -670,6 +660,13 @@ function MainApp() {
     userId,
     onMessage: handleIncomingMessage,
     onDisconnect: handleDisconnect,
+    onQueueFull: () => {
+      // Queue overflow — show a non-blocking warning to the user
+      // eslint-disable-next-line no-console
+      console.warn(
+        "[WebSocket] Pending queue full. Messages will be dropped until connection restores.",
+      );
+    },
     token: authToken ?? undefined,
   });
 
@@ -1142,6 +1139,21 @@ function MainApp() {
           filesCount={fileCount}
         />
         <main className="main">
+          {queueFull && (
+            <div
+              style={{
+                background: "#fff3cd",
+                color: "#856404",
+                padding: "8px 16px",
+                fontSize: "0.85rem",
+                textAlign: "center",
+                borderBottom: "1px solid #ffc107",
+              }}
+            >
+              Connection is slow — some messages may be queued. Waiting for
+              reconnection…
+            </div>
+          )}
           <ChatArea
             messages={messages}
             sessionId={activeSession}

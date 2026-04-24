@@ -26,6 +26,7 @@ interface PendingSend {
 }
 
 const PENDING_QUEUE_MAX = 100;
+const PRIORITY_QUEUE_MAX = 10; // Separate queue for answers (high priority)
 const SEND_TIMEOUT_MS = 30_000;
 
 interface UseWebSocketOptions {
@@ -33,6 +34,7 @@ interface UseWebSocketOptions {
   onMessage: (msg: Message) => void;
   onConnect?: () => void;
   onDisconnect?: () => void;
+  onQueueFull?: () => void; // Called when the pending queue overflows
   token?: string;
 }
 
@@ -41,15 +43,38 @@ export function useWebSocket({
   onMessage,
   onConnect,
   onDisconnect,
+  onQueueFull,
   token,
 }: UseWebSocketOptions) {
   const wsRef = useRef<WebSocket | null>(null);
   const [status, setStatus] = useState<ConnectionStatus>("connecting");
+  const [queueFull, setQueueFull] = useState(false);
   const reconnectAttempts = useRef(0);
   const reconnectTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const maxAttempts = 5;
+  // Track whether the close was intentional (cleanup/unmount) to
+  // prevent the onclose handler from scheduling a reconnect.
+  const intentionalCloseRef = useRef(false);
+  // Refs for callbacks — keeps the `connect` function stable so that
+  // parent re-renders (which produce new callback identities) do NOT
+  // tear down and recreate the WebSocket mid-handshake.
+  const onMessageRef = useRef(onMessage);
+  const onConnectRef = useRef(onConnect);
+  const onDisconnectRef = useRef(onDisconnect);
+  const onQueueFullRef = useRef(onQueueFull);
+
+  // Keep refs in sync on every render
+  useEffect(() => {
+    onMessageRef.current = onMessage;
+    onConnectRef.current = onConnect;
+    onDisconnectRef.current = onDisconnect;
+    onQueueFullRef.current = onQueueFull;
+  });
+
   // Queue for messages sent while WebSocket is not OPEN
   const pendingQueue = useRef<WSOutgoingMessage[]>([]);
+  // Priority queue for answers (AskUserQuestion) — bypasses PENDING_QUEUE_MAX
+  const priorityQueue = useRef<WSOutgoingMessage[]>([]);
   // Track in-flight sends for timeout / error handling
   const pendingSends = useRef<Map<string, PendingSend>>(new Map());
 
@@ -74,6 +99,12 @@ export function useWebSocket({
   const flushPending = useCallback(() => {
     const ws = wsRef.current;
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    // Flush priority queue first (answers must arrive ASAP)
+    while (priorityQueue.current.length > 0) {
+      const msg = priorityQueue.current.shift()!;
+      ws.send(JSON.stringify({ type: "answer", ...msg, user_id: userId }));
+    }
+    // Then flush regular queue
     while (pendingQueue.current.length > 0) {
       const msg = pendingQueue.current.shift()!;
       ws.send(JSON.stringify({ type: "chat", ...msg, user_id: userId }));
@@ -94,8 +125,9 @@ export function useWebSocket({
 
     ws.onopen = () => {
       reconnectAttempts.current = 0;
+      setQueueFull(false); // Reset queue full warning on reconnect
       setStatus("connected");
-      onConnect?.();
+      onConnectRef.current?.();
       // Flush any queued messages now that we're connected
       flushPending();
     };
@@ -103,15 +135,16 @@ export function useWebSocket({
     ws.onmessage = (event) => {
       try {
         const data = JSON.parse(event.data);
-        onMessage(data as Message);
+        onMessageRef.current(data as Message);
       } catch {
         // ignore parse errors
       }
     };
 
     ws.onclose = () => {
+      if (intentionalCloseRef.current) return;
       setStatus("reconnecting");
-      onDisconnect?.();
+      onDisconnectRef.current?.();
       scheduleReconnect();
     };
 
@@ -121,11 +154,9 @@ export function useWebSocket({
     };
   }, [
     userId,
-    onMessage,
-    onConnect,
-    onDisconnect,
     scheduleReconnect,
     flushPending,
+    token,
   ]);
 
   /**
@@ -151,13 +182,16 @@ export function useWebSocket({
         // Queue the message — it will be sent once the WebSocket opens
         if (pendingQueue.current.length < PENDING_QUEUE_MAX) {
           pendingQueue.current.push(enriched);
+        } else {
+          // Queue full — notify caller instead of silently dropping
+          setQueueFull(true);
+          onQueueFullRef.current?.();
         }
-        // If queue is full, oldest messages are silently dropped (FIFO overflow)
       }
 
       return { clientMsgId };
     },
-    [userId, onMessage],
+    [userId, onQueueFull],
   );
 
   /** Confirm that the backend received a sent message (called from App.tsx onMessage). */
@@ -178,6 +212,10 @@ export function useWebSocket({
     pendingSends.current.clear();
   }, []);
 
+  /**
+   * Send an answer to AskUserQuestion. Uses a separate priority queue
+   * so that answers are never silently dropped due to queue overflow.
+   */
   const sendAnswer = useCallback(
     (sessionId: string, answers: Record<string, string>) => {
       const ws = wsRef.current;
@@ -191,12 +229,14 @@ export function useWebSocket({
           }),
         );
       } else {
-        // Queue the answer too
-        pendingQueue.current.push({
-          type: "answer",
-          session_id: sessionId,
-          answers,
-        });
+        // Use a separate priority queue — answers must never be dropped
+        if (priorityQueue.current.length < PRIORITY_QUEUE_MAX) {
+          priorityQueue.current.push({
+            type: "answer",
+            session_id: sessionId,
+            answers,
+          });
+        }
       }
     },
     [userId],
@@ -222,6 +262,7 @@ export function useWebSocket({
   useEffect(() => {
     connect();
     return () => {
+      intentionalCloseRef.current = true;
       wsRef.current?.close();
       if (reconnectTimer.current) clearTimeout(reconnectTimer.current);
       failPendingSends();
@@ -231,6 +272,7 @@ export function useWebSocket({
   return {
     status,
     connected: status === "connected",
+    queueFull,
     sendMessage,
     confirmSend,
     failPendingSends,

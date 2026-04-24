@@ -484,3 +484,44 @@ class TestRestartRecovery:
         assert buf.is_done(session_id) is True
         state = buf.get_session_state(session_id)
         assert state["state"] == "error"
+
+
+# ── SQLite write failure recovery ─────────────────────────────────
+
+class TestSQLiteWriteFailureRecovery:
+    """When SQLite write fails, messages are kept in memory and
+    retried on flush_unpersisted()."""
+
+    def test_flush_unpersisted_returns_zero_when_no_dirty(self, buffer: MessageBuffer) -> None:
+        assert buffer.flush_unpersisted() == 0
+
+    def test_flush_unpersisted_retries_and_succeeds(self, tmp_path: Path) -> None:
+        """Normal operation: DB write succeeds, no unpersisted messages."""
+        db_path = tmp_path / "test.db"
+        # Create the DB schema first
+        conn = sqlite3.connect(str(db_path))
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS messages ("
+            "  id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            "  session_id TEXT NOT NULL,"
+            "  seq INTEGER NOT NULL,"
+            "  type TEXT NOT NULL,"
+            "  subtype TEXT,"
+            "  name TEXT,"
+            "  content TEXT,"
+            "  payload TEXT,"
+            "  usage TEXT,"
+            "  created_at REAL NOT NULL DEFAULT 0"
+            ")"
+        )
+        conn.commit()
+        conn.close()
+
+        buf = MessageBuffer(base_dir=tmp_path / "buf", db=type("FakeDB", (), {"db_path": db_path})())  # type: ignore[arg-type]
+        buf._sync_conn = sqlite3.connect(str(db_path))
+
+        # Normal add_message should work
+        buf.add_message("s1", {"type": "user", "content": "hello"})
+        assert buf.get_history("s1") == [{"type": "user", "content": "hello"}]
+        # No unpersisted messages since DB write succeeded
+        assert buf.flush_unpersisted() == 0

@@ -6,12 +6,13 @@ we mock the entire package before the server module is loaded.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import sys
 import time
 import uuid
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, patch, AsyncMock
 
 import pytest
 
@@ -59,6 +60,10 @@ def _patch_data_root(tmp_path: Path) -> None:
 @pytest.fixture()
 def client() -> TestClient:
     return TestClient(main_server.app)
+
+
+# Import _safe_ws_send after mocks are in place
+from main_server import _safe_ws_send
 
 
 # ── Health ─────────────────────────────────────────────────────────
@@ -2020,10 +2025,6 @@ class TestSafeWsSend:
     @pytest.mark.asyncio
     async def test_returns_false_on_runtime_error(self) -> None:
         """When WebSocket is closed, _safe_ws_send returns False without raising."""
-        from unittest.mock import AsyncMock
-
-        from main_server import _safe_ws_send
-
         mock_ws = MagicMock()
         mock_ws.send_text = AsyncMock(
             side_effect=RuntimeError(
@@ -2038,10 +2039,6 @@ class TestSafeWsSend:
     @pytest.mark.asyncio
     async def test_returns_true_on_success(self) -> None:
         """When WebSocket is open, _safe_ws_send returns True."""
-        from unittest.mock import AsyncMock
-
-        from main_server import _safe_ws_send
-
         mock_ws = MagicMock()
         mock_ws.send_text = AsyncMock()
 
@@ -2054,12 +2051,17 @@ class TestSafeWsSend:
     @pytest.mark.asyncio
     async def test_returns_false_on_generic_exception(self) -> None:
         """Any unexpected exception should return False without propagating."""
-        from unittest.mock import AsyncMock
-
-        from main_server import _safe_ws_send
-
         mock_ws = MagicMock()
         mock_ws.send_text = AsyncMock(side_effect=ConnectionError("lost connection"))
 
         result = await _safe_ws_send(mock_ws, {"type": "ping"})
         assert result is False
+
+    @pytest.mark.asyncio
+    async def test_reraises_cancelled_error(self) -> None:
+        """asyncio.CancelledError must propagate — do not swallow it."""
+        mock_ws = MagicMock()
+        mock_ws.send_text = AsyncMock(side_effect=asyncio.CancelledError())
+
+        with pytest.raises(asyncio.CancelledError):
+            await _safe_ws_send(mock_ws, {"type": "heartbeat"})
