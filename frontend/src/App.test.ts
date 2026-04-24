@@ -2186,3 +2186,93 @@ describe('index-based filtering for old state changes (server restart)', () => {
     expect(handler.getState('sess1')).toBe('completed')
   })
 })
+
+describe('handleDisconnect resets running sessions', () => {
+  function simulateDisconnect() {
+    const sessionStatesRef = new Map<string, string>()
+    const setSessionStatesCalls: Map<string, string>[] = []
+
+    function setSessionStates(updater: (prev: Map<string, string>) => Map<string, string>) {
+      const prev = new Map(sessionStatesRef)
+      const next = updater(prev)
+      sessionStatesRef.clear()
+      next.forEach((v, k) => sessionStatesRef.set(k, v))
+      setSessionStatesCalls.push(new Map(next))
+    }
+
+    // Simulated handleDisconnect (matches App.tsx implementation)
+    const handleDisconnect = () => {
+      const updates: [string, string][] = []
+      for (const [sid, state] of sessionStatesRef) {
+        if (state === 'running' || state === 'waiting_user') {
+          updates.push([sid, 'idle'])
+        }
+      }
+      if (updates.length > 0) {
+        setSessionStates((prev) => {
+          const next = new Map(prev)
+          for (const [sid, state] of updates) {
+            next.set(sid, state)
+          }
+          return next
+        })
+      }
+    }
+
+    return { sessionStatesRef, setSessionStatesCalls, handleDisconnect, setSessionStates }
+  }
+
+  it('resets running sessions to idle', () => {
+    const { sessionStatesRef, handleDisconnect } = simulateDisconnect()
+    sessionStatesRef.set('s1', 'running')
+    sessionStatesRef.set('s2', 'idle')
+
+    handleDisconnect()
+
+    expect(sessionStatesRef.get('s1')).toBe('idle')
+    expect(sessionStatesRef.get('s2')).toBe('idle')
+  })
+
+  it('resets waiting_user sessions to idle', () => {
+    const { sessionStatesRef, handleDisconnect } = simulateDisconnect()
+    sessionStatesRef.set('s1', 'waiting_user')
+
+    handleDisconnect()
+
+    expect(sessionStatesRef.get('s1')).toBe('idle')
+  })
+
+  it('leaves completed and error sessions unchanged', () => {
+    const { sessionStatesRef, handleDisconnect } = simulateDisconnect()
+    sessionStatesRef.set('s1', 'completed')
+    sessionStatesRef.set('s2', 'error')
+    sessionStatesRef.set('s3', 'cancelled')
+
+    handleDisconnect()
+
+    expect(sessionStatesRef.get('s1')).toBe('completed')
+    expect(sessionStatesRef.get('s2')).toBe('error')
+    expect(sessionStatesRef.get('s3')).toBe('cancelled')
+  })
+
+  it('does nothing when no sessions exist', () => {
+    const { sessionStatesRef, handleDisconnect } = simulateDisconnect()
+    handleDisconnect()
+    expect(sessionStatesRef.size).toBe(0)
+  })
+
+  it('batches all updates into a single setSessionStates call', () => {
+    const { sessionStatesRef, setSessionStatesCalls, handleDisconnect } = simulateDisconnect()
+    sessionStatesRef.set('s1', 'running')
+    sessionStatesRef.set('s2', 'waiting_user')
+    sessionStatesRef.set('s3', 'idle')
+
+    handleDisconnect()
+
+    // Should only call setSessionStates once (batched)
+    expect(setSessionStatesCalls).toHaveLength(1)
+    expect(setSessionStatesCalls[0].get('s1')).toBe('idle')
+    expect(setSessionStatesCalls[0].get('s2')).toBe('idle')
+    expect(setSessionStatesCalls[0].get('s3')).toBe('idle')
+  })
+})

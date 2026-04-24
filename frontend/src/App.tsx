@@ -635,12 +635,23 @@ function MainApp() {
   // Reset all running/waiting sessions to idle on WebSocket disconnect —
   // the agent tasks are no longer connected to this client
   const handleDisconnect = useCallback(() => {
+    // Batch into a single state update to avoid N re-renders
+    const updates: [string, string][] = [];
     for (const [sid, state] of sessionStatesRef.current) {
       if (state === "running" || state === "waiting_user") {
-        setSessionStateFor(sid, "idle");
+        updates.push([sid, "idle"]);
       }
     }
-  }, [setSessionStateFor]);
+    if (updates.length > 0) {
+      setSessionStates((prev) => {
+        const next = new Map(prev);
+        for (const [sid, state] of updates) {
+          next.set(sid, state);
+        }
+        return next;
+      });
+    }
+  }, []);
 
   const {
     status,
