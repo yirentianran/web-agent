@@ -19,6 +19,7 @@ import io
 import json
 import logging
 import os
+import platform
 import re
 import shutil
 import time
@@ -633,6 +634,132 @@ def build_allowed_tools(mcp_config: dict[str, Any]) -> list[str]:
     return tools
 
 
+# ── Shared-skill sync helpers ──────────────────────────────────────────
+
+
+def _max_mtime(dir_path: Path) -> float:
+    """Return the maximum mtime in a directory tree."""
+    max_mt = dir_path.stat().st_mtime
+    for f in dir_path.rglob("*"):
+        try:
+            mt = f.stat().st_mtime
+            if mt > max_mt:
+                max_mt = mt
+        except OSError:
+            pass
+    return max_mt
+
+
+def _cleanup_stale_skill_entries(target_dir: Path, expected: set[str]) -> None:
+    """Remove entries in *target_dir* whose names are not in *expected*.
+
+    Only touches symlinks and Windows-copied shared-skill directories;
+    personal skills (real directories without a marker) are left alone.
+    """
+    if not target_dir.exists():
+        return
+    for entry in list(target_dir.iterdir()):
+        if entry.name in expected:
+            continue
+        if entry.is_symlink():
+            entry.unlink()
+            logger.debug("Removed stale symlink: %s", entry)
+        elif entry.is_dir():
+            marker = entry / ".shared_skill_source"
+            if marker.exists():
+                shutil.rmtree(entry)
+                logger.debug("Removed stale shared-skill copy: %s", entry)
+        elif entry.is_file():
+            entry.unlink()
+
+
+def _sync_skill_symlink(src: Path, dest: Path) -> None:
+    """Create or update a symlink at *dest* pointing to *src*.
+
+    Skips if the existing symlink already points to the correct target.
+    """
+    expected = src.resolve()
+    if dest.is_symlink():
+        try:
+            if dest.resolve() == expected:
+                return  # already correct — skip
+        except OSError:
+            pass
+        dest.unlink()
+    dest.symlink_to(expected)
+    logger.debug("Symlinked skill: %s -> %s", dest.name, expected)
+
+
+def _sync_skill_copy(src: Path, dest: Path) -> None:
+    """Copy *src* directory to *dest*, skipping if source mtime is unchanged.
+
+    Uses a ``.shared_skill_source`` marker file inside *dest* to record
+    the source mtime at the time of the last copy.  Works cross-platform.
+    """
+    marker = dest / ".shared_skill_source"
+    src_mtime = _max_mtime(src)
+
+    if dest.exists() and marker.exists():
+        try:
+            if float(marker.read_text().strip()) == src_mtime:
+                return  # source unchanged — skip copy
+        except (ValueError, FileNotFoundError):
+            pass
+        shutil.rmtree(dest)
+
+    shutil.copytree(src, dest)
+    marker.write_text(str(src_mtime))
+    logger.debug("Copied skill: %s -> %s", src.name, dest)
+
+
+def _sync_shared_skills(target_dir: Path) -> None:
+    """Ensure every shared skill is present in *target_dir*, and remove
+    entries for skills that no longer exist in the shared-skills store.
+
+    *Unix* — uses symlinks (instant).
+    *Windows* — copies directories, but skips when the source mtime hasn't
+    changed since the last copy.
+    """
+    shared_src = DATA_ROOT / "shared-skills"
+    target_dir.mkdir(parents=True, exist_ok=True)
+
+    # Collect expected names
+    expected: set[str] = set()
+    if shared_src.exists():
+        for d in shared_src.iterdir():
+            if d.is_dir():
+                expected.add(d.name)
+
+    _cleanup_stale_skill_entries(target_dir, expected)
+
+    if not shared_src.exists():
+        return
+
+    is_windows = platform.system() == "Windows"
+    for skill_dir in sorted(shared_src.iterdir()):
+        if not skill_dir.is_dir():
+            continue
+        dest = target_dir / skill_dir.name
+
+        # Skip personal skills — they are real directories uploaded by
+        # the user, not shared-skill copies / symlinks we manage.
+        if dest.exists() and not dest.is_symlink():
+            if is_windows:
+                marker = dest / ".shared_skill_source"
+                if not marker.exists():
+                    continue  # personal skill, leave alone
+            else:
+                continue  # not a symlink → personal skill, leave alone
+
+        if is_windows:
+            _sync_skill_copy(skill_dir, dest)
+        else:
+            _sync_skill_symlink(skill_dir, dest)
+
+
+# ── SDK option builders ──────────────────────────────────────────────
+
+
 def build_sdk_options(
     user_id: str,
     can_use_tool_callback=None,
@@ -660,56 +787,13 @@ def build_sdk_options(
                 "url": cfg["url"],
             }
 
-    # Ensure the Claude CLI can find uploaded skills by creating a project-level
-    # .claude/skills directory in the user's workspace. The CLI auto-discovers
-    # skills from both ~/.claude/skills (user) and <cwd>/.claude/skills (project).
+    # Sync shared skills into the workspace so the Claude CLI can discover
+    # them (the CLI auto-discovers skills from <cwd>/.claude/skills).
+    # Personal skills are already stored here by the upload endpoint.
     user_dir = user_data_dir(user_id)
     workspace = user_dir / "workspace"
     project_skills = workspace / ".claude" / "skills"
-
-    # Clean up stale symlinks (shared skills that were deleted) while
-    # preserving personal skills (real directories stored directly here).
-    if project_skills.exists():
-        for entry in list(project_skills.iterdir()):
-            if entry.is_symlink():
-                entry.unlink()  # remove stale or outdated symlink
-            elif entry.is_file():
-                entry.unlink()  # remove stray files
-        # Ensure it's still a directory
-        if not project_skills.is_dir():
-            project_skills.unlink()
-            project_skills.mkdir(parents=True)
-    else:
-        project_skills.mkdir(parents=True)
-
-    # Link shared skills — personal skills are already stored directly in
-    # workspace/.claude/skills by the upload endpoint, so no symlink needed.
-    # On Windows, symlinks require admin privileges, so we copy instead.
-    shared_src = DATA_ROOT / "shared-skills"
-    if shared_src.exists():
-        import platform
-        is_windows = platform.system() == "Windows"
-        for skill_dir in shared_src.iterdir():
-            if skill_dir.is_dir():
-                link = project_skills / skill_dir.name
-                # Skip if a personal skill (real directory) already exists
-                if link.exists() and not link.is_symlink():
-                    continue
-                # Remove any existing symlink or directory (stale or outdated)
-                if link.exists():
-                    if link.is_symlink():
-                        link.unlink()
-                    elif link.is_dir():
-                        shutil.rmtree(link)
-                # Create symlink on Unix, copy on Windows (no admin required)
-                if is_windows:
-                    # Windows: copy directory (symlink needs admin privileges)
-                    shutil.copytree(skill_dir, link)
-                    logger.debug("Copied shared skill: %s -> %s", skill_dir.name, link)
-                else:
-                    # Unix: symlink (normal operation)
-                    link.symlink_to(skill_dir.resolve())
-                    logger.debug("Symlinked shared skill: %s -> %s", skill_dir.name, link)
+    _sync_shared_skills(project_skills)
 
     # Ensure outputs/ directory exists for agent-generated files
     outputs_dir = workspace / "outputs"
@@ -1108,12 +1192,21 @@ async def run_agent_task(
         return result
 
     # Snapshot workspace files before the agent task — used to detect
-    # files created by Bash commands (Python scripts, etc.) after the task ends.
+    # files created by Bash commands after the task ends.
+    # Only scan outputs/ and workspace root (non-recursive) — rglob over
+    # the entire workspace is too expensive for large projects.
     workspace_snapshot: dict[str, float] = {}
-    if workspace.exists():
-        for f in workspace.rglob("*"):
+    outputs_dir = workspace / "outputs"
+    if outputs_dir.exists():
+        for f in outputs_dir.iterdir():
             if f.is_file():
                 workspace_snapshot[str(f.relative_to(workspace))] = f.stat().st_mtime
+    if workspace.exists():
+        for f in workspace.iterdir():
+            if f.is_file():
+                rel = str(f.relative_to(workspace))
+                if rel not in workspace_snapshot:
+                    workspace_snapshot[rel] = f.stat().st_mtime
 
     options = build_sdk_options(user_id, can_use_tool_callback=can_use_tool_cb)
 
@@ -1483,9 +1576,9 @@ async def handle_ws(websocket: WebSocket) -> None:
             while True:
                 try:
                     item = pending_ws_msgs.get_nowait()
-                    logger.info("[WS] Drained item: type=%s session_id=%s", item.get("type"), item.get("session_id"))
                     if item is None:
                         return  # WebSocket closed
+                    logger.info("[WS] Drained item: type=%s session_id=%s", item.get("type"), item.get("session_id"))
                     if item.get("type") == "answer":
                         sid = item.get("session_id", "")
                         answers = item.get("answers", {})
@@ -1560,9 +1653,9 @@ async def handle_ws(websocket: WebSocket) -> None:
                         # Check for new WebSocket messages
                         try:
                             item = pending_ws_msgs.get_nowait()
-                            logger.info("[WS] Recover loop got item: type=%s session_id=%s", item.get("type"), item.get("session_id"))
                             if item is None:
                                 return  # WebSocket closed
+                            logger.info("[WS] Recover loop got item: type=%s session_id=%s", item.get("type"), item.get("session_id"))
                             # Always process answers regardless of session — they're time-sensitive
                             if item.get("type") == "answer":
                                 sid = item.get("session_id", "")
@@ -1624,21 +1717,24 @@ async def handle_ws(websocket: WebSocket) -> None:
                             break
                         break
 
-                    event.clear()
-                    try:
-                        await asyncio.wait_for(event.wait(), timeout=HEARTBEAT_INTERVAL)
-                    except asyncio.TimeoutError:
-                        task_key = f"task_{session_id}"
-                        agent_alive = task_key in active_tasks and not active_tasks[task_key].done()
-                        hb = make_heartbeat(agent_alive=agent_alive)
-                        if not await _safe_ws_send(websocket, {
-                            **hb,
-                            "index": last_seen,
-                            "replay": False,
-                            "session_id": session_id,
-                        }):
-                            break
-                        continue
+                    ws_msg = await _wait_for_ws_or_buffer(event, pending_ws_msgs, HEARTBEAT_INTERVAL)
+                    if ws_msg:
+                        continue  # new WS message — re-check at top
+                    # Timeout → send heartbeat
+                    task_key = f"task_{session_id}"
+                    agent_alive = (
+                        (task_key in active_tasks and not active_tasks[task_key].done())
+                        or buffer.get_state(session_id) == "running"
+                    )
+                    hb = make_heartbeat(agent_alive=agent_alive)
+                    if not await _safe_ws_send(websocket, {
+                        **hb,
+                        "index": last_seen,
+                        "replay": False,
+                        "session_id": session_id,
+                    }):
+                        break
+                    continue
                 finally:
                     buffer.unsubscribe(session_id, event)
                     current_session_id = None
@@ -1814,25 +1910,28 @@ async def handle_ws(websocket: WebSocket) -> None:
                             break
                         break
 
-                    event.clear()
-                    try:
-                        await asyncio.wait_for(event.wait(), timeout=HEARTBEAT_INTERVAL)
-                    except asyncio.TimeoutError:
-                        task_key = f"task_{session_id}"
-                        agent_alive = task_key in active_tasks and not active_tasks[task_key].done()
-                        hb = make_heartbeat(agent_alive=agent_alive)
-                        if not await _safe_ws_send(websocket, {
-                            **hb,
-                            "index": last_seen,
-                            "replay": False,
-                            "session_id": session_id,
-                        }):
-                            # WebSocket closed — exit subscribe loop gracefully
-                            break
-                        # Heartbeats are synthetic — do NOT increment last_seen.
-                        # Incrementing it would drift the cursor past the actual
-                        # buffer end, causing the final pull to miss messages.
-                        continue
+                    ws_msg = await _wait_for_ws_or_buffer(event, pending_ws_msgs, HEARTBEAT_INTERVAL)
+                    if ws_msg:
+                        continue  # new WS message — re-check at top
+                    # Timeout → send heartbeat
+                    task_key = f"task_{session_id}"
+                    agent_alive = (
+                        (task_key in active_tasks and not active_tasks[task_key].done())
+                        or buffer.get_state(session_id) == "running"
+                    )
+                    hb = make_heartbeat(agent_alive=agent_alive)
+                    if not await _safe_ws_send(websocket, {
+                        **hb,
+                        "index": last_seen,
+                        "replay": False,
+                        "session_id": session_id,
+                    }):
+                        # WebSocket closed — exit subscribe loop gracefully
+                        break
+                    # Heartbeats are synthetic — do NOT increment last_seen.
+                    # Incrementing it would drift the cursor past the actual
+                    # buffer end, causing the final pull to miss messages.
+                    continue
             finally:
                 buffer.unsubscribe(session_id, event)
                 current_session_id = None
@@ -1876,6 +1975,34 @@ async def handle_ws(websocket: WebSocket) -> None:
 
 
 # ── Helper ───────────────────────────────────────────────────────
+
+
+async def _wait_for_ws_or_buffer(
+    event: asyncio.Event, ws_queue: asyncio.Queue, timeout: float
+) -> bool:
+    """Wait for buffer activity *or* a new WebSocket message.
+
+    Returns ``True`` when a WS message arrived (already re-queued for
+    the caller to process at the top of its loop).  Returns ``False``
+    on timeout — the caller should send a heartbeat.
+    """
+    event.clear()
+    queue_get = asyncio.ensure_future(ws_queue.get())
+    event_wait = asyncio.ensure_future(event.wait())
+    try:
+        done, _pending = await asyncio.wait(
+            [event_wait, queue_get],
+            timeout=timeout,
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        if queue_get in done:
+            ws_queue.put_nowait(queue_get.result())
+            return True  # WS message — caller will re-check loop top
+        return False  # timeout → heartbeat
+    finally:
+        for t in (event_wait, queue_get):
+            if not t.done():
+                t.cancel()
 
 
 def user_data_dir(user_id: str) -> Path:
@@ -3032,43 +3159,20 @@ def _build_evolution_sdk_options(
     skills = load_skills(user_id)
     max_turns = int(os.getenv("MAX_TURNS", "200"))
 
-    # Ensure version_dir has a .claude/skills directory so the
-    # Agent can discover and use all available skills (including skill-creator)
+    # Sync shared skills into the version directory so the agent can
+    # discover and use all available skills (including skill-creator).
     version_skills = version_dir / ".claude" / "skills"
-    version_skills.mkdir(parents=True, exist_ok=True)
+    _sync_shared_skills(version_skills)
 
-    # Symlink shared skills into version_dir
-    # On Windows, use copy instead of symlink (no admin privileges required)
-    shared_src = DATA_ROOT / "shared-skills"
-    if shared_src.exists():
-        import platform
-        is_windows = platform.system() == "Windows"
-        for skill_dir in shared_src.iterdir():
-            if skill_dir.is_dir():
-                link = version_skills / skill_dir.name
-                if link.exists():
-                    if link.is_symlink():
-                        link.unlink()
-                    elif link.is_dir():
-                        shutil.rmtree(link)
-                if is_windows:
-                    shutil.copytree(skill_dir, link)
-                else:
-                    link.symlink_to(skill_dir.resolve())
-
-    # Also copy personal skills (can't symlink across all setups)
+    # Copy personal skills (can't symlink across all setups; use mtime
+    # caching to skip unchanged skills).
     user_workspace = user_data_dir(user_id) / "workspace"
     user_skills = user_workspace / ".claude" / "skills"
     if user_skills.exists():
         for skill_dir in user_skills.iterdir():
             if skill_dir.is_dir() and not skill_dir.is_symlink():
                 dest = version_skills / skill_dir.name
-                if dest.exists() or dest.is_symlink():
-                    if dest.is_symlink():
-                        dest.unlink()
-                    elif dest.is_dir():
-                        shutil.rmtree(dest)
-                shutil.copytree(skill_dir, dest)
+                _sync_skill_copy(skill_dir, dest)
 
     return ClaudeAgentOptions(
         model=model,

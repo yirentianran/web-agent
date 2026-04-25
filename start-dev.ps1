@@ -2,7 +2,7 @@
 # Backend: uvicorn on port 8000 (with hot reload)
 # Frontend: Vite dev server on port 3000 (proxies /api and /ws to backend)
 
-$ErrorActionPreference = "Stop"
+$ErrorActionPreference = "Continue"
 Set-Location $PSScriptRoot
 
 # Add uv to PATH if installed via official installer
@@ -77,10 +77,28 @@ $uvicorn = if (Test-Path ".venv\Scripts\uvicorn.exe") {
     "uvicorn"
 }
 
-npx --yes concurrently `
-    --kill-others-on-fail `
-    --handle-input `
-    --names "API,WEB" `
-    --prefix-colors "blue,green" `
-    "$uvicorn main_server:app --host 127.0.0.1 --port 8000 --log-level info" `
-    "cd frontend && npm run dev"
+try {
+    npx --yes concurrently `
+        --kill-others-on-fail `
+        --names "API,WEB" `
+        --prefix-colors "blue,green" `
+        "$uvicorn main_server:app --host 127.0.0.1 --port 8000 --log-level info" `
+        "cd frontend && npm run dev"
+} finally {
+    Write-Host "`nDev services stopped."
+    # Ensure child processes are fully terminated before returning
+    # control to the terminal — otherwise their output races with the
+    # PowerShell prompt and makes input appear broken.
+    Start-Sleep -Seconds 2
+    $leftover = Get-NetTCPConnection -LocalPort 8000 -ErrorAction SilentlyContinue |
+        Select-Object -ExpandProperty OwningProcess -Unique |
+        Where-Object { $_ -gt 4 }
+    if ($leftover) {
+        $leftover | ForEach-Object { Stop-Process -Id $_ -Force -ErrorAction SilentlyContinue }
+    }
+    # Restore console state on Windows (cursor visibility, echo)
+    if ($Host.Name -match 'ConsoleHost') {
+        try { [Console]::CursorVisible = $true } catch {}
+        try { [Console]::ResetColor() } catch {}
+    }
+}

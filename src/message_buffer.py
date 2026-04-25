@@ -375,6 +375,10 @@ class MessageBuffer:
             "stale_seconds": round(elapsed, 1) if is_stale else 0,
         }
 
+    def get_state(self, session_id: str) -> str:
+        """Return the current state string for *session_id* (e.g. 'running')."""
+        return self._ensure_buf(session_id).get("state", "idle")
+
     def mark_done(self, session_id: str) -> None:
         self._ensure_buf(session_id)["done"] = True
         # Don't overwrite an already-set terminal state (e.g., 'cancelled'
