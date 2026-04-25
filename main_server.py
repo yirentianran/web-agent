@@ -706,6 +706,10 @@ def _sync_skill_copy(src: Path, dest: Path) -> None:
         except (ValueError, FileNotFoundError):
             pass
         shutil.rmtree(dest)
+    elif dest.exists() and not marker.exists():
+        # Not a shared-skill copy — possibly a personal skill that was
+        # placed here outside the normal sync path. Leave it alone.
+        return
 
     shutil.copytree(src, dest)
     marker.write_text(str(src_mtime))
@@ -1204,9 +1208,7 @@ async def run_agent_task(
     if workspace.exists():
         for f in workspace.iterdir():
             if f.is_file():
-                rel = str(f.relative_to(workspace))
-                if rel not in workspace_snapshot:
-                    workspace_snapshot[rel] = f.stat().st_mtime
+                workspace_snapshot[str(f.relative_to(workspace))] = f.stat().st_mtime
 
     options = build_sdk_options(user_id, can_use_tool_callback=can_use_tool_cb)
 
@@ -1998,6 +2000,8 @@ async def _wait_for_ws_or_buffer(
         if queue_get in done:
             ws_queue.put_nowait(queue_get.result())
             return True  # WS message — caller will re-check loop top
+        if event_wait in done:
+            return True  # buffer data available — re-check at top
         return False  # timeout → heartbeat
     finally:
         for t in (event_wait, queue_get):
