@@ -83,10 +83,13 @@ ANTHROPIC_API_KEY=sk-...
 ```
 
 This starts:
-- Backend on `http://localhost:8000` (with auto-reload)
-- Frontend on `http://localhost:3000` (Vite dev server with proxy)
+- Backend on `http://127.0.0.1:8000` (with auto-reload)
+- Frontend on `http://127.0.0.1:3000` (Vite dev server with proxy)
 
-Open `http://localhost:3000` in your browser and log in with a user ID.
+Open `http://127.0.0.1:3000` in your browser and log in with a user ID.
+
+> **Windows note**: Use `127.0.0.1` instead of `localhost`. Windows resolves `localhost` to IPv6 (::1) first,
+> which can cause WebSocket connection failures when the backend only listens on IPv4.
 
 ## Architecture
 

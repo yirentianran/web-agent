@@ -7,7 +7,7 @@ Set-Location $PSScriptRoot
 
 # Add uv to PATH if installed via official installer
 $uvBin = "$env:USERPROFILE\.local\bin"
-if ((Test-Path "$uvBin\uvx.exe") -and -not $env:PATH.Contains($uvBin)) {
+if ((Test-Path "$uvBin\uvx.exe") -and -not ($env:PATH -split ';' | Where-Object { $_ -ieq $uvBin })) {
     $env:PATH = "$uvBin;$env:PATH"
 }
 
@@ -38,12 +38,13 @@ Write-Host "Starting backend (uvicorn :8000) + frontend (vite :3000)..."
 Write-Host "Checking for existing processes..."
 
 # Kill existing backend (uvicorn main_server:app)
-$backendPids = Get-Process -ErrorAction SilentlyContinue | Where-Object {
-    $_.CommandLine -match "uvicorn main_server:app"
-}
+# Use Get-CimInstance for reliable CommandLine access on both PS5.1 and PS7+
+$backendPids = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+    Where-Object { $_.CommandLine -match "uvicorn main_server:app" } |
+    Select-Object -ExpandProperty ProcessId
 if ($backendPids) {
-    Write-Host "  Killing backend processes: $($backendPids.Id -join ', ')"
-    $backendPids | Stop-Process -Force
+    Write-Host "  Killing backend processes: $($backendPids -join ', ')"
+    $backendPids | ForEach-Object { Stop-Process -Id $_ -Force -ErrorAction SilentlyContinue }
     Start-Sleep -Seconds 1
     Write-Host "  Backend stopped."
 } else {
@@ -76,10 +77,10 @@ $uvicorn = if (Test-Path ".venv\Scripts\uvicorn.exe") {
     "uvicorn"
 }
 
-npx concurrently `
+npx --yes concurrently `
     --kill-others-on-fail `
     --handle-input `
     --names "API,WEB" `
     --prefix-colors "blue,green" `
-    "$uvicorn main_server:app --host 0.0.0.0 --port 8000 --log-level info" `
+    "$uvicorn main_server:app --host 127.0.0.1 --port 8000 --log-level info" `
     "cd frontend && npm run dev"

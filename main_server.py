@@ -684,18 +684,32 @@ def build_sdk_options(
 
     # Link shared skills — personal skills are already stored directly in
     # workspace/.claude/skills by the upload endpoint, so no symlink needed.
+    # On Windows, symlinks require admin privileges, so we copy instead.
     shared_src = DATA_ROOT / "shared-skills"
     if shared_src.exists():
+        import platform
+        is_windows = platform.system() == "Windows"
         for skill_dir in shared_src.iterdir():
             if skill_dir.is_dir():
                 link = project_skills / skill_dir.name
                 # Skip if a personal skill (real directory) already exists
                 if link.exists() and not link.is_symlink():
                     continue
-                # Remove any existing symlink (stale or outdated)
-                if link.is_symlink():
-                    link.unlink()
-                link.symlink_to(skill_dir.resolve())
+                # Remove any existing symlink or directory (stale or outdated)
+                if link.exists():
+                    if link.is_symlink():
+                        link.unlink()
+                    elif link.is_dir():
+                        shutil.rmtree(link)
+                # Create symlink on Unix, copy on Windows (no admin required)
+                if is_windows:
+                    # Windows: copy directory (symlink needs admin privileges)
+                    shutil.copytree(skill_dir, link)
+                    logger.debug("Copied shared skill: %s -> %s", skill_dir.name, link)
+                else:
+                    # Unix: symlink (normal operation)
+                    link.symlink_to(skill_dir.resolve())
+                    logger.debug("Symlinked shared skill: %s -> %s", skill_dir.name, link)
 
     # Ensure outputs/ directory exists for agent-generated files
     outputs_dir = workspace / "outputs"
@@ -758,8 +772,21 @@ def build_sdk_options(
         ],
     }
 
+    # Build custom env dict for SDK CLI subprocess
+    # The SDK doesn't accept api_key/base_url directly; pass via env dict
+    sdk_env: dict[str, str] = {}
+    api_key = os.getenv("ANTHROPIC_API_KEY")
+    base_url = os.getenv("ANTHROPIC_BASE_URL")
+    model = os.getenv("MODEL", "claude-sonnet-4-6")
+    if api_key:
+        sdk_env["ANTHROPIC_API_KEY"] = api_key
+    if base_url:
+        sdk_env["ANTHROPIC_BASE_URL"] = base_url
+    if model:
+        sdk_env["MODEL"] = model
+
     options = ClaudeAgentOptions(
-        model=os.getenv("MODEL", "claude-sonnet-4-6"),
+        model=model,
         cwd=str(user_dir / "workspace"),
         system_prompt=build_system_prompt(user_id, skills, workspace),
         allowed_tools=build_allowed_tools(mcp_config),
@@ -769,8 +796,13 @@ def build_sdk_options(
         can_use_tool=can_use_tool_callback,
         hooks=hooks,
         include_partial_messages=True,  # Enable streaming text output
+        env=sdk_env if sdk_env else None,  # Pass env vars to CLI subprocess
     )
-    logger.info("[STREAM_DEBUG] SDK options built: include_partial_messages=%s", options.include_partial_messages)
+    logger.info("[STREAM_DEBUG] SDK options built: include_partial_messages=%s, model=%s",
+                options.include_partial_messages, options.model)
+    logger.info("[AGENT_CONFIG] SDK env: ANTHROPIC_API_KEY=%s, ANTHROPIC_BASE_URL=%s",
+                "SET" if api_key else "NOT_SET",
+                base_url or "default")
     return options
 
 
@@ -1038,6 +1070,9 @@ async def run_agent_task(
     """
     from src.agent_logger import AgentLogger
 
+    logger.info("[AGENT_TASK] Starting task: session=%s, user=%s, continuation=%s, message=%s",
+                session_id, user_id, is_continuation, user_message[:50])
+
     agent_log = AgentLogger(user_id=user_id)
     agent_log.start_session(session_id, user_message=user_message)
     start_time = time.time()
@@ -1110,19 +1145,25 @@ async def run_agent_task(
                 len(history),
             )
             await client.connect(prompt=prompt_stream())
+            logger.info("[AGENT_TASK] Client connected (continuation), starting receive_response")
         else:
             # First message — connect normally, then query
+            logger.info("[AGENT_TASK] Connecting client (first message)")
             await client.connect()
             # Include file attachment info so the agent knows what files were uploaded
             prompt = _format_first_message_prompt(user_message, attached_files)
+            logger.info("[AGENT_TASK] Sending query: prompt=%s", prompt[:100])
             await client.query(prompt)
+            logger.info("[AGENT_TASK] Query sent, starting receive_response")
 
         # Receive messages until result
         msg_count = 0
         generated_files: list[dict[str, Any]] = []
         buffered_result: dict[str, Any] | None = None  # SDK result for reordering
+        logger.info("[AGENT_TASK] Starting receive_response loop")
         async for msg in client.receive_response():
             msg_count += 1
+            logger.info("[AGENT_TASK] Received message #%d: type=%s", msg_count, type(msg).__name__)
             for event in message_to_dicts(msg):
                 # User message already persisted at function start — skip duplicates from agent response
                 if event.get("type") == "user":
@@ -1438,9 +1479,11 @@ async def handle_ws(websocket: WebSocket) -> None:
         while True:
             # Drain any queued messages first
             data = None
+            logger.info("[WS] Outer loop: draining queue...")
             while True:
                 try:
                     item = pending_ws_msgs.get_nowait()
+                    logger.info("[WS] Drained item: type=%s session_id=%s", item.get("type"), item.get("session_id"))
                     if item is None:
                         return  # WebSocket closed
                     if item.get("type") == "answer":
@@ -1457,13 +1500,17 @@ async def handle_ws(websocket: WebSocket) -> None:
                         data = item
                         break
                 except asyncio.QueueEmpty:
+                    logger.info("[WS] Queue empty after drain")
                     break
 
             # If no queued message, wait for the next one
             if data is None:
+                logger.info("[WS] Outer loop: waiting for message...")
                 item = await pending_ws_msgs.get()
                 if item is None:
+                    logger.info("[WS] Received None (WebSocket closed)")
                     return  # WebSocket closed
+                logger.info("[WS] Received item: type=%s session_id=%s", item.get("type"), item.get("session_id"))
                 if item.get("type") == "answer":
                     sid = item.get("session_id", "")
                     answers = item.get("answers", {})
@@ -1476,6 +1523,7 @@ async def handle_ws(websocket: WebSocket) -> None:
                 else:
                     data = item
 
+            logger.info("[WS] Processing message: type=%s session_id=%s message=%s", data.get("type"), data.get("session_id"), data.get("message", "")[:50])
             user_message = data.get("message", "")
             session_id = data.get("session_id")
             last_index = data.get("last_index", 0)
@@ -1502,6 +1550,7 @@ async def handle_ws(websocket: WebSocket) -> None:
 
             # ── Recover: read-only replay + subscribe (no agent task) ────────
             if data.get("type") == "recover":
+                logger.info("[WS] Entering recover loop for session=%s", session_id)
                 current_session_id = session_id
                 last_seen = last_index + len(history)
                 event = buffer.subscribe(session_id)
@@ -1511,6 +1560,7 @@ async def handle_ws(websocket: WebSocket) -> None:
                         # Check for new WebSocket messages
                         try:
                             item = pending_ws_msgs.get_nowait()
+                            logger.info("[WS] Recover loop got item: type=%s session_id=%s", item.get("type"), item.get("session_id"))
                             if item is None:
                                 return  # WebSocket closed
                             # Always process answers regardless of session — they're time-sensitive
@@ -1522,6 +1572,7 @@ async def handle_ws(websocket: WebSocket) -> None:
                                     future.set_result(answers)
                             elif item.get("session_id") and item.get("session_id") != session_id:
                                 # Different session — re-queue for the outer loop to handle
+                                logger.info("[WS] Recover loop: different session, re-queuing")
                                 pending_ws_msgs.put_nowait(item)
                                 break
                             elif item.get("type") == "recover":
@@ -1529,6 +1580,7 @@ async def handle_ws(websocket: WebSocket) -> None:
                             else:
                                 # New chat message for this session — break out
                                 # so the outer loop can create the agent task
+                                logger.info("[WS] Recover loop: new chat for same session, re-queuing and breaking")
                                 pending_ws_msgs.put_nowait(item)
                                 break
                         except asyncio.QueueEmpty:
@@ -1643,6 +1695,21 @@ async def handle_ws(websocket: WebSocket) -> None:
                         )
                     )
                     active_tasks[task_key] = task
+
+                    # Add done callback to log task completion/failure
+                    def task_done_callback(t):
+                        try:
+                            exc = t.exception()
+                            if exc:
+                                logger.error("[AGENT_TASK] Task %s failed: %s", task_key, exc)
+                            else:
+                                logger.info("[AGENT_TASK] Task %s completed successfully", task_key)
+                        except asyncio.CancelledError:
+                            logger.info("[AGENT_TASK] Task %s was cancelled", task_key)
+                        except Exception as e:
+                            logger.error("[AGENT_TASK] Task %s callback error: %s", task_key, e)
+                    task.add_done_callback(task_done_callback)
+
                     logger.info(
                         "WS: created new task for session %s (continuation=%s)",
                         session_id,
@@ -2971,14 +3038,23 @@ def _build_evolution_sdk_options(
     version_skills.mkdir(parents=True, exist_ok=True)
 
     # Symlink shared skills into version_dir
+    # On Windows, use copy instead of symlink (no admin privileges required)
     shared_src = DATA_ROOT / "shared-skills"
     if shared_src.exists():
+        import platform
+        is_windows = platform.system() == "Windows"
         for skill_dir in shared_src.iterdir():
             if skill_dir.is_dir():
                 link = version_skills / skill_dir.name
-                if link.is_symlink():
-                    link.unlink()
-                link.symlink_to(skill_dir.resolve())
+                if link.exists():
+                    if link.is_symlink():
+                        link.unlink()
+                    elif link.is_dir():
+                        shutil.rmtree(link)
+                if is_windows:
+                    shutil.copytree(skill_dir, link)
+                else:
+                    link.symlink_to(skill_dir.resolve())
 
     # Also copy personal skills (can't symlink across all setups)
     user_workspace = user_data_dir(user_id) / "workspace"

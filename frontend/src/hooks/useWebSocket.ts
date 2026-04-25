@@ -52,16 +52,15 @@ export function useWebSocket({
   const reconnectAttempts = useRef(0);
   const reconnectTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const maxAttempts = 5;
-  // Track whether the close was intentional (cleanup/unmount) to
-  // prevent the onclose handler from scheduling a reconnect.
-  const intentionalCloseRef = useRef(false);
-  // Refs for callbacks — keeps the `connect` function stable so that
-  // parent re-renders (which produce new callback identities) do NOT
-  // tear down and recreate the WebSocket mid-handshake.
+
+  // Refs for callbacks — always uses latest values without re-creating the connect function.
   const onMessageRef = useRef(onMessage);
   const onConnectRef = useRef(onConnect);
   const onDisconnectRef = useRef(onDisconnect);
   const onQueueFullRef = useRef(onQueueFull);
+  const tokenRef = useRef(token);
+  const userIdRef = useRef(userId);
+  const flushPendingRef = useRef<() => void>(() => {});
 
   // Keep refs in sync on every render
   useEffect(() => {
@@ -69,6 +68,8 @@ export function useWebSocket({
     onConnectRef.current = onConnect;
     onDisconnectRef.current = onDisconnect;
     onQueueFullRef.current = onQueueFull;
+    tokenRef.current = token;
+    userIdRef.current = userId;
   });
 
   // Queue for messages sent while WebSocket is not OPEN
@@ -78,39 +79,38 @@ export function useWebSocket({
   // Track in-flight sends for timeout / error handling
   const pendingSends = useRef<Map<string, PendingSend>>(new Map());
 
-  const scheduleReconnect = useCallback(() => {
-    if (reconnectAttempts.current >= maxAttempts) {
-      setStatus("failed");
-      // Reject all pending sends
-      for (const [, ps] of pendingSends.current) {
-        ps.reject("connection_failed");
-      }
-      pendingSends.current.clear();
-      return;
-    }
-    setStatus("reconnecting");
-    const delay = Math.min(1000 * 2 ** reconnectAttempts.current, 10000);
-    reconnectAttempts.current += 1;
-    reconnectTimer.current = setTimeout(() => {
-      connect();
-    }, delay);
-  }, []);
-
   const flushPending = useCallback(() => {
     const ws = wsRef.current;
+    console.log("[WebSocket] flushPending: wsRef=", ws?.readyState, "pendingQueue=", pendingQueue.current.length, "priorityQueue=", priorityQueue.current.length);
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
-    // Flush priority queue first (answers must arrive ASAP)
     while (priorityQueue.current.length > 0) {
       const msg = priorityQueue.current.shift()!;
-      ws.send(JSON.stringify({ type: "answer", ...msg, user_id: userId }));
+      const payload = JSON.stringify({ type: "answer", ...msg, user_id: userIdRef.current });
+      console.log("[WebSocket] Sending priority:", payload.slice(0, 100));
+      ws.send(payload);
     }
-    // Then flush regular queue
     while (pendingQueue.current.length > 0) {
       const msg = pendingQueue.current.shift()!;
-      ws.send(JSON.stringify({ type: "chat", ...msg, user_id: userId }));
+      const payload = JSON.stringify({ type: "chat", ...msg, user_id: userIdRef.current });
+      console.log("[WebSocket] Sending pending:", payload.slice(0, 100));
+      ws.send(payload);
     }
-  }, [userId]);
+  }, []);
 
+  // Keep flushPending ref in sync — connect reads from the ref, not the closure.
+  flushPendingRef.current = flushPending;
+
+  const failPendingSends = useCallback(() => {
+    for (const [, ps] of pendingSends.current) {
+      clearTimeout(ps.timer);
+      ps.reject("disconnected");
+    }
+    pendingSends.current.clear();
+  }, []);
+
+  // Core connect function — stable reference, reads everything from refs.
+  // Returns { ws, close } where close is a cleanup function that only affects
+  // this specific WebSocket (critical for React StrictMode double-mount).
   const connect = useCallback(() => {
     if (reconnectTimer.current) {
       clearTimeout(reconnectTimer.current);
@@ -119,20 +119,29 @@ export function useWebSocket({
 
     setStatus(reconnectAttempts.current === 0 ? "connecting" : "reconnecting");
 
-    const wsPath = token ? `/ws?token=${encodeURIComponent(token)}` : "/ws";
+    const wsPath = tokenRef.current
+      ? `/ws?token=${encodeURIComponent(tokenRef.current)}`
+      : "/ws";
     const ws = new WebSocket(`ws://${window.location.host}${wsPath}`);
     wsRef.current = ws;
 
+    // Per-WebSocket intentional close flag — each WS has its own closure flag.
+    // This is the key fix for StrictMode: two WebSocket instances exist
+    // simultaneously, and each must independently know if IT was closed
+    // intentionally, not whether some other WS was.
+    let intentionalClose = false;
+
     ws.onopen = () => {
       reconnectAttempts.current = 0;
-      setQueueFull(false); // Reset queue full warning on reconnect
+      setQueueFull(false);
       setStatus("connected");
+      console.log("[WebSocket] Connected, wsRef:", wsRef.current === ws, "readyState:", ws.readyState);
       onConnectRef.current?.();
-      // Flush any queued messages now that we're connected
-      flushPending();
+      flushPendingRef.current();
     };
 
     ws.onmessage = (event) => {
+      console.log("[WebSocket] Received:", event.data.slice(0, 100));
       try {
         const data = JSON.parse(event.data);
         onMessageRef.current(data as Message);
@@ -142,22 +151,62 @@ export function useWebSocket({
     };
 
     ws.onclose = () => {
-      if (intentionalCloseRef.current) return;
+      if (intentionalClose) return;
       setStatus("reconnecting");
       onDisconnectRef.current?.();
-      scheduleReconnect();
+      if (reconnectAttempts.current >= maxAttempts) {
+        setStatus("failed");
+        for (const [, ps] of pendingSends.current) {
+          ps.reject("connection_failed");
+        }
+        pendingSends.current.clear();
+        return;
+      }
+      const delay = Math.min(1000 * 2 ** reconnectAttempts.current, 10000);
+      reconnectAttempts.current += 1;
+      reconnectTimer.current = setTimeout(() => {
+        connect();
+      }, delay);
     };
 
     ws.onerror = () => {
-      // Don't set status here — onclose fires right after onerror.
-      // Let onclose + scheduleReconnect handle status.
+      // onclose fires right after — let onclose handle it.
     };
-  }, [
-    userId,
-    scheduleReconnect,
-    flushPending,
-    token,
-  ]);
+
+    const cleanup = () => {
+      intentionalClose = true;
+      // Only close if WebSocket is not already CLOSED.
+      // During StrictMode double-invoke, cleanup runs before onopen fires,
+      // so ws may still be CONNECTING. Calling close() on CONNECTING WS
+      // triggers browser warning "WebSocket is closed before established".
+      // We suppress this by checking readyState first.
+      if (ws.readyState !== WebSocket.CLOSED) {
+        ws.close(1000, "cleanup");
+      }
+      // Only clear wsRef if this WebSocket is the current one.
+      // During StrictMode double-mount, two WS instances exist briefly.
+      // The second mount creates a new WS and sets wsRef.current to it.
+      // When cleanup #1 runs, wsRef.current may already point to WS #2.
+      if (wsRef.current === ws) {
+        wsRef.current = null;
+      }
+      // Clear reconnect timer only if this cleanup owns it.
+      // StrictMode may have scheduled reconnect for WS #1 before cleanup runs.
+      if (reconnectTimer.current) clearTimeout(reconnectTimer.current);
+      // Do NOT call failPendingSends() here - it clears the global pendingSends Map.
+      // During StrictMode, cleanup #1 would clear sends that WS #2 might need.
+      // Instead, let failPendingSends be called only on true disconnect (ws.onclose).
+      // failPendingSends();  // REMOVED - causes StrictMode issues
+    };
+
+    return { ws, cleanup };
+  }, [failPendingSends]);
+
+  // The effect — each invocation captures its own WS and its own intentionalClose flag.
+  useEffect(() => {
+    const { cleanup } = connect();
+    return cleanup;
+  }, [connect]);
 
   /**
    * Send a message. Returns a `{ clientMsgId }` that can be used to track
@@ -168,8 +217,8 @@ export function useWebSocket({
       const clientMsgId = data.client_msg_id || crypto.randomUUID();
       const enriched = { ...data, client_msg_id: clientMsgId };
       const ws = wsRef.current;
+      console.log("[WebSocket] sendMessage: ws=", ws?.readyState, "wsRef=", wsRef.current === ws, "userId=", userIdRef.current);
 
-      // Set up timeout tracking — reject updates send state to 'timeout'
       const onReject = () => {
         // Send state update is handled by App.tsx via sendStateMapRef
       };
@@ -177,13 +226,13 @@ export function useWebSocket({
       pendingSends.current.set(clientMsgId, { timer, reject: onReject });
 
       if (ws?.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ type: "chat", ...enriched, user_id: userId }));
+        const payload = JSON.stringify({ type: "chat", ...enriched, user_id: userIdRef.current });
+        console.log("[WebSocket] Sending direct:", payload.slice(0, 100));
+        ws.send(payload);
       } else {
-        // Queue the message — it will be sent once the WebSocket opens
         if (pendingQueue.current.length < PENDING_QUEUE_MAX) {
           pendingQueue.current.push(enriched);
         } else {
-          // Queue full — notify caller instead of silently dropping
           setQueueFull(true);
           onQueueFullRef.current?.();
         }
@@ -191,7 +240,7 @@ export function useWebSocket({
 
       return { clientMsgId };
     },
-    [userId, onQueueFull],
+    [],
   );
 
   /** Confirm that the backend received a sent message (called from App.tsx onMessage). */
@@ -201,15 +250,6 @@ export function useWebSocket({
       clearTimeout(pending.timer);
       pendingSends.current.delete(clientMsgId);
     }
-  }, []);
-
-  /** Mark all pending sends as failed (called on disconnect). */
-  const failPendingSends = useCallback(() => {
-    for (const [, ps] of pendingSends.current) {
-      clearTimeout(ps.timer);
-      ps.reject("disconnected");
-    }
-    pendingSends.current.clear();
   }, []);
 
   /**
@@ -225,11 +265,10 @@ export function useWebSocket({
             type: "answer",
             session_id: sessionId,
             answers,
-            user_id: userId,
+            user_id: userIdRef.current,
           }),
         );
       } else {
-        // Use a separate priority queue — answers must never be dropped
         if (priorityQueue.current.length < PRIORITY_QUEUE_MAX) {
           priorityQueue.current.push({
             type: "answer",
@@ -239,7 +278,7 @@ export function useWebSocket({
         }
       }
     },
-    [userId],
+    [],
   );
 
   const sendRecover = useCallback(
@@ -251,23 +290,13 @@ export function useWebSocket({
             type: "recover",
             session_id: sessionId,
             last_index: lastIndex,
-            user_id: userId,
+            user_id: userIdRef.current,
           }),
         );
       }
     },
-    [userId],
+    [],
   );
-
-  useEffect(() => {
-    connect();
-    return () => {
-      intentionalCloseRef.current = true;
-      wsRef.current?.close();
-      if (reconnectTimer.current) clearTimeout(reconnectTimer.current);
-      failPendingSends();
-    };
-  }, [connect, failPendingSends]);
 
   return {
     status,

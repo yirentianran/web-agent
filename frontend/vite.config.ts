@@ -4,7 +4,7 @@ import react from '@vitejs/plugin-react'
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '')
   const backendPort = env.BACKEND_PORT ?? '8000'
-  const backendHost = env.BACKEND_HOST ?? 'localhost'
+  const backendHost = env.BACKEND_HOST ?? '127.0.0.1'
   const backendUrl = `http://${backendHost}:${backendPort}`
 
   return {
@@ -14,6 +14,7 @@ export default defineConfig(({ mode }) => {
       assetsDir: 'assets',
     },
     server: {
+      host: '127.0.0.1', // Force IPv4 (Windows localhost resolves to IPv6 ::1)
       port: 3000,
       strictPort: true,
       proxy: {
@@ -26,8 +27,10 @@ export default defineConfig(({ mode }) => {
           changeOrigin: true,
         },
         '/ws': {
-          target: `ws://${backendHost}:${backendPort}`,
+          target: backendUrl,
           ws: true,
+          changeOrigin: true,
+          secure: false,
         },
       },
     },
