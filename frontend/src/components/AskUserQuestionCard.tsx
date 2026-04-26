@@ -32,14 +32,16 @@ export default function AskUserQuestionCard({ input, sessionId, onAnswer }: AskU
     )
   }
 
-  const canSubmit = input.questions.every((_q, i) => {
+  const isAnswered = (i: number): boolean => {
     const sel = selected[i]
     if (!sel) return false
     if (sel === OTHER_OPTION) {
       return (customInputs[i] || '').trim().length > 0
     }
     return true
-  })
+  }
+
+  const canSubmit = input.questions.every((_q, i) => isAnswered(i))
 
   const handleSubmit = () => {
     // Synchronous guard prevents double-submission (ref is instant, state is async)
@@ -50,7 +52,7 @@ export default function AskUserQuestionCard({ input, sessionId, onAnswer }: AskU
     input.questions.forEach((q, i) => {
       const sel = selected[i]
       if (sel === OTHER_OPTION) {
-        answers[q.question] = customInputs[i]?.trim() || sel
+        answers[q.question] = customInputs[i]?.trim()!
       } else {
         answers[q.question] = sel
       }
@@ -76,12 +78,7 @@ export default function AskUserQuestionCard({ input, sessionId, onAnswer }: AskU
   }
 
   const totalQuestions = input.questions.length
-  const answeredCount = input.questions.filter((_q, i) => {
-    const sel = selected[i]
-    if (!sel) return false
-    if (sel === OTHER_OPTION) return (customInputs[i] || '').trim().length > 0
-    return true
-  }).length
+  const answeredCount = input.questions.filter((_q, i) => isAnswered(i)).length
 
   return (
     <div className="question-card">

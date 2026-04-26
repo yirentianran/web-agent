@@ -387,6 +387,13 @@ export default function ChatArea({
             />
           </div>
         )}
+
+        {/* Error state indicator */}
+        {sessionState === "error" && (
+          <div className="message system-message session-error-banner">
+            <p>An error occurred while processing your request. Please try again.</p>
+          </div>
+        )}
       </div>
 
       {sessionState === "completed" && (

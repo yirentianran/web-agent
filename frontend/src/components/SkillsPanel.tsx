@@ -145,7 +145,7 @@ export default function SkillsPanel({ authToken, userId, onClose, embedded }: Sk
       {embedded && (
         <div className="skills-upload-area">
           <label className="skills-upload-btn">
-            📦 Upload Skill (ZIP)
+            Upload Skill (ZIP)
             <input ref={zipInputRef} type="file" accept=".zip" style={{ display: 'none' }} onChange={handleFileSelect} disabled={uploading} />
           </label>
         </div>

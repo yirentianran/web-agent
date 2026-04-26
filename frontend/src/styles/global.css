@@ -17,6 +17,12 @@
   --color-border-soft: #f3f4f6;
   --color-surface-hover: #f9fafb;
   --color-system-text: #6b7280;
+  --color-success: #22c55e;
+  --color-success-light: #f0fdf4;
+  --color-success-border: #86efac;
+  --color-success-text: #166534;
+  --color-error: #dc2626;
+  --color-error-light: #fef2f2;
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.05);
   --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.08);
   --radius-sm: 6px;
@@ -547,6 +553,16 @@ body {
   max-width: 100%;
 }
 
+.session-error-banner {
+  color: var(--color-error);
+  background: var(--color-error-light);
+  border: 1px solid var(--color-error);
+  border-radius: var(--radius-sm);
+  padding: 12px 16px;
+  margin: 8px 0;
+  font-size: 14px;
+}
+
 /* Agent-generated file bubbles — left-aligned, not centered */
 .generated-file-message {
   text-align: left;
@@ -1066,8 +1082,8 @@ body {
   align-items: center;
   gap: 10px;
   padding: 16px 20px;
-  background: #f0fdf4;
-  border: 1px solid #86efac;
+  background: var(--color-success-light);
+  border: 1px solid var(--color-success-border);
 }
 
 .question-submitted-icon {
@@ -1076,7 +1092,7 @@ body {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: #22c55e;
+  background: var(--color-success);
   color: white;
   border-radius: 50%;
   font-size: 14px;
@@ -1087,7 +1103,7 @@ body {
 .question-submitted-text {
   font-size: 14px;
   font-weight: 500;
-  color: #166534;
+  color: var(--color-success-text);
   margin: 0;
 }
 
@@ -1110,7 +1126,7 @@ body {
 .custom-answer-input:focus {
   outline: none;
   border-color: var(--color-primary);
-  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.15);
+  box-shadow: 0 0 0 2px var(--color-primary-ring, rgba(59, 130, 246, 0.15));
 }
 
 .option-other {
@@ -1124,11 +1140,11 @@ body {
 /* ── Submit error ───────────────────────────────────────────── */
 
 .question-submit-error {
-  color: #dc2626;
+  color: var(--color-error);
   font-size: 13px;
   margin-bottom: 10px;
   padding: 6px 10px;
-  background: #fef2f2;
+  background: var(--color-error-light);
   border-radius: 6px;
 }
 

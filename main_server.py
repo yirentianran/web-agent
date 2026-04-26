@@ -122,6 +122,8 @@ pending_answers: dict[str, asyncio.Future] = {}
 _task_locks: dict[str, asyncio.Lock] = {}
 # Maps our session_id → CLI-generated session UUID for native SDK resume
 _cli_session_map: dict[str, str] = {}
+# Persisted in DATA_ROOT across all users; shared path by design to allow
+# session resume regardless of which user owns the session.
 _CLI_SESSION_MAP_FILE = DATA_ROOT / "cli_sessions.json"
 
 
@@ -1136,6 +1138,8 @@ async def _can_use_tool_for_session(
 
 
 MAX_CONTINUATION_WINDOW = int(os.getenv("MAX_CONTINUATION_WINDOW", "20"))
+# Doubled from 10→20 to provide richer context for multi-turn debugging
+# and tool-use chains without agent losing track of earlier steps.
 MAX_PROMPT_LENGTH = int(os.getenv("MAX_PROMPT_LENGTH", "8000"))
 
 
@@ -1148,6 +1152,9 @@ def _build_history_prompt(history: list[dict[str, Any]], user_message: str) -> s
     - Length: total prompt capped at MAX_PROMPT_LENGTH chars; oldest messages dropped first
     - System messages and empty content are skipped
     - The final user message is always preserved
+    - Assistant messages are not explicitly excluded — they pass through as part of
+      history so the model can reference its own prior responses (important for
+      multi-turn context with Echo agents).
     """
     parts: list[str] = []
 
@@ -1634,9 +1641,10 @@ async def handle_ws(websocket: WebSocket) -> None:
     from src.auth import ENFORCE_AUTH, require_user_match, verify_token
 
     token = websocket.query_params.get("token")
+    _verified_user_id: str | None = None
     if ENFORCE_AUTH and token:
         try:
-            _auth_user_id = verify_token(token)
+            _verified_user_id = verify_token(token)
         except Exception:
             await websocket.close(code=4001, reason="Invalid token")
             return
@@ -1662,7 +1670,10 @@ async def handle_ws(websocket: WebSocket) -> None:
             while True:
                 raw = await websocket.receive_text()
                 data = json.loads(raw)
-                user_id = data.get("user_id", "default")
+                if ENFORCE_AUTH and _verified_user_id:
+                    user_id = _verified_user_id
+                else:
+                    user_id = data.get("user_id", "default")
 
                 # If we're in a subscribe loop for a different session,
                 # queue the message so the subscribe loop can pick it up.
@@ -2143,6 +2154,7 @@ async def list_sessions(user_id: str) -> list[dict[str, Any]]:
     """List all historical sessions for a user."""
     if session_store is not None:
         return await session_store.list_sessions(user_id=user_id)
+    logger.warning("Session store unavailable — returning empty list for list_sessions")
     return []
 
 
@@ -2161,6 +2173,7 @@ async def get_session_history(user_id: str, session_id: str) -> list[dict[str, A
             {**msg, "index": msg.get("seq", i), "session_id": session_id, "session_state": state.get("state", "idle")}
             for i, msg in enumerate(messages)
         ]
+    logger.warning("Session store unavailable — returning empty list for get_session_history")
     return []
 
 
@@ -2633,9 +2646,25 @@ async def upload_shared_skill(file: UploadFile = File(...)) -> dict[str, Any]:
     return {"status": "ok", "skill_name": skill_name, "files": extracted}
 
 
+def _validate_skill_name(skill_name: str, parent_dir: Path) -> None:
+    """Reject skill names containing path traversal sequences.
+
+    Raises HTTPException 400 if *skill_name* is empty or contains ``..``,
+    ``/``, or ``\\``, or if the resolved path escapes *parent_dir*.
+    """
+    if not skill_name or not skill_name.strip():
+        raise HTTPException(status_code=400, detail="Skill name must not be empty")
+    if ".." in skill_name or "/" in skill_name or "\\" in skill_name:
+        raise HTTPException(status_code=400, detail="Invalid skill name")
+    resolved = (parent_dir / skill_name).resolve()
+    if not str(resolved).startswith(str(parent_dir.resolve())):
+        raise HTTPException(status_code=400, detail="Invalid skill name")
+
+
 @app.delete("/api/shared-skills/{skill_name}")
 async def delete_shared_skill(skill_name: str) -> dict[str, str]:
     """Delete a shared skill."""
+    _validate_skill_name(skill_name, DATA_ROOT / "shared-skills")
     skill_dir = DATA_ROOT / "shared-skills" / skill_name
     if not skill_dir.exists() or not skill_dir.is_dir():
         raise HTTPException(status_code=404, detail=f"Shared skill '{skill_name}' not found")
@@ -2647,6 +2676,7 @@ async def delete_shared_skill(skill_name: str) -> dict[str, str]:
 async def delete_skill(user_id: str, skill_name: str) -> dict[str, str]:
     """Delete a personal skill (real directory only, not shared/symlink)."""
     skill_dir = user_data_dir(user_id) / "workspace" / ".claude" / "skills" / skill_name
+    _validate_skill_name(skill_name, skill_dir.parent)
     if not skill_dir.exists() or skill_dir.is_symlink():
         raise HTTPException(status_code=404, detail="Personal skill not found")
     shutil.rmtree(skill_dir)
@@ -2656,10 +2686,6 @@ async def delete_skill(user_id: str, skill_name: str) -> dict[str, str]:
 # ── Skill Promotion (personal → shared) ────────────────────────────
 
 
-class PromoteRequest(BaseModel):
-    """Empty body; skill name is in the URL path."""
-
-
 @app.post("/api/users/{user_id}/skills/{skill_name}/promote")
 async def promote_skill_to_shared(user_id: str, skill_name: str) -> dict[str, Any]:
     """Promote a personal skill directly to shared.
@@ -2667,6 +2693,8 @@ async def promote_skill_to_shared(user_id: str, skill_name: str) -> dict[str, An
     Copies the skill to ``DATA_ROOT/shared-skills/<skill_name>/``.
     Returns 409 with conflict detail on name collision.
     """
+    _validate_skill_name(skill_name, user_data_dir(user_id) / "workspace" / ".claude" / "skills")
+    _validate_skill_name(skill_name, DATA_ROOT / "shared-skills")
     personal_dir = user_data_dir(user_id) / "workspace" / ".claude" / "skills" / skill_name
     if not personal_dir.exists() or personal_dir.is_symlink():
         raise HTTPException(status_code=404, detail="Personal skill not found")
@@ -2694,7 +2722,24 @@ async def promote_skill_to_shared(user_id: str, skill_name: str) -> dict[str, An
             }),
         )
 
-    # Copy directly to shared
+    # Apply guardrails: file count and total size (same as upload endpoint)
+    _file_count = 0
+    _total_size = 0
+    for _f in personal_dir.rglob("*"):
+        if _f.is_file():
+            _file_count += 1
+            _total_size += _f.stat().st_size
+    if _file_count > MAX_SKILL_FILES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Skill has {_file_count} files; max is {MAX_SKILL_FILES}",
+        )
+    if _total_size > MAX_UNCOMPRESSED:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Skill size ({_total_size} bytes) exceeds max ({MAX_UNCOMPRESSED} bytes)",
+        )
+
     target_dir.parent.mkdir(parents=True, exist_ok=True)
     shutil.copytree(personal_dir, target_dir)
 
@@ -2879,7 +2924,7 @@ class SkillFeedbackRequest(BaseModel):
     comment: str = ""
     user_edits: str = ""
     session_id: str | None = None
-    skill_version: int | None = None
+    skill_version: str | None = None
     conversation_snippet: str = ""
 
 
@@ -2904,7 +2949,7 @@ async def submit_skill_feedback(
             comment=req.comment,
             session_id=req.session_id,
             user_edits=req.user_edits,
-            skill_version=req.skill_version,
+            skill_version=req.skill_version or "",
             conversation_snippet=req.conversation_snippet,
         )
     else:
