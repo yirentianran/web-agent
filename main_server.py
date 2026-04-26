@@ -54,6 +54,7 @@ if TYPE_CHECKING:
 import logging.handlers
 
 LOG_FILE = Path(__file__).parent / "server.log"
+_EXTRACTION_RULES_PATH = Path(__file__).parent / "src" / "learn-extraction.md"
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -280,8 +281,8 @@ def load_skills(user_id: str) -> dict[str, dict[str, Any]]:
     # Load personal skills (override shared on name conflict)
     if workspace_skills.exists():
         for skill_dir in sorted(workspace_skills.iterdir()):
-            if not skill_dir.is_dir() or skill_dir.is_symlink():
-                continue  # symlinks are shared skills
+            if not skill_dir.is_dir() or skill_dir.is_symlink() or (skill_dir / ".shared_skill_source").exists():
+                continue  # symlinks and Windows-copied shared skills
             skill_file = skill_dir / "SKILL.md"
             if skill_file.exists():
                 content = skill_file.read_text()
@@ -517,6 +518,40 @@ def _rewrite_bash_command(cmd: str, workspace: Path) -> str:
     return result
 
 
+def _load_extraction_rules() -> str:
+    """Load knowledge extraction rules from the project-bundled markdown file.
+
+    Strips YAML frontmatter (--- delimited) and returns the body.
+    Falls back to a minimal safe-default block if the file is missing.
+    """
+    try:
+        raw = _EXTRACTION_RULES_PATH.read_text()
+    except (FileNotFoundError, OSError):
+        return _fallback_extraction_rules()
+
+    # Strip YAML frontmatter
+    if raw.startswith("---"):
+        parts = raw.split("---", 2)
+        if len(parts) >= 3:
+            raw = parts[2].strip()
+
+    if not raw:
+        return _fallback_extraction_rules()
+
+    return raw
+
+
+def _fallback_extraction_rules() -> str:
+    return (
+        "## Skill Creation Rules\n"
+        "When using skill-creator to generate a new skill:\n"
+        "- Check if a directory with the same name already exists in .claude/skills/.\n"
+        "- If it exists, DO NOT overwrite it. Notify the user and suggest renaming.\n"
+        "- After creating the skill, write a skill-meta.json file in the skill directory:\n"
+        '  {"source": "skill-creator", "created_at": "<current ISO 8601 date>"}\n'
+    )
+
+
 def build_system_prompt(user_id: str, skills: dict[str, dict[str, Any]], workspace: Path | None = None) -> str:
     """Assemble the full system prompt from skills + memory."""
     parts = [
@@ -539,15 +574,9 @@ def build_system_prompt(user_id: str, skills: dict[str, dict[str, Any]], workspa
             else:
                 parts.append(f"- {name}\n")
 
-    # Constrain skill-creator to prevent overwriting existing skills
-    parts.append(
-        "\n## Skill Creation Rules\n"
-        "When using skill-creator to generate a new skill:\n"
-        "- Check if a directory with the same name already exists in .claude/skills/.\n"
-        "- If it exists, DO NOT overwrite it. Notify the user and suggest renaming.\n"
-        "- After creating the skill, write a skill-meta.json file in the skill directory:\n"
-        '  {"source": "skill-creator", "created_at": "<current ISO 8601 date>"}\n'
-    )
+    # Knowledge extraction rules — loaded from project-bundled file
+    extraction_rules = _load_extraction_rules()
+    parts.append(f"\n{extraction_rules}")
 
     # File generation rules with actual workspace path
     if workspace is not None:
@@ -2438,8 +2467,8 @@ async def list_user_skills(user_id: str) -> list[SkillInfo]:
         return []
     results = []
     for d in sorted(skills_dir.iterdir()):
-        if not d.is_dir() or d.is_symlink():
-            continue  # skip symlinks (shared skills)
+        if not d.is_dir() or d.is_symlink() or (d / ".shared_skill_source").exists():
+            continue  # skip symlinks and Windows-copied shared skills
         skill_file = d / "SKILL.md"
         if not skill_file.exists():
             continue

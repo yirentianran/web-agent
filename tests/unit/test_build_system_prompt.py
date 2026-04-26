@@ -57,3 +57,22 @@ class TestBuildSystemPromptIdentity:
             ws = _make_workspace(Path(td))
             prompt = build_system_prompt("test_user", {}, ws)
             assert "outputs/" in prompt
+
+    def test_prompt_includes_extraction_rules(self):
+        """System prompt must include proactive knowledge extraction guidance."""
+        with tempfile.TemporaryDirectory() as td:
+            ws = _make_workspace(Path(td))
+            prompt = build_system_prompt("test_user", {}, ws)
+            assert "Knowledge Extraction" in prompt
+            assert "When to Create a Skill" in prompt
+            assert "anti-overwrite" in prompt.lower()
+
+    def test_extraction_rules_not_just_fallback(self):
+        """Extraction rules should be the full version, not the minimal fallback."""
+        with tempfile.TemporaryDirectory() as td:
+            ws = _make_workspace(Path(td))
+            prompt = build_system_prompt("test_user", {}, ws)
+            # Full extraction rules contain workflow details
+            assert "Extraction Workflow" in prompt
+            assert "Quality gate" in prompt
+            assert "error-resolution" in prompt
