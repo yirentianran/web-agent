@@ -1,4 +1,4 @@
-"""In-memory message buffer with SQLite fallback for session persistence.
+"""In-memory message buffer with SQLite persistence.
 
 Memory layer for real-time push, SQLite for disconnect recovery
 and container restart resilience.
@@ -16,7 +16,6 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from src.database import Database
 
-BASE_DIR = Path("/workspace/.msg-buffer")
 MAX_HISTORY = 500  # max messages kept in memory per session
 BUFFER_TIMEOUT = 3600  # seconds before in-memory cache is evicted
 STALE_THRESHOLD = 60  # seconds of inactivity before session is considered stale
@@ -39,15 +38,12 @@ def make_heartbeat(agent_alive: bool = True) -> dict[str, Any]:
 
 
 class MessageBuffer:
-    """Per-session message cache with disk persistence."""
+    """Per-session message cache with SQLite persistence."""
 
     def __init__(
         self,
-        base_dir: Path | None = None,
         db: "Database | None" = None,
     ) -> None:
-        self.base_dir = base_dir or BASE_DIR
-        self.base_dir.mkdir(parents=True, exist_ok=True)
         self.db: Database | None = db
         # session_id -> state dict
         self.sessions: dict[str, dict[str, Any]] = {}
@@ -113,15 +109,6 @@ class MessageBuffer:
 
             self.sessions[session_id] = buf
         return self.sessions[session_id]
-
-    def _disk_path(self, session_id: str) -> Path:
-        return self.base_dir / f"{session_id}.jsonl"
-
-    def _write_disk(self, session_id: str, message: dict) -> None:
-        """Append one message to the on-disk JSONL file."""
-        path = self._disk_path(session_id)
-        with open(path, "a", encoding="utf-8") as f:
-            f.write(json.dumps(message, ensure_ascii=False) + "\n")
 
     def _write_db_sync(self, session_id: str, message: dict) -> None:
         """Synchronously append one message to the SQLite database.
@@ -260,15 +247,6 @@ class MessageBuffer:
             result.append(msg)
         return result
 
-    def _read_disk(self, session_id: str, after_index: int = 0) -> list[dict]:
-        """Read messages from disk starting at *after_index*."""
-        path = self._disk_path(session_id)
-        if not path.exists():
-            return []
-        with open(path, "r", encoding="utf-8") as f:
-            lines = f.readlines()
-        return [json.loads(line) for i, line in enumerate(lines) if i >= after_index]
-
     # ── public API ───────────────────────────────────────────────
 
     def add_message(self, session_id: str, message: dict) -> None:
@@ -335,7 +313,7 @@ class MessageBuffer:
     def get_history(self, session_id: str, after_index: int = 0) -> list[dict]:
         """Get messages for replay / reconnection.
 
-        Falls back to disk when the in-memory list doesn't have enough history.
+        Falls back to SQLite when the in-memory list doesn't have enough history.
         The base_index offset ensures global after_index counters stay valid
         even after old messages are evicted.
         """
@@ -350,14 +328,11 @@ class MessageBuffer:
             # Have messages in memory starting from the requested position
             return messages[local_index:]
 
-        # Need to read from disk — prefer SQLite when DB is attached
+        # Need to read from SQLite
         if self.db is not None:
-            db_result = self._read_db_sync(session_id, after_index)
-            if db_result:
-                return db_result
+            return self._read_db_sync(session_id, after_index)
 
-        # DB unavailable or empty: fall back to JSONL disk file
-        return self._read_disk(session_id, after_index)
+        return []
 
     def get_session_state(self, session_id: str) -> dict[str, Any]:
         """Return current session state snapshot."""

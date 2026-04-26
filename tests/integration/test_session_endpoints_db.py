@@ -44,9 +44,7 @@ from src.session_store import SessionStore
 def _setup_db_store(tmp_path: Path) -> SessionStore:
     """Set up a SQLite-backed SessionStore for the server."""
     main_server.DATA_ROOT = tmp_path
-    main_server.buffer = main_server.MessageBuffer(
-        base_dir=tmp_path / ".msg-buffer"
-    )
+    main_server.buffer = main_server.MessageBuffer()
     main_server.active_tasks.clear()
     main_server.pending_answers.clear()
 
@@ -56,7 +54,7 @@ def _setup_db_store(tmp_path: Path) -> SessionStore:
     db = Database(db_path=tmp_path / "test.db")
     asyncio.run(db.init())
 
-    store = SessionStore(db=db, msg_buffer_dir=tmp_path / ".msg-buffer")
+    store = SessionStore(db=db)
     main_server.session_store = store  # type: ignore[attr-defined]
 
     return store

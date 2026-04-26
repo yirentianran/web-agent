@@ -115,6 +115,7 @@ CREATE TABLE IF NOT EXISTS skill_feedback (
     comment TEXT NOT NULL DEFAULT '',
     user_edits TEXT NOT NULL DEFAULT '',
     skill_version TEXT NOT NULL DEFAULT '',
+    conversation_snippet TEXT NOT NULL DEFAULT '',
     created_at REAL NOT NULL DEFAULT (strftime('%s', 'now'))
 );
 
@@ -153,6 +154,14 @@ class Database:
         try:
             await self._pool.execute(
                 "ALTER TABLE skill_feedback ADD COLUMN user_edits TEXT NOT NULL DEFAULT ''"
+            )
+        except Exception:
+            pass  # Column already exists
+
+        # Add conversation_snippet column if it doesn't exist (migration for existing DBs)
+        try:
+            await self._pool.execute(
+                "ALTER TABLE skill_feedback ADD COLUMN conversation_snippet TEXT NOT NULL DEFAULT ''"
             )
         except Exception:
             pass  # Column already exists

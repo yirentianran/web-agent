@@ -39,6 +39,8 @@ export function useSkillsApi(authToken: string | null, userId: string) {
       const resp = await fetch('/api/shared-skills/upload', { method: 'POST', body: formData })
       return handleUploadResponse(resp)
     },
+    promote: (name: string): Promise<{ status: string; skill_name: string; message: string }> =>
+      fetchJSON(`/api/users/${userId}/skills/${encodeURIComponent(name)}/promote`, { method: 'POST' }),
   }), [userId, fetchJSON])
 }
 

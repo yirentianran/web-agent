@@ -43,7 +43,7 @@ import main_server
 def _patch_data_root(tmp_path: Path) -> None:
     """Redirect DATA_ROOT to a temporary directory for each test."""
     main_server.DATA_ROOT = tmp_path
-    main_server.buffer = main_server.MessageBuffer(base_dir=tmp_path / ".msg-buffer")
+    main_server.buffer = main_server.MessageBuffer()
     main_server.active_tasks.clear()
     main_server.pending_answers.clear()
     (tmp_path / "users").mkdir(exist_ok=True)

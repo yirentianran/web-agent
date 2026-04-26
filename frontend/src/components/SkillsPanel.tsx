@@ -19,6 +19,7 @@ export default function SkillsPanel({ authToken, userId, onClose, embedded }: Sk
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [uploading, setUploading] = useState(false)
+  const [promoting, setPromoting] = useState<string | null>(null)
   const [viewingSkill, setViewingSkill] = useState<Skill | null>(null)
   const zipInputRef = useRef<HTMLInputElement>(null)
 
@@ -71,6 +72,19 @@ export default function SkillsPanel({ authToken, userId, onClose, embedded }: Sk
       setError(e instanceof Error ? e.message : 'Failed to delete skill')
     }
   }, [api, fetchSkills, tab])
+
+  const handlePromote = useCallback(async (name: string) => {
+    if (!confirm(`Promote "${name}" to shared? This makes it available to all users.`)) return
+    setPromoting(name)
+    try {
+      await api.promote(name)
+      await fetchSkills()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to promote skill')
+    } finally {
+      setPromoting(null)
+    }
+  }, [api, fetchSkills])
 
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const f = e.target.files?.[0]
@@ -151,7 +165,7 @@ export default function SkillsPanel({ authToken, userId, onClose, embedded }: Sk
           {isPersonal ? 'No personal skills yet.' : 'No shared skills available.'}
         </div>
       ) : (
-        <SkillList skills={skills} onDelete={handleDelete} onView={setViewingSkill} />
+        <SkillList skills={skills} isPersonal={isPersonal} onDelete={handleDelete} onView={setViewingSkill} onPromote={handlePromote} promoting={promoting} />
       )}
     </div>
   )
@@ -161,11 +175,14 @@ export default function SkillsPanel({ authToken, userId, onClose, embedded }: Sk
 
 interface SkillListProps {
   skills: Skill[]
+  isPersonal: boolean
   onDelete: (name: string) => void
   onView: (skill: Skill) => void
+  onPromote: (name: string) => void
+  promoting: string | null
 }
 
-function SkillList({ skills, onDelete, onView }: SkillListProps) {
+function SkillList({ skills, isPersonal, onDelete, onView, onPromote, promoting }: SkillListProps) {
   return (
     <div className="skill-list">
       {skills.map((skill) => (
@@ -178,6 +195,11 @@ function SkillList({ skills, onDelete, onView }: SkillListProps) {
           <div className="skill-meta">Created: {skill.created_at ? new Date(skill.created_at).toLocaleDateString() : 'N/A'}</div>
           <div className="skill-actions">
             <button className="skill-view-btn" onClick={() => onView(skill)} type="button">View</button>
+            {isPersonal && (
+              <button className="skill-promote-btn" onClick={() => onPromote(skill.name)} type="button" disabled={promoting === skill.name}>
+                {promoting === skill.name ? 'Promoting...' : 'Promote'}
+              </button>
+            )}
             <button className="skill-delete-btn" onClick={() => onDelete(skill.name)} type="button">Delete</button>
           </div>
         </div>

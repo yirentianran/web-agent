@@ -22,9 +22,9 @@ async def db(tmp_path: Path) -> Database:
 
 
 @pytest.fixture
-async def store(db: Database, tmp_path: Path) -> SessionStore:
+async def store(db: Database) -> SessionStore:
     """Create a SessionStore backed by a temporary database."""
-    return SessionStore(db=db, msg_buffer_dir=tmp_path / "msg-buffer")
+    return SessionStore(db=db)
 
 
 # ── create_session ───────────────────────────────────────────────

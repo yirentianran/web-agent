@@ -69,7 +69,7 @@ class TestGetFeedbackStats:
 class TestShouldEvolve:
     def test_not_enough_feedback(self, tmp_path: Path) -> None:
         mgr = SkillEvolutionManager(tmp_path)
-        for i in range(5):
+        for i in range(4):
             mgr.collect_feedback("test-skill", rating=2)
         assert not mgr.should_evolve("test-skill")
 
@@ -85,7 +85,7 @@ class TestShouldEvolve:
             mgr.collect_feedback("test-skill", rating=5)
         assert not mgr.should_evolve("test-skill")
 
-    def test_barely_below_threshold(self, tmp_path: Path) -> None:
+    def test_barely_below_rating_threshold(self, tmp_path: Path) -> None:
         mgr = SkillEvolutionManager(tmp_path)
         for i in range(5):
             mgr.collect_feedback("test-skill", rating=4)

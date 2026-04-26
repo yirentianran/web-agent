@@ -16,8 +16,8 @@ from typing import Any
 
 DATA_ROOT = Path(os.environ.get("DATA_ROOT", "data")).resolve()
 
-SHOULD_EVOLVE_MIN_COUNT = 10
-SHOULD_EVOLVE_MAX_RATING = 4.5
+SHOULD_EVOLVE_MIN_COUNT = 5
+SHOULD_EVOLVE_MAX_RATING = 4.0
 HIGH_QUALITY_MIN_RATING = 4
 
 
@@ -41,7 +41,7 @@ class SkillEvolutionManager:
         self.data_root = data_root
         self.db = db
         self.feedback_dir = data_root / "training" / "skill-feedback"
-        self.skills_dir = data_root / "skills"
+        self.skills_dir = data_root / "shared-skills"
 
     def _ensure_dirs(self) -> None:
         self.feedback_dir.mkdir(parents=True, exist_ok=True)
@@ -215,7 +215,7 @@ class SkillEvolutionManager:
         from src.skill_feedback import DBSkillFeedbackManager
         db_mgr = DBSkillFeedbackManager(db=self.db)
 
-        resolved = skills_dir or self.skills_dir or self.data_root / "skills"
+        resolved = skills_dir or self.skills_dir or self.data_root / "shared-skills"
         return await db_mgr.activate_version(
             skill_name,
             version_number=version_number,
@@ -232,17 +232,10 @@ class SkillEvolutionManager:
         from src.skill_feedback import DBSkillFeedbackManager
         db_mgr = DBSkillFeedbackManager(db=self.db)
 
-        resolved = skills_dir or self.skills_dir or self.data_root / "skills"
+        resolved = skills_dir or self.skills_dir or self.data_root / "shared-skills"
         return await db_mgr.rollback_version(
             skill_name,
             skills_dir=resolved,
         )
 
 
-# Module-level convenience functions (for backwards compat, use manager for testing)
-_mgr = SkillEvolutionManager()
-
-collect_feedback = _mgr.collect_feedback
-get_feedback_stats = _mgr.get_feedback_stats
-should_evolve = _mgr.should_evolve
-get_evolution_candidates = _mgr.get_evolution_candidates

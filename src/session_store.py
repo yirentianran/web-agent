@@ -1,12 +1,11 @@
-"""Database-backed session storage with file fallback during migration.
+"""Database-backed session storage.
 
-Provides session CRUD operations backed by SQLite, replacing the O(N)
-file scan pattern used by the legacy file-based storage.
+Provides session CRUD operations backed by SQLite.
 
 Usage:
     from src.session_store import SessionStore
 
-    store = SessionStore(db=database, msg_buffer_dir=tmp_path / "msg-buffer")
+    store = SessionStore(db=database)
     await store.create_session(user_id="u1", session_id="s1")
     sessions = await store.list_sessions(user_id="u1")
 """
@@ -26,9 +25,8 @@ from src.database import Database
 class SessionStore:
     """Session storage backed by SQLite."""
 
-    def __init__(self, db: Database, msg_buffer_dir: Path | None = None) -> None:
+    def __init__(self, db: Database) -> None:
         self.db = db
-        self.msg_buffer_dir = msg_buffer_dir
 
     async def create_session(self, user_id: str, session_id: str) -> dict[str, str]:
         """Create a new session for a user. Idempotent."""

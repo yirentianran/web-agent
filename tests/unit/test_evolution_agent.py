@@ -136,7 +136,7 @@ class TestRunEvolutionAgent:
             feedback={"high_quality": [], "low_rated": [], "user_edits": []},
         )
 
-        assert "/data/skills/x/versions/v2" in prompt
+        assert str(Path("/data/skills/x/versions/v2")) in prompt
 
 
 # ── Version directory management ─────────────────────────────────
@@ -170,16 +170,16 @@ class TestVersionDirectoryManagement:
 class TestEvolveAgentEndpoint:
     """Test the evolve-agent REST endpoint."""
 
-    def test_evolve_agent_requires_admin(self, client: TestClient) -> None:
-        """Non-admin users should be rejected when ENFORCE_ADMIN=true."""
-        with patch("main_server.require_admin") as mock_require:
-            from fastapi import HTTPException
-            mock_require.side_effect = HTTPException(status_code=403, detail="Admin privileges required")
+    def test_evolve_agent_no_longer_requires_admin(self, client: TestClient) -> None:
+        """Without admin role, all users can trigger evolution."""
+        with patch("main_server._get_user_id_from_header", return_value="regular_user"):
+            # Even with require_admin mocked to raise, the endpoint no longer calls it
             resp = client.post(
                 "/api/skills/test-skill/evolve-agent",
                 json={},
             )
-            assert resp.status_code == 403
+            # May fail because SKILL.md doesn't exist, but NOT because of auth
+            assert resp.status_code != 403
 
     def test_evolve_agent_missing_skill(self, client: TestClient) -> None:
         """When SKILL.md doesn't exist, should return error."""

@@ -59,7 +59,8 @@ _EXTRACTION_RULES_PATH = Path(__file__).parent / "src" / "learn-extraction.md"
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
-# Ensure handler is only added once (survives reloads)
+# Shared rotating file handler — all loggers write via this single handler
+# to avoid Windows PermissionError when multiple handlers try to rotate the same file.
 if not logger.handlers:
     _fmt = logging.Formatter("%(asctime)s %(name)s:%(lineno)d %(levelname)s %(message)s")
     _stream = logging.StreamHandler()
@@ -73,27 +74,18 @@ if not logger.handlers:
     logger.addHandler(_stream)
     logger.addHandler(_file)
 
-# Also capture uvicorn and skill_feedback logs to the same file
+# Also capture uvicorn and skill_feedback logs via the shared rotating handler
 for _uv_name in ("uvicorn", "uvicorn.access", "uvicorn.error"):
     _uv_logger = logging.getLogger(_uv_name)
     if _uv_logger and not _uv_logger.handlers:
-        _uv_logger.addHandler(logging.FileHandler(LOG_FILE))
+        _uv_logger.addHandler(_file)
 
-# Ensure skill_feedback logger outputs at INFO level with console + file
+# Ensure skill_feedback logger outputs at INFO level with console + shared file
 _skill_feedback_logger = logging.getLogger("src.skill_feedback")
 _skill_feedback_logger.setLevel(logging.INFO)
 if not _skill_feedback_logger.handlers:
-    _sf_fmt = logging.Formatter("%(asctime)s %(name)s:%(lineno)d %(levelname)s %(message)s")
-    _sf_stream = logging.StreamHandler()
-    _sf_stream.setFormatter(_sf_fmt)
-    _sf_file = logging.handlers.RotatingFileHandler(
-        LOG_FILE,
-        maxBytes=10 * 1024 * 1024,
-        backupCount=3,
-    )
-    _sf_file.setFormatter(_sf_fmt)
-    _skill_feedback_logger.addHandler(_sf_stream)
-    _skill_feedback_logger.addHandler(_sf_file)
+    _skill_feedback_logger.addHandler(_stream)
+    _skill_feedback_logger.addHandler(_file)
 
 # Resolve DATA_ROOT relative to this file's directory, not CWD
 _DATA_ROOT_ENV = os.getenv("DATA_ROOT", "/data")
@@ -123,11 +115,48 @@ if not PROD:
 # Global state
 _db: Database | None = None  # SQLite database
 _mcp_store: MCPServerStore | None = None  # MCP server DB store
-buffer = MessageBuffer(base_dir=DATA_ROOT / ".msg-buffer")
+buffer = MessageBuffer()
 session_store: SessionStore | None = None  # Initialized at startup if DATA_DB_PATH set
 active_tasks: dict[str, asyncio.Task] = {}
 pending_answers: dict[str, asyncio.Future] = {}
 _task_locks: dict[str, asyncio.Lock] = {}
+# Maps our session_id → CLI-generated session UUID for native SDK resume
+_cli_session_map: dict[str, str] = {}
+_CLI_SESSION_MAP_FILE = DATA_ROOT / "cli_sessions.json"
+
+
+def _load_cli_session_map() -> None:
+    """Load persisted CLI session UUID map from disk."""
+    global _cli_session_map
+    try:
+        if _CLI_SESSION_MAP_FILE.exists():
+            _cli_session_map = json.loads(_CLI_SESSION_MAP_FILE.read_text())
+    except (json.JSONDecodeError, OSError):
+        _cli_session_map = {}
+
+
+def _save_cli_session_map() -> None:
+    """Persist CLI session UUID map to disk."""
+    try:
+        _CLI_SESSION_MAP_FILE.parent.mkdir(parents=True, exist_ok=True)
+        _CLI_SESSION_MAP_FILE.write_text(json.dumps(_cli_session_map, ensure_ascii=False))
+    except OSError as e:
+        logger.warning("Failed to persist CLI session map: %s", e)
+
+
+def _store_cli_session(our_session_id: str, cli_uuid: str) -> None:
+    """Store mapping so subsequent turns can resume via the CLI's native session."""
+    if our_session_id and cli_uuid and our_session_id != cli_uuid:
+        _cli_session_map[our_session_id] = cli_uuid
+        _save_cli_session_map()
+
+
+def _get_cli_session_uuid(our_session_id: str) -> str | None:
+    """Get the CLI-generated session UUID for a given web-agent session."""
+    return _cli_session_map.get(our_session_id)
+
+# Load persisted mappings on module init
+_load_cli_session_map()
 
 
 async def _emit_synthetic_state_change_if_missing(
@@ -796,6 +825,7 @@ def _sync_shared_skills(target_dir: Path) -> None:
 def build_sdk_options(
     user_id: str,
     can_use_tool_callback=None,
+    resume_session_id: str | None = None,
 ) -> ClaudeAgentOptions:
     """Build ClaudeAgentOptions with full configuration."""
     mcp_config = load_mcp_config_sync()
@@ -914,8 +944,9 @@ def build_sdk_options(
         hooks=hooks,
         include_partial_messages=True,  # Enable streaming text output
         env=sdk_env if sdk_env else None,  # Pass env vars to CLI subprocess
+        resume=resume_session_id,  # Resume a previous CLI session (native multi-turn)
     )
-    logger.info("[STREAM_DEBUG] SDK options built: include_partial_messages=%s, model=%s",
+    logger.debug("[STREAM_DEBUG] SDK options built: include_partial_messages=%s, model=%s",
                 options.include_partial_messages, options.model)
     logger.info("[AGENT_CONFIG] SDK env: ANTHROPIC_API_KEY=%s, ANTHROPIC_BASE_URL=%s",
                 "SET" if api_key else "NOT_SET",
@@ -1042,7 +1073,7 @@ def message_to_dicts(msg: Any) -> Iterator[dict[str, Any]]:
 
     if isinstance(msg, StreamEvent):
         event_type = msg.event.get("type", "unknown") if msg.event else "unknown"
-        logger.info("[STREAM_DEBUG] StreamEvent received: type=%s, uuid=%s", event_type, msg.uuid)
+        logger.debug("[STREAM_DEBUG] StreamEvent received: type=%s, uuid=%s", event_type, msg.uuid)
         result = {
             "type": "stream_event",
             "uuid": msg.uuid,
@@ -1086,15 +1117,16 @@ async def _can_use_tool_for_session(
         pending_answers[session_id] = answer_future
         try:
             answer = await asyncio.wait_for(answer_future, timeout=300)
-            # Return the answer as the tool input (simulating tool result)
+            # Return the answer as the tool result — the bundled CLI expects
+            # the key "answers" (plural) to match the AskUserQuestion protocol.
             return PermissionResultAllow(
                 behavior="allow",
-                updated_input={"answer": answer},
+                updated_input={"answers": answer},
             )
         except asyncio.TimeoutError:
             return PermissionResultAllow(
                 behavior="allow",
-                updated_input={"answer": {"error": "timeout"}},
+                updated_input={"answers": {"error": "timeout"}},
             )
         finally:
             pending_answers.pop(session_id, None)
@@ -1103,7 +1135,7 @@ async def _can_use_tool_for_session(
     return PermissionResultAllow(behavior="allow")
 
 
-MAX_CONTINUATION_WINDOW = int(os.getenv("MAX_CONTINUATION_WINDOW", "10"))
+MAX_CONTINUATION_WINDOW = int(os.getenv("MAX_CONTINUATION_WINDOW", "20"))
 MAX_PROMPT_LENGTH = int(os.getenv("MAX_PROMPT_LENGTH", "8000"))
 
 
@@ -1111,16 +1143,15 @@ def _build_history_prompt(history: list[dict[str, Any]], user_message: str) -> s
     """Build a multi-turn conversation prompt from history + new message.
 
     Controls:
-    - Window: only the last N messages are included (configurable, default 10)
+    - Window: only the last N messages are included (configurable, default 20)
     - Truncation: tool_result content capped at 200 chars; tool_use records name only
     - Length: total prompt capped at MAX_PROMPT_LENGTH chars; oldest messages dropped first
     - System messages and empty content are skipped
-    - Assistant messages are excluded — they cause Echo agents to repeat previous responses
     - The final user message is always preserved
     """
     parts: list[str] = []
 
-    # Step 1: format user messages and tool records only
+    # Step 1: format user messages and tool records
     for msg in history:
         msg_type = msg.get("type")
         content = msg.get("content", "")
@@ -1143,8 +1174,6 @@ def _build_history_prompt(history: list[dict[str, Any]], user_message: str) -> s
                 if paths:
                     line += f"\n(Attached files: {', '.join(paths)})"
             parts.append(line)
-        # Skip assistant and system messages — including them causes agents
-        # (especially Echo agents) to repeat previous responses.
 
     # Step 2: sliding window — keep only the last N parts
     if len(parts) > MAX_CONTINUATION_WINDOW:
@@ -1239,7 +1268,13 @@ async def run_agent_task(
             if f.is_file():
                 workspace_snapshot[str(f.relative_to(workspace))] = f.stat().st_mtime
 
-    options = build_sdk_options(user_id, can_use_tool_callback=can_use_tool_cb)
+    # Look up CLI-generated session UUID for native SDK resume on continuation turns
+    cli_uuid = _get_cli_session_uuid(session_id) if is_continuation else None
+    options = build_sdk_options(
+        user_id,
+        can_use_tool_callback=can_use_tool_cb,
+        resume_session_id=cli_uuid,
+    )
 
     # Each turn creates a fresh client — CLI subprocess terminates after
     # receive_response() completes, so cached clients are invalid.
@@ -1247,29 +1282,60 @@ async def run_agent_task(
 
     try:
         if is_continuation:
-            # Reconnect with full conversation as a multi-turn prompt.
-            # can_use_tool requires streaming mode — wrap prompt as AsyncIterable.
-            history = buffer.get_history(session_id, after_index=0)
-            full_prompt = _build_history_prompt(history, user_message)
+            if cli_uuid:
+                # Native SDK resume — CLI loads full session history automatically.
+                # No manual _build_history_prompt needed; the CLI maintains context.
+                try:
+                    logger.info(
+                        "[AGENT_TASK] Continuation %s: using native resume (CLI UUID=%s)",
+                        session_id,
+                        cli_uuid,
+                    )
+                    await client.connect()
+                    await client.query(user_message)
+                    logger.info("[AGENT_TASK] Resume connected, starting receive_response")
+                except Exception as resume_err:
+                    logger.warning(
+                        "[AGENT_TASK] Native resume failed for %s: %s — falling back to manual history",
+                        session_id,
+                        resume_err,
+                    )
+                    # Disconnect the failed client before replacing it
+                    try:
+                        await client.disconnect()
+                    except Exception:
+                        pass
+                    # Create a fresh client without resume
+                    fallback_options = build_sdk_options(
+                        user_id,
+                        can_use_tool_callback=can_use_tool_cb,
+                        resume_session_id=None,
+                    )
+                    client = ClaudeSDKClient(fallback_options)
+                    cli_uuid = None  # trigger fallback path below
+            if not cli_uuid:
+                # Fallback: no CLI UUID yet (or resume failed) — reconstruct
+                # conversation as a multi-turn prompt.
+                # can_use_tool requires streaming mode — wrap prompt as AsyncIterable.
+                history = buffer.get_history(session_id, after_index=0)
+                full_prompt = _build_history_prompt(history, user_message)
 
-            # stream_input expects dicts with the same format as the string
-            # prompt handler (line 196-203 in client.py)
-            async def prompt_stream():
-                yield {
-                    "type": "user",
-                    "message": {"role": "user", "content": full_prompt},
-                    "parent_tool_use_id": None,
-                    "session_id": "default",
-                }
+                async def prompt_stream():
+                    yield {
+                        "type": "user",
+                        "message": {"role": "user", "content": full_prompt},
+                        "parent_tool_use_id": None,
+                        "session_id": "default",
+                    }
 
-            logger.info(
-                "WS continuation %s: prompt length=%d chars, window=%d",
-                session_id,
-                len(full_prompt),
-                len(history),
-            )
-            await client.connect(prompt=prompt_stream())
-            logger.info("[AGENT_TASK] Client connected (continuation), starting receive_response")
+                logger.info(
+                    "[AGENT_TASK] Continuation %s (fallback): prompt length=%d chars, window=%d",
+                    session_id,
+                    len(full_prompt),
+                    len(history),
+                )
+                await client.connect(prompt=prompt_stream())
+                logger.info("[AGENT_TASK] Client connected (continuation fallback), starting receive_response")
         else:
             # First message — connect normally, then query
             logger.info("[AGENT_TASK] Connecting client (first message)")
@@ -1284,10 +1350,10 @@ async def run_agent_task(
         msg_count = 0
         generated_files: list[dict[str, Any]] = []
         buffered_result: dict[str, Any] | None = None  # SDK result for reordering
-        logger.info("[AGENT_TASK] Starting receive_response loop")
+        logger.debug("[AGENT_TASK] Starting receive_response loop")
         async for msg in client.receive_response():
             msg_count += 1
-            logger.info("[AGENT_TASK] Received message #%d: type=%s", msg_count, type(msg).__name__)
+            logger.debug("[AGENT_TASK] Received message #%d: type=%s", msg_count, type(msg).__name__)
             for event in message_to_dicts(msg):
                 # User message already persisted at function start — skip duplicates from agent response
                 if event.get("type") == "user":
@@ -1297,11 +1363,18 @@ async def run_agent_task(
                 if event.get("type") == "result":
                     buffered_result = event
                     continue
+                # AskUserQuestion is already buffered by _can_use_tool_for_session
+                if event.get("type") == "tool_use" and event.get("name") == "AskUserQuestion":
+                    continue
                 # Track Write tool use to collect generated files
                 if event.get("type") == "tool_use" and event.get("name") == "Write":
                     tool_input = event.get("input") or {}
                     file_path = tool_input.get("file_path", "")
                     if file_path and should_include_generated_file(Path(file_path).name):
+                        # Skip skill-related files — they live in .claude/skills/ or
+                        # shared-skills/, not in outputs/, so download URLs would 404.
+                        if ".claude/skills/" in file_path or "shared-skills/" in file_path:
+                            continue
                         # Extract filename, compute size from content
                         filename = Path(file_path).name
                         content = tool_input.get("content", "")
@@ -1327,8 +1400,13 @@ async def run_agent_task(
                 # Debug log for stream_event
                 if event.get("type") == "stream_event":
                     inner_type = event.get("event", {}).get("type", "unknown")
-                    logger.info("[STREAM_DEBUG] Buffering stream_event: inner_type=%s, session=%s", inner_type, session_id)
+                    logger.debug("[STREAM_DEBUG] Buffering stream_event: inner_type=%s, session=%s", inner_type, session_id)
                 buffer.add_message(session_id, event)
+
+        # Persist CLI-generated session UUID as soon as the receive_response
+        # loop succeeds, before files-scan code that could throw.
+        if buffered_result and buffered_result.get("session_id"):
+            _store_cli_session(session_id, buffered_result["session_id"])
 
         # Detect files created/modified by Bash commands since the task started
         seen_filenames: set[str] = {f["filename"] for f in generated_files}
@@ -1898,7 +1976,7 @@ async def handle_ws(websocket: WebSocket) -> None:
                         # Debug log for stream_event
                         if msg_type == "stream_event":
                             inner_type = h.get("event", {}).get("type", "unknown")
-                            logger.info("[STREAM_DEBUG] WS sending stream_event: inner_type=%s, idx=%d, session=%s", inner_type, idx, session_id)
+                            logger.debug("[STREAM_DEBUG] WS sending stream_event: inner_type=%s, idx=%d, session=%s", inner_type, idx, session_id)
                         if msg_type == "system" and msg_subtype == "session_state_changed":
                             logger.debug(
                                 "WS: sending state_change=%s for session %s (idx=%d)",
@@ -2053,15 +2131,9 @@ async def create_session(user_id: str) -> dict[str, str]:
     # Initialize in MessageBuffer so history/status work immediately
     buffer._ensure_buf(session_id)
 
-    # Persist to DB if available
+    # Persist to DB
     if session_store is not None:
         await session_store.create_session(user_id=user_id, session_id=session_id)
-    else:
-        # Fallback: file-based persistence
-        sessions_dir = user_data_dir(user_id) / "claude-data" / "sessions"
-        sessions_dir.mkdir(parents=True, exist_ok=True)
-        session_file = sessions_dir / f"{session_id}.jsonl"
-        session_file.touch()
 
     return {"session_id": session_id, "title": ""}
 
@@ -2069,70 +2141,9 @@ async def create_session(user_id: str) -> dict[str, str]:
 @app.get("/api/users/{user_id}/sessions", response_model=list[dict[str, Any]])
 async def list_sessions(user_id: str) -> list[dict[str, Any]]:
     """List all historical sessions for a user."""
-    # Use DB-backed store if available
     if session_store is not None:
         return await session_store.list_sessions(user_id=user_id)
-
-    # Fallback: file-based scan
-    sessions_dir = user_data_dir(user_id) / "claude-data" / "sessions"
-    sessions: list[dict[str, Any]] = []
-
-    if sessions_dir.exists():
-        for session_file in sorted(sessions_dir.glob("*.jsonl"), reverse=True):
-            try:
-                first_line = session_file.read_text().split("\n")[0]
-                data = json.loads(first_line) if first_line.strip() else {}
-                state = buffer.get_session_state(session_file.stem)
-
-                # Check for custom title in meta file
-                title = data.get("message", {}).get("content", "")[:100] or session_file.stem
-                meta_file = sessions_dir / f"{session_file.stem}.meta.json"
-                if meta_file.exists():
-                    try:
-                        meta = json.loads(meta_file.read_text())
-                        if meta.get("title"):
-                            title = meta["title"]
-                    except (json.JSONDecodeError, OSError):
-                        pass
-
-                sessions.append(
-                    {
-                        "session_id": session_file.stem,
-                        "created_at": data.get("timestamp", ""),
-                        "title": title,
-                        "status": state.get("state", "completed"),
-                        "cost_usd": state.get("cost_usd", 0),
-                        "size_mb": round(session_file.stat().st_size / (1024 * 1024), 2),
-                    }
-                )
-            except (json.JSONDecodeError, OSError):
-                state = buffer.get_session_state(session_file.stem)
-                sessions.append(
-                    {
-                        "session_id": session_file.stem,
-                        "created_at": "",
-                        "title": session_file.stem,
-                        "status": state.get("state", "completed"),
-                        "cost_usd": state.get("cost_usd", 0),
-                        "size_mb": 0,
-                    }
-                )
-
-    # Also include in-memory sessions not yet on disk
-    for sid in buffer.sessions:
-        if user_id in sid and not any(s["session_id"] == sid for s in sessions):
-            state = buffer.get_session_state(sid)
-            sessions.append(
-                {
-                    "session_id": sid,
-                    "title": sid[:50],
-                    "status": state["state"],
-                    "cost_usd": state["cost_usd"],
-                    "last_active": state["last_active"],
-                }
-            )
-
-    return sessions
+    return []
 
 
 @app.get("/api/users/{user_id}/sessions/{session_id}/history")
@@ -2143,7 +2154,6 @@ async def get_session_history(user_id: str, session_id: str) -> list[dict[str, A
     dedup with WebSocket messages. Index 0 = first message ever
     sent for this session.
     """
-    # Use DB-backed store if available
     if session_store is not None:
         messages = await session_store.get_session_history(session_id=session_id)
         state = buffer.get_session_state(session_id)
@@ -2151,14 +2161,7 @@ async def get_session_history(user_id: str, session_id: str) -> list[dict[str, A
             {**msg, "index": msg.get("seq", i), "session_id": session_id, "session_state": state.get("state", "idle")}
             for i, msg in enumerate(messages)
         ]
-
-    # Fallback: file-based — enumerate to assign absolute indices
-    messages = buffer.get_history(session_id, after_index=0)
-    state = buffer.get_session_state(session_id)
-    return [
-        {**msg, "index": i, "session_id": session_id, "session_state": state.get("state", "idle")}
-        for i, msg in enumerate(messages)
-    ]
+    return []
 
 
 @app.get("/api/users/{user_id}/sessions/{session_id}/files")
@@ -2238,25 +2241,8 @@ async def get_all_generated_files(user_id: str) -> list[dict[str, Any]]:
 @app.delete("/api/users/{user_id}/sessions/{session_id}")
 async def delete_session(user_id: str, session_id: str) -> dict[str, str]:
     """Delete a session, its messages, in-memory buffer, and active client (free disk)."""
-    # Use DB-backed store if available
     if session_store is not None:
         await session_store.delete_session(session_id=session_id)
-    else:
-        # Fallback: file-based deletion
-        sessions_dir = user_data_dir(user_id) / "claude-data" / "sessions"
-        session_file = sessions_dir / f"{session_id}.jsonl"
-        meta_file = sessions_dir / f"{session_id}.meta.json"
-
-        deleted = False
-        if session_file.exists():
-            session_file.unlink()
-            deleted = True
-        if meta_file.exists():
-            meta_file.unlink()
-            deleted = True
-
-        if not deleted:
-            raise HTTPException(status_code=404, detail="Session not found")
 
     # Clean up in-memory buffer so it won't reappear in the list
     buffer.remove_session(session_id)
@@ -2273,15 +2259,8 @@ class TitleUpdate(BaseModel):
 @app.patch("/api/users/{user_id}/sessions/{session_id}/title")
 async def update_session_title(user_id: str, session_id: str, req: TitleUpdate) -> dict[str, str]:
     """Update a session's title."""
-    # Use DB-backed store if available
     if session_store is not None:
         await session_store.update_session_title(user_id=user_id, session_id=session_id, title=req.title)
-    else:
-        # Fallback: file-based metadata
-        meta_file = user_data_dir(user_id) / "claude-data" / "sessions" / f"{session_id}.meta.json"
-        meta_file.parent.mkdir(parents=True, exist_ok=True)
-        meta = {"title": req.title, "updated_at": time.time()}
-        meta_file.write_text(json.dumps(meta))
     return {"status": "ok", "title": req.title}
 
 
@@ -2674,6 +2653,71 @@ async def delete_skill(user_id: str, skill_name: str) -> dict[str, str]:
     return {"status": "ok"}
 
 
+# ── Skill Promotion (personal → shared) ────────────────────────────
+
+
+class PromoteRequest(BaseModel):
+    """Empty body; skill name is in the URL path."""
+
+
+@app.post("/api/users/{user_id}/skills/{skill_name}/promote")
+async def promote_skill_to_shared(user_id: str, skill_name: str) -> dict[str, Any]:
+    """Promote a personal skill directly to shared.
+
+    Copies the skill to ``DATA_ROOT/shared-skills/<skill_name>/``.
+    Returns 409 with conflict detail on name collision.
+    """
+    personal_dir = user_data_dir(user_id) / "workspace" / ".claude" / "skills" / skill_name
+    if not personal_dir.exists() or personal_dir.is_symlink():
+        raise HTTPException(status_code=404, detail="Personal skill not found")
+
+    skill_file = personal_dir / "SKILL.md"
+    if not skill_file.exists():
+        raise HTTPException(status_code=400, detail="Skill directory has no SKILL.md")
+
+    target_dir = DATA_ROOT / "shared-skills" / skill_name
+
+    # Check: same name already exists in shared?
+    if target_dir.exists():
+        existing_desc = ""
+        existing_skill = target_dir / "SKILL.md"
+        if existing_skill.exists():
+            fm = parse_skill_frontmatter(existing_skill.read_text())
+            existing_desc = fm.get("description", "")
+        raise HTTPException(
+            status_code=409,
+            detail=json.dumps({
+                "conflict_type": "name_conflict",
+                "skill_name": skill_name,
+                "existing_description": existing_desc,
+                "message": f"A shared skill named '{skill_name}' already exists.",
+            }),
+        )
+
+    # Copy directly to shared
+    target_dir.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(personal_dir, target_dir)
+
+    # Write promotion metadata to skill-meta.json
+    meta_path = target_dir / "skill-meta.json"
+    meta = {}
+    if meta_path.exists():
+        try:
+            meta = json.loads(meta_path.read_text())
+        except (json.JSONDecodeError, OSError):
+            pass
+    meta["promoted_by"] = user_id
+    meta["promoted_at"] = datetime.now(timezone.utc).isoformat()
+    meta["source"] = meta.get("source", "promoted")
+    meta_path.write_text(json.dumps(meta, indent=2))
+
+    return {
+        "status": "ok",
+        "skill_name": skill_name,
+        "message": f"Skill '{skill_name}' promoted to shared.",
+    }
+
+
 # ── Memory API ───────────────────────────────────────────────────
 
 
@@ -2835,6 +2879,8 @@ class SkillFeedbackRequest(BaseModel):
     comment: str = ""
     user_edits: str = ""
     session_id: str | None = None
+    skill_version: int | None = None
+    conversation_snippet: str = ""
 
 
 @app.post("/api/skills/{skill_name}/feedback")
@@ -2858,6 +2904,8 @@ async def submit_skill_feedback(
             comment=req.comment,
             session_id=req.session_id,
             user_edits=req.user_edits,
+            skill_version=req.skill_version,
+            conversation_snippet=req.conversation_snippet,
         )
     else:
         from src.skill_feedback import SkillFeedbackManager
@@ -2892,19 +2940,24 @@ async def get_skill_analytics(skill_name: str) -> dict[str, Any]:
 async def get_all_skills_analytics(
     authorization: str | None = Header(None),
 ) -> dict[str, dict[str, Any]]:
-    """Get analytics for all skills. Admin only."""
+    """Get analytics for all skills."""
     current_user = _get_user_id_from_header(authorization)
     require_admin(current_user)
+    if _db is not None:
+        from src.skill_feedback import DBSkillFeedbackManager
+        return await DBSkillFeedbackManager(db=_db).get_all_analytics()
     from src.skill_feedback import SkillFeedbackManager
-
     return SkillFeedbackManager().get_all_analytics()
 
 
 @app.get("/api/skills/{skill_name}/suggestions")
 async def get_skill_suggestions(skill_name: str) -> dict[str, list[str]]:
     """Get improvement suggestions for a skill based on feedback."""
+    if _db is not None:
+        from src.skill_feedback import DBSkillFeedbackManager
+        suggestions = await DBSkillFeedbackManager(db=_db).suggest_improvements(skill_name)
+        return {"suggestions": suggestions}
     from src.skill_feedback import SkillFeedbackManager
-
     return {"suggestions": SkillFeedbackManager().suggest_improvements(skill_name)}
 
 
@@ -3005,26 +3058,14 @@ class SkillActivateRequest(BaseModel):
     version_number: int
 
 
-class ABTestCreateRequest(BaseModel):
-    version_a: str
-    version_b: str
-
-
-class ABTestRecordRequest(BaseModel):
-    user_id: str = "anonymous"
-    version: str  # "a" or "b"
-    rating: int
-
-
 @app.post("/api/skills/{skill_name}/activate-version")
 async def activate_skill_version(
     skill_name: str,
     req: SkillActivateRequest,
     authorization: str | None = Header(None),
 ) -> dict[str, Any]:
-    """Activate a specific pending version. Admin only."""
+    """Activate a specific pending version."""
     current_user = _get_user_id_from_header(authorization)
-    require_admin(current_user)
     from src.skill_evolution import SkillEvolutionManager
 
     mgr = SkillEvolutionManager(db=_db)
@@ -3044,9 +3085,8 @@ async def rollback_skill(
     skill_name: str,
     authorization: str | None = Header(None),
 ) -> dict[str, Any]:
-    """Rollback to the most recent backup version. Admin only."""
+    """Rollback to the most recent backup version."""
     current_user = _get_user_id_from_header(authorization)
-    require_admin(current_user)
     from src.skill_evolution import SkillEvolutionManager
 
     mgr = SkillEvolutionManager(db=_db)
@@ -3093,10 +3133,10 @@ async def run_evolution_agent(
     feedback = await mgr.db_get_feedback_for_evolution(skill_name)
 
     # Resolve skill directory
-    skill_dir = DATA_ROOT / "skills" / skill_name
+    skill_dir = DATA_ROOT / "shared-skills" / skill_name
     if _db is not None:
-        # DB-backed skills live in DATA_ROOT / "skills"
-        skill_dir = DATA_ROOT / "skills" / skill_name
+        # DB-backed skills live in DATA_ROOT / "shared-skills"
+        skill_dir = DATA_ROOT / "shared-skills" / skill_name
     skill_file = skill_dir / "SKILL.md"
 
     if not skill_file.exists():
@@ -3235,17 +3275,16 @@ async def trigger_skill_evolution_agent(
     req: SkillEvolveAgentRequest,
     authorization: str | None = Header(None),
 ) -> dict[str, Any]:
-    """Launch an Agent session to evolve a skill. Admin only.
+    """Launch an Agent session to evolve a skill.
 
     Unlike /evolve (which does a single LLM text rewrite), this starts
     a full Agent session with all tools and skills available. The LLM
     autonomously decides HOW to improve the skill.
     """
     current_user = _get_user_id_from_header(authorization)
-    require_admin(current_user)
 
     # Resolve skills directory
-    skills_dir = DATA_ROOT / "skills"
+    skills_dir = DATA_ROOT / "shared-skills"
 
     if not (skills_dir / skill_name / "SKILL.md").exists():
         return {"status": "failed", "reason": f"SKILL.md not found for {skill_name}"}
@@ -3295,9 +3334,8 @@ async def get_evolution_status(
     task_id: str,
     authorization: str | None = Header(None),
 ) -> dict[str, Any]:
-    """Get the status of an evolution task. Admin only."""
-    current_user = _get_user_id_from_header(authorization)
-    require_admin(current_user)
+    """Get the status of an evolution task."""
+    _get_user_id_from_header(authorization)
 
     # Check if the task is in the active tasks map
     if task_id in active_tasks:
@@ -3312,7 +3350,7 @@ async def get_evolution_status(
         return {"status": "failed", "task_id": task_id, "messages": history[-5:]}
     if is_done:
         # Scan for generated files
-        skills_dir = DATA_ROOT / "skills"
+        skills_dir = DATA_ROOT / "shared-skills"
         # Extract version from task_id (e.g., "evolve-pdf-editor-v3")
         version_match = re.search(r"v(\d+)$", task_id)
         if version_match:
@@ -3339,11 +3377,10 @@ async def get_version_files(
     version_number: int,
     authorization: str | None = Header(None),
 ) -> dict[str, Any]:
-    """Get the list of files in a specific version. Admin only."""
-    current_user = _get_user_id_from_header(authorization)
-    require_admin(current_user)
+    """Get the list of files in a specific version."""
+    _get_user_id_from_header(authorization)
 
-    skills_dir = DATA_ROOT / "skills"
+    skills_dir = DATA_ROOT / "shared-skills"
     version_dir = skills_dir / skill_name / "versions" / f"v{version_number}"
 
     if not version_dir.exists():
@@ -3371,11 +3408,10 @@ async def get_version_file_content(
     file_path: str,
     authorization: str | None = Header(None),
 ) -> FileResponse | dict[str, Any]:
-    """Get content of a specific file in a version. Admin only."""
-    current_user = _get_user_id_from_header(authorization)
-    require_admin(current_user)
+    """Get content of a specific file in a version."""
+    _get_user_id_from_header(authorization)
 
-    skills_dir = DATA_ROOT / "skills"
+    skills_dir = DATA_ROOT / "shared-skills"
     version_dir = skills_dir / skill_name / "versions" / f"v{version_number}"
     target = (version_dir / file_path).resolve()
 
@@ -3390,9 +3426,8 @@ async def get_version_file_content(
 async def list_evolution_candidates(
     authorization: str | None = Header(None),
 ) -> dict[str, list[dict[str, Any]]]:
-    """List skills that should evolve. Admin only."""
-    current_user = _get_user_id_from_header(authorization)
-    require_admin(current_user)
+    """List skills that should evolve."""
+    _get_user_id_from_header(authorization)
     from src.skill_evolution import SkillEvolutionManager
 
     mgr = SkillEvolutionManager(db=_db)
@@ -3417,7 +3452,7 @@ async def list_evolution_candidates(
 async def list_all_feedback(
     authorization: str | None = Header(None),
 ) -> dict[str, Any]:
-    """Get all feedback entries across all users. Admin only."""
+    """Get all feedback entries across all users."""
     current_user = _get_user_id_from_header(authorization)
     require_admin(current_user)
 
@@ -3450,63 +3485,6 @@ async def list_all_feedback(
 
     # Fallback: empty response when no DB available
     return {"stats": [], "items": [], "total_count": 0}
-
-
-@app.post("/api/skills/{skill_name}/ab-test")
-async def create_ab_test(
-    skill_name: str,
-    req: ABTestCreateRequest,
-    authorization: str | None = Header(None),
-) -> dict[str, Any]:
-    """Create a new A/B test between two skill versions. Admin only."""
-    current_user = _get_user_id_from_header(authorization)
-    require_admin(current_user)
-    from src.ab_testing import SkillABTest
-
-    test = SkillABTest(skill_name, req.version_a, req.version_b)
-    return {
-        "status": "ok",
-        "skill_name": skill_name,
-        "version_a": req.version_a,
-        "version_b": req.version_b,
-    }
-
-
-@app.post("/api/skills/{skill_name}/ab-test/record")
-async def record_ab_test_result(
-    skill_name: str,
-    req: ABTestRecordRequest,
-) -> dict[str, Any]:
-    """Record an A/B test result."""
-    from src.ab_testing import SkillABTest
-
-    test = SkillABTest(skill_name, "", "")  # versions not needed for recording
-    # We need the actual versions — in production, these come from a session store.
-    # For now, just record to a shared results file.
-    # This is a simplified version — the test framework handles the logic.
-    return {"status": "ok", "recorded": True}
-
-
-@app.get("/api/skills/{skill_name}/ab-test/results")
-async def get_ab_test_results(
-    skill_name: str,
-    authorization: str | None = Header(None),
-) -> dict[str, Any]:
-    """Get A/B test results. Admin only."""
-    current_user = _get_user_id_from_header(authorization)
-    require_admin(current_user)
-    from src.ab_testing import SkillABTest
-
-    # Try all existing test files for this skill
-    test_dir = DATA_ROOT / "training" / "skill_outcomes"
-    test_dir.mkdir(parents=True, exist_ok=True)
-    import glob as _glob
-
-    matches = list(test_dir.glob(f"{skill_name}_ab_test.jsonl"))
-    if not matches:
-        return {"status": "not_found", "skill_name": skill_name}
-    test = SkillABTest(skill_name, "a", "b")
-    return test.get_results()
 
 
 @app.get("/api/skills/{skill_name}/version")
@@ -3576,7 +3554,7 @@ async def _load_mcp_servers() -> list[dict[str, Any]]:
 async def list_mcp_servers(
     authorization: str | None = Header(None),
 ) -> list[dict[str, Any]]:
-    """List all registered MCP servers. Admin only."""
+    """List all registered MCP servers."""
     user_id = _get_user_id_from_header(authorization)
     require_admin(user_id)
     return await _load_mcp_servers()
@@ -3587,7 +3565,7 @@ async def register_mcp_server(
     server: McpServerConfig,
     authorization: str | None = Header(None),
 ) -> dict[str, Any]:
-    """Register a new MCP server. Admin only."""
+    """Register a new MCP server."""
     global _mcp_store
     user_id = _get_user_id_from_header(authorization)
     require_admin(user_id)
@@ -3620,7 +3598,7 @@ async def update_mcp_server(
     server: McpServerConfig,
     authorization: str | None = Header(None),
 ) -> dict[str, Any]:
-    """Update an existing MCP server. Admin only."""
+    """Update an existing MCP server."""
     global _mcp_store
     user_id = _get_user_id_from_header(authorization)
     require_admin(user_id)
@@ -3658,7 +3636,7 @@ async def discover_mcp_tools(
     server_name: str,
     authorization: str | None = Header(None),
 ) -> dict[str, Any]:
-    """Force-refresh the tool list for an MCP server by reconnecting. Admin only."""
+    """Force-refresh the tool list for an MCP server by reconnecting."""
     global _mcp_store
     user_id = _get_user_id_from_header(authorization)
     require_admin(user_id)
@@ -3700,7 +3678,7 @@ async def unregister_mcp_server(
     server_name: str,
     authorization: str | None = Header(None),
 ) -> dict[str, str]:
-    """Unregister an MCP server. Admin only."""
+    """Unregister an MCP server."""
     global _mcp_store
     user_id = _get_user_id_from_header(authorization)
     require_admin(user_id)
@@ -3719,7 +3697,7 @@ async def toggle_mcp_server(
     enabled: bool,
     authorization: str | None = Header(None),
 ) -> dict[str, str]:
-    """Enable/disable an MCP server. Admin only."""
+    """Enable/disable an MCP server."""
     global _mcp_store
     user_id = _get_user_id_from_header(authorization)
     require_admin(user_id)
@@ -3791,7 +3769,7 @@ async def _sync_tools_to_db(
 async def get_mcp_servers_status(
     authorization: str | None = Header(None),
 ) -> list[dict[str, Any]]:
-    """Check the connection status of all MCP servers. Admin only."""
+    """Check the connection status of all MCP servers."""
     user_id = _get_user_id_from_header(authorization)
     require_admin(user_id)
 
@@ -3998,7 +3976,7 @@ async def get_auth_token(req: TokenRequest) -> dict[str, str]:
 async def list_containers(
     authorization: str | None = Header(None),
 ) -> JSONResponse:
-    """List all running user containers. Admin only."""
+    """List all running user containers."""
     user_id = _get_user_id_from_header(authorization)
     require_admin(user_id)
     cm = _get_container_manager()
@@ -4049,7 +4027,7 @@ async def destroy_container_endpoint(user_id: str) -> JSONResponse:
 async def get_all_resources(
     authorization: str | None = Header(None),
 ) -> JSONResponse:
-    """Get resource stats for all active containers. Admin only."""
+    """Get resource stats for all active containers."""
     user_id = _get_user_id_from_header(authorization)
     require_admin(user_id)
     from src.resource_manager import get_all_resources as _get_all
@@ -4082,7 +4060,7 @@ async def query_audit_logs(
     action: str | None = None,
     authorization: str | None = Header(None),
 ) -> list[dict[str, Any]]:
-    """Query audit log entries. Admin only."""
+    """Query audit log entries."""
     current_user = _get_user_id_from_header(authorization)
     require_admin(current_user)
     from src.audit_logger import get_audit_logger
@@ -4102,7 +4080,7 @@ async def query_audit_logs(
 async def trigger_log_cleanup(
     authorization: str | None = Header(None),
 ) -> dict[str, int]:
-    """Manually trigger log retention cleanup. Admin only."""
+    """Manually trigger log retention cleanup."""
     current_user = _get_user_id_from_header(authorization)
     require_admin(current_user)
     from src.log_cleanup import cleanup_old_logs
@@ -4147,7 +4125,7 @@ async def startup() -> None:
         _db = Database(db_path=db_path)
         await _db.init()
         buffer.db = _db  # Wire DB into message buffer
-        session_store = SessionStore(db=_db, msg_buffer_dir=DATA_ROOT / ".msg-buffer")
+        session_store = SessionStore(db=_db)
         logger.info("SQLite initialized: %s (%.2f MB)", db_path, db_path.stat().st_size / (1024 * 1024))
 
         # Initialize MCP store and migrate from file if needed
@@ -4189,16 +4167,6 @@ async def _cleanup_loop() -> None:
         flushed = buffer.flush_unpersisted()
         if flushed:
             logger.info("MessageBuffer: flushed %d unpersisted messages to SQLite", flushed)
-        # Session disk cleanup
-        from src.session_cleanup import cleanup_old_sessions
-
-        try:
-            result = cleanup_old_sessions("default")
-            if result["evicted_by_age"] or result["evicted_by_size"]:
-                logger.info("Session cleanup: %s", result)
-        except Exception:
-            logger.exception("Session cleanup failed")
-
         # Log retention cleanup
         from src.log_cleanup import cleanup_old_logs
 

@@ -13,9 +13,9 @@ from src.message_buffer import MessageBuffer
 
 
 @pytest.fixture()
-def buffer(tmp_path: Path) -> MessageBuffer:
+def buffer() -> MessageBuffer:
     """Create a MessageBuffer backed by a temporary directory."""
-    return MessageBuffer(base_dir=tmp_path)
+    return MessageBuffer()
 
 
 # ── add_message / get_history ─────────────────────────────────────
@@ -263,7 +263,7 @@ class TestRestartRecovery:
         self._write_completed_session_to_db(db_path, session_id)
 
         # Simulate restart: new MessageBuffer with DB attached
-        buf = MessageBuffer(base_dir=tmp_path / "buf", db=type("FakeDB", (), {"db_path": db_path})())  # type: ignore[arg-type]
+        buf = MessageBuffer(db=type("FakeDB", (), {"db_path": db_path})())  # type: ignore[arg-type]
         buf._sync_conn = sqlite3.connect(str(db_path))
 
         # Accessing the session should restore done=True from DB
@@ -276,7 +276,7 @@ class TestRestartRecovery:
         session_id = "completed-session-2"
         self._write_completed_session_to_db(db_path, session_id)
 
-        buf = MessageBuffer(base_dir=tmp_path / "buf", db=type("FakeDB", (), {"db_path": db_path})())  # type: ignore[arg-type]
+        buf = MessageBuffer(db=type("FakeDB", (), {"db_path": db_path})())  # type: ignore[arg-type]
         buf._sync_conn = sqlite3.connect(str(db_path))
 
         state = buf.get_session_state(session_id)
@@ -313,7 +313,7 @@ class TestRestartRecovery:
         finally:
             conn.close()
 
-        buf = MessageBuffer(base_dir=tmp_path / "buf", db=type("FakeDB", (), {"db_path": db_path})())  # type: ignore[arg-type]
+        buf = MessageBuffer(db=type("FakeDB", (), {"db_path": db_path})())  # type: ignore[arg-type]
         buf._sync_conn = sqlite3.connect(str(db_path))
 
         assert buf.is_done(session_id) is False
@@ -329,7 +329,7 @@ class TestRestartRecovery:
         session_id = "completed-session-3"
         self._write_completed_session_to_db(db_path, session_id)
 
-        buf = MessageBuffer(base_dir=tmp_path / "buf", db=type("FakeDB", (), {"db_path": db_path})())  # type: ignore[arg-type]
+        buf = MessageBuffer(db=type("FakeDB", (), {"db_path": db_path})())  # type: ignore[arg-type]
         buf._sync_conn = sqlite3.connect(str(db_path))
 
         # Buffer was restored from DB: done=True
@@ -356,7 +356,7 @@ class TestRestartRecovery:
         session_id = "completed-session-4"
         self._write_completed_session_to_db(db_path, session_id)
 
-        buf = MessageBuffer(base_dir=tmp_path / "buf", db=type("FakeDB", (), {"db_path": db_path})())  # type: ignore[arg-type]
+        buf = MessageBuffer(db=type("FakeDB", (), {"db_path": db_path})())  # type: ignore[arg-type]
         buf._sync_conn = sqlite3.connect(str(db_path))
 
         assert buf.is_done(session_id) is True
@@ -417,7 +417,7 @@ class TestRestartRecovery:
             conn.close()
 
         # Simulate restart: new MessageBuffer with DB attached
-        buf = MessageBuffer(base_dir=tmp_path / "buf", db=type("FakeDB", (), {"db_path": db_path})())  # type: ignore[arg-type]
+        buf = MessageBuffer(db=type("FakeDB", (), {"db_path": db_path})())  # type: ignore[arg-type]
         buf._sync_conn = sqlite3.connect(str(db_path))
 
         # Accessing the session should restore done=True and state=cancelled from DB
@@ -477,7 +477,7 @@ class TestRestartRecovery:
             conn.close()
 
         # Simulate restart: new MessageBuffer with DB attached
-        buf = MessageBuffer(base_dir=tmp_path / "buf", db=type("FakeDB", (), {"db_path": db_path})())  # type: ignore[arg-type]
+        buf = MessageBuffer(db=type("FakeDB", (), {"db_path": db_path})())  # type: ignore[arg-type]
         buf._sync_conn = sqlite3.connect(str(db_path))
 
         # Accessing the session should restore done=True and state=error from DB
@@ -517,7 +517,7 @@ class TestSQLiteWriteFailureRecovery:
         conn.commit()
         conn.close()
 
-        buf = MessageBuffer(base_dir=tmp_path / "buf", db=type("FakeDB", (), {"db_path": db_path})())  # type: ignore[arg-type]
+        buf = MessageBuffer(db=type("FakeDB", (), {"db_path": db_path})())  # type: ignore[arg-type]
         buf._sync_conn = sqlite3.connect(str(db_path))
 
         # Normal add_message should work

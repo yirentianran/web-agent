@@ -387,14 +387,6 @@ export default function ChatArea({
             />
           </div>
         )}
-
-        {sessionState === "error" && (
-          <div className="message system-message">
-            <span className="system-text error-text">
-              Session ended with an error. Try sending a new message.
-            </span>
-          </div>
-        )}
       </div>
 
       {sessionState === "completed" && (

@@ -165,18 +165,20 @@ class DBSkillFeedbackManager:
         session_id: str | None = None,
         user_edits: str = "",
         skill_version: str = "",
+        conversation_snippet: str = "",
     ) -> dict[str, Any]:
         """Submit feedback for a skill. Rating is 1-5."""
         if not 1 <= rating <= 5:
             raise ValueError("Rating must be between 1 and 5")
 
         truncated_comment = comment[:500]
+        truncated_snippet = conversation_snippet[:2000]
         async with self.db.connection() as conn:
             cursor = await conn.execute(
                 """INSERT INTO skill_feedback
-                   (skill_name, user_id, session_id, rating, comment, user_edits, skill_version)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                (skill_name, user_id, session_id, rating, truncated_comment, user_edits, skill_version),
+                   (skill_name, user_id, session_id, rating, comment, user_edits, skill_version, conversation_snippet)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (skill_name, user_id, session_id, rating, truncated_comment, user_edits, skill_version, truncated_snippet),
             )
             feedback_id = cursor.lastrowid
 
@@ -336,6 +338,48 @@ class DBSkillFeedbackManager:
         total = sum(s["count"] for s in stats)
         return {"stats": stats, "total_count": total}
 
+    async def suggest_improvements(self, skill_name: str) -> list[str]:
+        """Generate improvement suggestions based on low-rated feedback from DB."""
+        async with self.db.connection() as conn:
+            cursor = await conn.execute(
+                "SELECT COUNT(*) FROM skill_feedback WHERE skill_name = ?",
+                (skill_name,),
+            )
+            row = await cursor.fetchone()
+            total = row[0] if row else 0
+
+        if total < 3:
+            return []
+
+        async with self.db.connection() as conn:
+            cursor = await conn.execute(
+                """SELECT rating, comment FROM skill_feedback
+                   WHERE skill_name = ? AND rating <= 2 AND comment != ''
+                   ORDER BY created_at DESC""",
+                (skill_name,),
+            )
+            rows = await cursor.fetchall()
+
+        suggestions: list[str] = []
+        low_count = len(rows)
+        if low_count > total * 0.5:
+            suggestions.append(
+                f"50%+ of {total} feedbacks are rated 2 or below. "
+                "Consider reviewing the skill's SKILL.md for gaps."
+            )
+
+        common_keywords = ["missing", "wrong", "incorrect", "outdated", "confusing"]
+        for r in rows:
+            comment = r[1].lower()
+            for kw in common_keywords:
+                if kw in comment:
+                    suggestions.append(
+                        f"Feedback mentions '{kw}': \"{r[1][:100]}\""
+                    )
+                    break
+
+        return suggestions
+
     async def get_evolution_candidates(self) -> list[dict[str, Any]]:
         """Find skills with low average rating and sufficient feedback."""
         async with self.db.connection() as conn:
@@ -343,7 +387,7 @@ class DBSkillFeedbackManager:
                 """SELECT skill_name, COUNT(*) as cnt, AVG(rating) as avg_r
                    FROM skill_feedback
                    GROUP BY skill_name
-                   HAVING cnt >= 10 AND avg_r < 4.5"""
+                   HAVING cnt >= 5 AND avg_r < 4.0"""
             )
             rows = await cursor.fetchall()
 

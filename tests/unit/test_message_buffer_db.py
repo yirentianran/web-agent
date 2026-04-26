@@ -21,8 +21,8 @@ async def db(tmp_path: Path) -> Database:
 
 
 @pytest.fixture
-def buffer(tmp_path: Path) -> MessageBuffer:
-    return MessageBuffer(base_dir=tmp_path / "msg-buffer")
+def buffer() -> MessageBuffer:
+    return MessageBuffer()
 
 
 class TestMessageBufferDBWrite:
@@ -167,8 +167,8 @@ class TestMessageBufferDBWrite:
 class TestGetHistorySQLiteFallback:
     """Test that get_history() falls back to SQLite after memory eviction.
 
-    This replaces the JSONL-based disk fallback — WebSocket recovery paths
-    should work even when the in-memory buffer has been evicted.
+    WebSocket recovery paths should work even when the in-memory buffer
+    has been evicted.
     """
 
     @pytest.mark.asyncio
@@ -191,11 +191,6 @@ class TestGetHistorySQLiteFallback:
         buffer.cleanup_expired()
         assert "s1" not in buffer.sessions
 
-        # Remove JSONL file to force SQLite fallback path
-        jsonl_path = buffer._disk_path("s1")
-        if jsonl_path.exists():
-            jsonl_path.unlink()
-
         # get_history should recover from SQLite
         history = buffer.get_history("s1")
         assert len(history) == 5
@@ -216,11 +211,6 @@ class TestGetHistorySQLiteFallback:
         # Evict
         buffer.sessions["s1"]["last_active"] = time.time() - 3601
         buffer.cleanup_expired()
-
-        # Remove JSONL to force SQLite
-        jsonl_path = buffer._disk_path("s1")
-        if jsonl_path.exists():
-            jsonl_path.unlink()
 
         # Request from index 2 onward
         history = buffer.get_history("s1", after_index=2)
@@ -260,11 +250,6 @@ class TestGetHistorySQLiteFallback:
         # Evict
         buffer.sessions["s1"]["last_active"] = time.time() - 3601
         buffer.cleanup_expired()
-
-        # Remove JSONL to force SQLite
-        jsonl_path = buffer._disk_path("s1")
-        if jsonl_path.exists():
-            jsonl_path.unlink()
 
         history = buffer.get_history("s1")
         assert len(history) == 1
@@ -314,7 +299,7 @@ class TestMessageBufferDBToolUseFields:
 
         from src.session_store import SessionStore
 
-        store = SessionStore(db=db, msg_buffer_dir=buffer.base_dir.parent / "msg-buffer2")
+        store = SessionStore(db=db)
 
         # Simulate what the real server does: write to buffer, then read via store
         buffer.add_message("s1", {
@@ -343,7 +328,7 @@ class TestMessageBufferDBToolUseFields:
 
         from src.session_store import SessionStore
 
-        store = SessionStore(db=db, msg_buffer_dir=buffer.base_dir.parent / "msg-buffer3")
+        store = SessionStore(db=db)
 
         buffer.add_message("s1", {
             "type": "tool_result",

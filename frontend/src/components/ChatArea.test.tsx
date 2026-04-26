@@ -540,8 +540,8 @@ describe('Hook tracking', () => {
     const { container } = renderChatArea(messages, { sessionState: 'error' })
     // Spinner should be gone
     expect(container.querySelector('.status-spinner')).not.toBeInTheDocument()
-    // Generic error message should be visible
-    expect(screen.getByText('Session ended with an error. Try sending a new message.')).toBeInTheDocument()
+    // Error message should NOT be shown (removed per UX request)
+    expect(screen.queryByText('Session ended with an error. Try sending a new message.')).not.toBeInTheDocument()
   })
 
   it('clears running hooks when sessionState is cancelled', () => {
