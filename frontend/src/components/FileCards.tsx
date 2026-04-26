@@ -8,26 +8,31 @@ interface FileCardProps {
 }
 
 export function FileCard({ filename, size, downloadUrl, onRemove, onFileClick, status = 'uploaded' }: FileCardProps) {
-  const ext = filename.includes('.') ? filename.split('.').pop()! : ''
+  // filename may be a full relative path (e.g. "outputs/reports/report.docx").
+  // Extract just the basename for display and the download attribute.
+  const basename = filename.includes('/') || filename.includes('\\')
+    ? filename.replace(/\\/g, '/').split('/').pop()!
+    : filename
+  const ext = basename.includes('.') ? basename.split('.').pop()! : ''
   return (
     <div className={`file-card file-card-${status}`}>
       <div className="file-card-icon" onClick={() => onFileClick?.(filename)} style={{ cursor: onFileClick ? 'pointer' : 'default' }}>
         <span className="file-ext">{ext}</span>
       </div>
       <div className="file-card-info" onClick={() => onFileClick?.(filename)} style={{ cursor: onFileClick ? 'pointer' : 'default' }}>
-        <span className="file-card-name" title={filename}>{filename}</span>
+        <span className="file-card-name" title={filename}>{basename}</span>
         {size !== undefined && (
           <span className="file-card-size">{formatBytes(size)}</span>
         )}
       </div>
       <div className="file-card-actions">
         {downloadUrl && (
-          <a href={downloadUrl} download={filename} className="file-card-download" aria-label={`Download ${filename}`}>
+          <a href={downloadUrl} download={basename} className="file-card-download" aria-label={`Download ${basename}`}>
             &#11015;
           </a>
         )}
         {onRemove && (
-          <button type="button" className="file-card-remove" onClick={onRemove} aria-label={`Remove ${filename}`}>
+          <button type="button" className="file-card-remove" onClick={onRemove} aria-label={`Remove ${basename}`}>
             &times;
           </button>
         )}

@@ -384,6 +384,7 @@ def build_file_generation_rules_prompt(workspace: Path) -> str:
         "- Use RELATIVE paths like `outputs/filename.ext` — NEVER use absolute paths.\n"
         f"- WRONG: `/Users/mac/outputs/content.txt`, `/tmp/file.xlsx`, `/home/user/result.pdf`, `report.txt`\n"
         f"- CORRECT: `outputs/content.txt`, `outputs/report.docx`, `outputs/data.csv`\n"
+        "- Subdirectories within `outputs/` are supported (e.g., `outputs/reports/summary.pdf`). The directory structure will be preserved for download.\n"
         "- ONLY Python scripts (.py), shell scripts (.sh), and config files (.json, .yaml) should be placed in the workspace root (not `outputs/`).\n"
         "- NEVER write files to paths starting with `/Users/`, `/tmp/`, `/home/`, or any absolute path outside the workspace.\n"
     )
@@ -947,6 +948,7 @@ def build_sdk_options(
         include_partial_messages=True,  # Enable streaming text output
         env=sdk_env if sdk_env else None,  # Pass env vars to CLI subprocess
         resume=resume_session_id,  # Resume a previous CLI session (native multi-turn)
+        max_buffer_size=int(os.getenv("MAX_BUFFER_SIZE", str(10 * 1024 * 1024))),
     )
     logger.debug("[STREAM_DEBUG] SDK options built: include_partial_messages=%s, model=%s",
                 options.include_partial_messages, options.model)
@@ -1262,18 +1264,19 @@ async def run_agent_task(
 
     # Snapshot workspace files before the agent task — used to detect
     # files created by Bash commands after the task ends.
-    # Only scan outputs/ and workspace root (non-recursive) — rglob over
-    # the entire workspace is too expensive for large projects.
+    # Scan outputs/ recursively (to catch files in subdirectories) and
+    # workspace root (non-recursive) — full rglob over the entire
+    # workspace is too expensive for large projects.
     workspace_snapshot: dict[str, float] = {}
     outputs_dir = workspace / "outputs"
     if outputs_dir.exists():
-        for f in outputs_dir.iterdir():
+        for f in outputs_dir.rglob("*"):
             if f.is_file():
-                workspace_snapshot[str(f.relative_to(workspace))] = f.stat().st_mtime
+                workspace_snapshot[f.relative_to(workspace).as_posix()] = f.stat().st_mtime
     if workspace.exists():
         for f in workspace.iterdir():
             if f.is_file():
-                workspace_snapshot[str(f.relative_to(workspace))] = f.stat().st_mtime
+                workspace_snapshot[f.relative_to(workspace).as_posix()] = f.stat().st_mtime
 
     # Look up CLI-generated session UUID for native SDK resume on continuation turns
     cli_uuid = _get_cli_session_uuid(session_id) if is_continuation else None
@@ -1382,8 +1385,15 @@ async def run_agent_task(
                         # shared-skills/, not in outputs/, so download URLs would 404.
                         if ".claude/skills/" in file_path or "shared-skills/" in file_path:
                             continue
-                        # Extract filename, compute size from content
-                        filename = Path(file_path).name
+                        # Preserve subdirectory path (e.g. outputs/reports/report.docx)
+                        # so the filename field matches the disk scan format.
+                        if Path(file_path).is_absolute():
+                            try:
+                                filename = Path(file_path).relative_to(workspace).as_posix()
+                            except ValueError:
+                                filename = Path(file_path).name
+                        else:
+                            filename = file_path.replace("\\", "/")
                         content = tool_input.get("content", "")
                         try:
                             size = len(content.encode("utf-8"))
@@ -1419,21 +1429,23 @@ async def run_agent_task(
         seen_filenames: set[str] = {f["filename"] for f in generated_files}
         outputs_dir = workspace / "outputs"
 
-        # 1. Scan outputs/ for new/modified files (primary generated file location)
+        # 1. Scan outputs/ recursively for new/modified files (primary generated file location).
+        #    Subdirectory files (e.g. outputs/reports/result.docx) are now detected and
+        #    their relative path is preserved in the filename field for correct download URLs.
         if outputs_dir.exists():
-            for f in outputs_dir.iterdir():
+            for f in outputs_dir.rglob("*"):
                 if not f.is_file():
                     continue
                 if not should_include_generated_file(f.name):
                     continue
-                rel = str(f.relative_to(workspace))
+                rel = f.relative_to(workspace).as_posix()
                 mtime = f.stat().st_mtime
                 if rel not in workspace_snapshot or mtime > workspace_snapshot[rel]:
-                    if f.name not in seen_filenames:
-                        seen_filenames.add(f.name)
+                    if rel not in seen_filenames:
+                        seen_filenames.add(rel)
                         generated_files.append(
                             {
-                                "filename": f.name,
+                                "filename": rel,
                                 "size": f.stat().st_size,
                                 "generated_at": datetime.fromtimestamp(mtime, tz=timezone.utc).isoformat(),
                                 "download_url": f"/api/users/{user_id}/download/{rel}",
@@ -1447,7 +1459,7 @@ async def run_agent_task(
             for f in workspace.iterdir():
                 if not f.is_file() or f.name.startswith("."):
                     continue
-                rel = str(f.relative_to(workspace))
+                rel = f.relative_to(workspace).as_posix()
                 mtime = f.stat().st_mtime
                 is_new_or_modified = rel not in workspace_snapshot or mtime > workspace_snapshot[rel]
                 if is_new_or_modified and f.name not in seen_filenames:
@@ -1593,12 +1605,25 @@ async def run_agent_task(
         buffer.mark_done(session_id)
         agent_log.end_session(session_id, status="cancelled")
     except Exception as e:
-        logger.exception("Agent task failed for session %s", session_id)
+        error_msg = str(e)
+        # Detect SDK JSON buffer overflow and provide a clear message
+        if "JSON message exceeded maximum buffer size" in error_msg:
+            logger.warning(
+                "Agent task %s: SDK JSON buffer overflow — tool output too large, truncated",
+                session_id,
+            )
+            error_msg = (
+                "A tool produced too much output and was truncated to avoid "
+                "overwhelming the system. Try narrowing your request or "
+                "processing the data in smaller steps."
+            )
+        else:
+            logger.exception("Agent task failed for session %s", session_id)
         buffer.add_message(
             session_id,
             {
                 "type": "error",
-                "message": str(e),
+                "message": error_msg,
             },
         )
         # Add state change BEFORE mark_done() so the error is delivered.
@@ -2203,23 +2228,28 @@ async def get_session_files(user_id: str, session_id: str) -> list[dict[str, Any
                             }
                         )
 
-    # Also scan the workspace/uploads and workspace/outputs directories for files created during this session
+    # Also scan the workspace/uploads and workspace/outputs directories recursively
+    # for files created during this session (catches files in subdirectories).
     workspace = user_data_dir(user_id) / "workspace"
     for scan_dir_name in ("uploads", "outputs"):
         scan_dir = workspace / scan_dir_name
         if scan_dir.exists():
-            for f in scan_dir.iterdir():
-                if f.is_file() and f.name not in seen and should_include_generated_file(f.name):
-                    stat = f.stat()
-                    seen.add(f.name)
-                    generated.append(
-                        {
-                            "filename": f.name,
-                            "size": stat.st_size,
-                            "generated_at": datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat(),
-                            "download_url": f"/api/users/{user_id}/download/{scan_dir_name}/{f.name}",
-                        }
-                    )
+            for f in scan_dir.rglob("*"):
+                if not f.is_file():
+                    continue
+                rel = f.relative_to(workspace).as_posix()
+                if rel in seen or not should_include_generated_file(f.name):
+                    continue
+                stat = f.stat()
+                seen.add(rel)
+                generated.append(
+                    {
+                        "filename": rel,
+                        "size": stat.st_size,
+                        "generated_at": datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat(),
+                        "download_url": f"/api/users/{user_id}/download/{rel}",
+                    }
+                )
 
     # Sort by generation time descending
     generated.sort(key=lambda x: x.get("generated_at", ""), reverse=True)
@@ -2234,17 +2264,21 @@ async def get_all_generated_files(user_id: str) -> list[dict[str, Any]]:
 
     scan_dir = workspace / "outputs"
     if scan_dir.exists():
-        for f in scan_dir.iterdir():
-            if f.is_file() and should_include_generated_file(f.name):
-                stat = f.stat()
-                generated.append(
-                    {
-                        "filename": f.name,
-                        "size": stat.st_size,
-                        "generated_at": datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat(),
-                        "download_url": f"/api/users/{user_id}/download/outputs/{f.name}",
-                    }
-                )
+        for f in scan_dir.rglob("*"):
+            if not f.is_file():
+                continue
+            if not should_include_generated_file(f.name):
+                continue
+            rel = str(f.relative_to(workspace))
+            stat = f.stat()
+            generated.append(
+                {
+                    "filename": rel,
+                    "size": stat.st_size,
+                    "generated_at": datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat(),
+                    "download_url": f"/api/users/{user_id}/download/{rel}",
+                }
+            )
 
     # Sort by generation time descending
     generated.sort(key=lambda x: x.get("generated_at", ""), reverse=True)
@@ -3299,6 +3333,7 @@ def _build_evolution_sdk_options(
         allowed_tools=build_allowed_tools(load_mcp_config()),
         max_turns=max_turns,
         permission_mode="acceptEdits",
+        max_buffer_size=int(os.getenv("MAX_BUFFER_SIZE", str(10 * 1024 * 1024))),
     )
 
 
