@@ -35,6 +35,7 @@ interface UseWebSocketOptions {
   onConnect?: () => void;
   onDisconnect?: () => void;
   onQueueFull?: () => void; // Called when the pending queue overflows
+  onSendFailed?: (clientMsgId: string) => void; // Called when a send times out or connection fails
   token?: string;
 }
 
@@ -44,6 +45,7 @@ export function useWebSocket({
   onConnect,
   onDisconnect,
   onQueueFull,
+  onSendFailed,
   token,
 }: UseWebSocketOptions) {
   const wsRef = useRef<WebSocket | null>(null);
@@ -58,6 +60,7 @@ export function useWebSocket({
   const onConnectRef = useRef(onConnect);
   const onDisconnectRef = useRef(onDisconnect);
   const onQueueFullRef = useRef(onQueueFull);
+  const onSendFailedRef = useRef(onSendFailed);
   const tokenRef = useRef(token);
   const userIdRef = useRef(userId);
   const flushPendingRef = useRef<() => void>(() => {});
@@ -68,6 +71,7 @@ export function useWebSocket({
     onConnectRef.current = onConnect;
     onDisconnectRef.current = onDisconnect;
     onQueueFullRef.current = onQueueFull;
+    onSendFailedRef.current = onSendFailed;
     tokenRef.current = token;
     userIdRef.current = userId;
   });
@@ -220,7 +224,7 @@ export function useWebSocket({
       console.log("[WebSocket] sendMessage: ws=", ws?.readyState, "wsRef=", wsRef.current === ws, "userId=", userIdRef.current);
 
       const onReject = () => {
-        // Send state update is handled by App.tsx via sendStateMapRef
+        onSendFailedRef.current?.(clientMsgId);
       };
       const timer = setTimeout(onReject, SEND_TIMEOUT_MS);
       pendingSends.current.set(clientMsgId, { timer, reject: onReject });

@@ -256,6 +256,16 @@ export default function ChatArea({
     return maxIndex === -1 ? undefined : maxIndex;
   }, [messages]);
 
+  // Index of the most recent user message — used to scope errors to the
+  // current run. Errors with index below this belong to a previous run
+  // and should be rendered as resolved / dimmed.
+  const lastUserMsgIndex = useMemo(() => {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i].type === "user") return messages[i].index;
+    }
+    return -1;
+  }, [messages]);
+
   // Sort messages by index to ensure chronological order (newest at bottom)
   const sortedMessages = useMemo(
     () => [...messages].sort((a, b) => a.index - b.index),
@@ -342,6 +352,7 @@ export default function ChatArea({
             onAnswer={onAnswer}
             onFileClick={onFileClick}
             lastTodoWriteIndex={lastTodoWriteIndex}
+            lastUserMsgIndex={lastUserMsgIndex}
           />
         ))}
 

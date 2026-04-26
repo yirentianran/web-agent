@@ -138,9 +138,10 @@ interface MessageBubbleProps {
   onAnswer: (sessionId: string, answers: Record<string, string>) => void
   onFileClick?: (filename: string) => void
   lastTodoWriteIndex?: number
+  lastUserMsgIndex?: number
 }
 
-export default function MessageBubble({ message, sessionId, onAnswer, onFileClick, lastTodoWriteIndex }: MessageBubbleProps) {
+export default function MessageBubble({ message, sessionId, onAnswer, onFileClick, lastTodoWriteIndex, lastUserMsgIndex }: MessageBubbleProps) {
   if (message.type === 'user') {
     const files = (message.data as Array<{ filename: string; size?: number }> | undefined) || []
     if ((!message.content || !message.content.trim()) && files.length === 0) return null
@@ -316,18 +317,23 @@ export default function MessageBubble({ message, sessionId, onAnswer, onFileClic
   }
 
   if (message.type === 'tool_result') {
-    const content = message.content || ''
+    const rawContent = message.content || ''
     // Hide empty tool results (e.g., TaskOutput with no content) unless it's an error
-    if (!content && !message.is_error) return null
-    const isJson = /^\s*[{[]/.test(content)
+    if (!rawContent && !message.is_error) return null
+    const displayContent = rawContent || (message.is_error ? '(Tool returned an error with no output)' : '')
+    const isJson = /^\s*[{[]/.test(rawContent)
+    const isResolved = message.is_error && lastUserMsgIndex !== undefined && lastUserMsgIndex > message.index
     return (
-      <details className={`message tool-result${message.is_error ? ' tool-result--error' : ''}`}>
-        <summary>Result: {message.name || 'unknown'}</summary>
+      <details
+        className={`message tool-result${message.is_error ? ' tool-result--error' : ''}${isResolved ? ' tool-result--resolved' : ''}`}
+        open={message.is_error ? true : undefined}
+      >
+        <summary>Result: {message.name || 'unknown'}{isResolved ? ' (past)' : ''}</summary>
         {isJson ? (
-          <pre className="tool-output tool-output-json"><code>{content}</code></pre>
+          <pre className="tool-output tool-output-json"><code>{displayContent}</code></pre>
         ) : (
           <div className="tool-output-markdown">
-            <MarkdownRenderer>{content}</MarkdownRenderer>
+            <MarkdownRenderer>{displayContent}</MarkdownRenderer>
           </div>
         )}
       </details>
@@ -336,9 +342,13 @@ export default function MessageBubble({ message, sessionId, onAnswer, onFileClic
 
   if (message.type === 'error') {
     const errorText = message.content || message.message || 'An error occurred'
+    const isResolved = lastUserMsgIndex !== undefined && lastUserMsgIndex > message.index
     return (
-      <div className="message error-message">
-        <div className="bubble error">{errorText}</div>
+      <div className={`message error-message${isResolved ? ' error-message--resolved' : ''}`}>
+        <div className="bubble error">
+          {isResolved && <span className="error-resolved-badge">past</span>}
+          <MarkdownRenderer>{errorText}</MarkdownRenderer>
+        </div>
       </div>
     )
   }

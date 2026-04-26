@@ -507,9 +507,19 @@ function MainApp() {
         ) {
           const newState = msg.state || msg.content || "completed";
           const isTerminal = TERMINAL_STATES.has(newState);
-          // Accept terminal state changes even if index is slightly lower
-          if (msg.index != null && msg.index < highestUserMsgIndexRef.current && !isTerminal) {
-            // Skip — this state change is older than the current run's user message
+          // Accept terminal state changes even if index is slightly lower,
+          // but never overwrite a live 'running' state with an old terminal.
+          if (msg.index != null && msg.index < highestUserMsgIndexRef.current) {
+            if (!isTerminal) {
+              // Skip — old non-terminal state change
+            } else {
+              const currentState = sessionStatesRef.current.get(msg.session_id);
+              if (currentState !== "running") {
+                setSessionStateFor(msg.session_id, newState);
+              }
+              // If currently running, preserve it — old terminal must
+              // not terminate a live run.
+            }
           } else if (msg.replay) {
             const currentState = sessionStatesRef.current.get(msg.session_id);
             if (
@@ -651,6 +661,22 @@ function MainApp() {
     void 0;
   }, []);
 
+  // Handle a failed send — update message state and reset the optimistic
+  // 'running' session4905 state to prevent the spinner from showing forever.
+  const handleSendFailed = useCallback(
+    (clientMsgId: string) => {
+      updateSendState(clientMsgId, "failed");
+      const activeId = activeSessionRef.current;
+      if (activeId) {
+        const currentState = sessionStatesRef.current.get(activeId);
+        if (currentState === "running") {
+          setSessionStateFor(activeId, "idle");
+        }
+      }
+    },
+    [updateSendState, setSessionStateFor],
+  );
+
   const {
     status,
     connected,
@@ -663,6 +689,7 @@ function MainApp() {
     userId,
     onMessage: handleIncomingMessage,
     onDisconnect: handleDisconnect,
+    onSendFailed: handleSendFailed,
     onQueueFull: () => {
       // Queue overflow — show a non-blocking warning to the user
       // eslint-disable-next-line no-console

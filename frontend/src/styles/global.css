@@ -670,6 +670,38 @@ body {
   border-radius: var(--radius-md);
 }
 
+/* Resolved / past-run errors — dimmed to distinguish from current-run errors */
+.error-message--resolved .bubble.error {
+  background: #f9fafb;
+  border: 1px dashed #d1d5db;
+  color: #9ca3af;
+  font-size: 0.9em;
+}
+
+.error-resolved-badge {
+  display: inline-block;
+  font-size: 0.7em;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  background: #e5e7eb;
+  color: #6b7280;
+  padding: 1px 6px;
+  border-radius: 3px;
+  margin-right: 6px;
+  vertical-align: middle;
+}
+
+/* Resolved tool-result errors — reduce visual weight */
+.tool-result--resolved {
+  opacity: 0.5;
+  border-color: #d1d5db;
+}
+
+.tool-result--resolved > summary {
+  color: #9ca3af;
+  font-weight: 400;
+}
+
 /* Thinking block — collapsed by default inside assistant bubbles */
 .thinking-block {
   margin-bottom: 10px;
