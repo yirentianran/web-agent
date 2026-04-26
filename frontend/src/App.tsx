@@ -518,6 +518,9 @@ function MainApp() {
               newState !== "error"
             ) {
               // Skip — live state takes precedence over replayed history
+            } else if (newState === "running" && currentState !== "running") {
+              // Skip — replayed "running" is stale history;
+              // if the agent were truly running we'd get a live message
             } else {
               setSessionStateFor(msg.session_id, newState);
             }

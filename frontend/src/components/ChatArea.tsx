@@ -6,15 +6,25 @@ import type { Message } from "../lib/types";
 
 const SCROLL_THRESHOLD = 100; // pixels from bottom to consider "at bottom"
 
+const TERMINAL_STATES = new Set(["completed", "error", "cancelled"]);
+
 const AGENT_START_TIME_KEY = "web-agent-start-times";
 
 // Persist agent start times to localStorage so timer survives page refresh
+// Discard entries older than 12 hours — they're definitely stale
 function loadStartTimes(): Map<string, number> {
   try {
     const raw = localStorage.getItem(AGENT_START_TIME_KEY);
     if (!raw) return new Map();
     const parsed = JSON.parse(raw) as [string, number][];
-    return new Map(parsed);
+    const now = Date.now();
+    const maxAge = 12 * 60 * 60 * 1000; // 12 hours
+    const valid = parsed.filter(([, ts]) => now - ts < maxAge);
+    if (valid.length < parsed.length) {
+      // Some entries were stale — update localStorage
+      localStorage.setItem(AGENT_START_TIME_KEY, JSON.stringify(valid));
+    }
+    return new Map(valid);
   } catch {
     return new Map();
   }
@@ -51,8 +61,6 @@ export default function ChatArea({
   streamingText,
 }: ChatAreaProps) {
   const containerRef = useRef<HTMLDivElement>(null);
-  const visitedRef = useRef<Set<string>>(new Set());
-  const scrollRestoredRef = useRef(false);
   const isUserAtBottomRef = useRef(true);
   const [agentStartTime, setAgentStartTime] = useState<number | null>(null);
 
@@ -92,9 +100,7 @@ export default function ChatArea({
   const scrollToBottom = useCallback(() => {
     const container = containerRef.current;
     if (!container) return;
-    requestAnimationFrame(() => {
-      container.scrollTop = container.scrollHeight;
-    });
+    container.scrollTop = container.scrollHeight;
   }, []);
 
   // Track when agent started running.
@@ -129,6 +135,13 @@ export default function ChatArea({
           setAgentStartTime(now);
         }
       } else {
+        // Session is not running — clean up any stale stored start time
+        // so the next run gets a fresh timestamp instead of accumulating
+        // time from a previous run.
+        if (sessionId) {
+          sessionStartTimesRef.current.delete(sessionId);
+          saveStartTimes(sessionStartTimesRef.current);
+        }
         setAgentStartTime(null);
       }
       return;
@@ -143,17 +156,31 @@ export default function ChatArea({
         ? sessionStartTimesRef.current.get(sessionId)
         : undefined;
       if (savedStart !== undefined) {
-        // Use saved start time from localStorage (preserves timer on page refresh)
-        setAgentStartTime(savedStart);
-      } else {
-        // No saved time — record now
-        const now = Date.now();
-        if (sessionId) {
-          sessionStartTimesRef.current.set(sessionId, now);
-          saveStartTimes(sessionStartTimesRef.current);
+        // If we're transitioning from a terminal state (completed/error/cancelled),
+        // the saved start time is from a previous run — discard it so we don't
+        // accumulate elapsed time across separate runs.
+        const prevWasTerminal =
+          prevSessionStateRef.current !== null &&
+          TERMINAL_STATES.has(prevSessionStateRef.current);
+        if (prevWasTerminal) {
+          if (sessionId) {
+            sessionStartTimesRef.current.delete(sessionId);
+            saveStartTimes(sessionStartTimesRef.current);
+          }
+        } else {
+          // Use saved start time from localStorage (preserves timer on page refresh)
+          setAgentStartTime(savedStart);
+          prevSessionStateRef.current = sessionState;
+          return;
         }
-        setAgentStartTime(now);
       }
+      // No valid saved time — record now
+      const now = Date.now();
+      if (sessionId) {
+        sessionStartTimesRef.current.set(sessionId, now);
+        saveStartTimes(sessionStartTimesRef.current);
+      }
+      setAgentStartTime(now);
     }
     // Transition AWAY from running — clear start time for this session
     // (new runs will get a fresh timestamp)
@@ -175,89 +202,40 @@ export default function ChatArea({
     prevSessionStateRef.current = sessionState;
   }, [sessionState, messages, sessionId]);
 
-  // Restore scroll position when session changes or messages load
+  // ── Scroll to bottom on session change / initial load ────────────
+  const prevSessionIdRef = useRef<string | null>(null);
+  const prevMessagesLenRef = useRef(0);
   useEffect(() => {
     if (!sessionId || !containerRef.current) return;
 
-    const isFirstVisit = !visitedRef.current.has(sessionId);
-    if (isFirstVisit) {
-      visitedRef.current.add(sessionId);
+    const sessionChanged = prevSessionIdRef.current !== sessionId;
+    const wasEmpty = prevMessagesLenRef.current === 0;
+    prevSessionIdRef.current = sessionId;
+    prevMessagesLenRef.current = messages.length;
 
-      // Running sessions: always scroll to bottom to show latest activity
-      if (sessionState === "running") {
-        scrollRestoredRef.current = false;
-        scrollToBottom();
-        return;
-      }
-
-      // Try to restore from localStorage (survives page refresh)
-      try {
-        const SCROLL_STORAGE_KEY = "web-agent-scroll-positions";
-        const raw = localStorage.getItem(SCROLL_STORAGE_KEY);
-        if (raw) {
-          const parsed = JSON.parse(raw) as [string, number][];
-          const savedPos = parsed.find(([k]) => k === sessionId)?.[1];
-          if (savedPos !== undefined) {
-            scrollRestoredRef.current = true;
-            requestAnimationFrame(() => {
-              if (containerRef.current) {
-                containerRef.current.scrollTop = savedPos;
-              }
-            });
-            return;
-          }
-        }
-      } catch {
-        // localStorage unavailable — fall through to scroll-to-bottom
-      }
-
-      // No saved position: first real visit, scroll to bottom
-      scrollRestoredRef.current = false;
+    // Session switch or first data load → always scroll to bottom.
+    if (sessionChanged || (wasEmpty && messages.length > 0)) {
+      isUserAtBottomRef.current = true;
       scrollToBottom();
       return;
     }
 
-    const savedPos = scrollPositions.get(sessionId);
-    if (savedPos !== undefined && !scrollRestoredRef.current) {
-      scrollRestoredRef.current = true;
-      requestAnimationFrame(() => {
-        if (
-          containerRef.current &&
-          containerRef.current.scrollTop !== savedPos
-        ) {
-          containerRef.current.scrollTop = savedPos;
-        }
-      });
+    // Same session, new messages arrived (streaming) — auto-scroll
+    // only when the user was already at the bottom.
+    if (isUserAtBottomRef.current && messages.length > 0) {
+      scrollToBottom();
     }
-  }, [sessionId, messages, scrollPositions, scrollToBottom]);
+  }, [sessionId, messages, scrollToBottom]);
 
-  // Reset "at bottom" state when session changes (not on every render)
-  const prevSessionIdRef = useRef<string | null>(null);
-  useEffect(() => {
-    if (prevSessionIdRef.current !== sessionId) {
-      isUserAtBottomRef.current = true;
-      prevSessionIdRef.current = sessionId;
-    }
-  }, [sessionId]);
-
-  // Auto-scroll to bottom when session transitions to "running"
-  // This triggers even if user is in the middle, giving them a chance to see new activity
+  // ── Running transition — always scroll to bottom ────────────────
   const prevStateRef = useRef<string | null>(null);
   useEffect(() => {
     if (sessionState === "running" && prevStateRef.current !== "running") {
-      // User started interacting or agent started responding — scroll to bottom
       isUserAtBottomRef.current = true;
       scrollToBottom();
     }
     prevStateRef.current = sessionState;
   }, [sessionState, scrollToBottom]);
-
-  // Auto-scroll to bottom when new messages arrive, only if user is at bottom
-  useEffect(() => {
-    if (isUserAtBottomRef.current) {
-      scrollToBottom();
-    }
-  }, [messages, scrollToBottom]);
 
   // Determine what spinner to show
   const isAgentRunning = sessionState === "running";
