@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from dotenv import load_dotenv
 
-load_dotenv()  # Load .env file before any env var access
+load_dotenv(override=True)  # Load .env file before any env var access, override shell env
 
 import asyncio
 import io
@@ -942,13 +942,15 @@ def build_sdk_options(
     }
 
     # Build custom env dict for SDK CLI subprocess
-    # The SDK doesn't accept api_key/base_url directly; pass via env dict
+    # IMPORTANT: The claude CLI uses ANTHROPIC_AUTH_TOKEN (not ANTHROPIC_API_KEY)
+    # when a custom ANTHROPIC_BASE_URL is set. ANTHROPIC_API_KEY only works with
+    # the default api.anthropic.com endpoint.
     sdk_env: dict[str, str] = {}
-    api_key = os.getenv("ANTHROPIC_API_KEY")
+    api_key = os.getenv("ANTHROPIC_AUTH_TOKEN") or os.getenv("ANTHROPIC_API_KEY")
     base_url = os.getenv("ANTHROPIC_BASE_URL")
     model = os.getenv("MODEL", "claude-sonnet-4-6")
     if api_key:
-        sdk_env["ANTHROPIC_API_KEY"] = api_key
+        sdk_env["ANTHROPIC_AUTH_TOKEN"] = api_key
     if base_url:
         sdk_env["ANTHROPIC_BASE_URL"] = base_url
     if model:
@@ -969,9 +971,10 @@ def build_sdk_options(
         resume=resume_session_id,  # Resume a previous CLI session (native multi-turn)
         max_buffer_size=int(os.getenv("MAX_BUFFER_SIZE", str(10 * 1024 * 1024))),
     )
-    logger.info("[AGENT_CONFIG] SDK env: ANTHROPIC_API_KEY=%s, ANTHROPIC_BASE_URL=%s",
-                "SET" if api_key else "NOT_SET",
-                base_url or "default")
+    logger.info("[AGENT_CONFIG] key=%s, base_url=%s, model=%s",
+                ("SET (via %s)" % ("ANTHROPIC_AUTH_TOKEN" if os.getenv("ANTHROPIC_AUTH_TOKEN") else "ANTHROPIC_API_KEY")) if api_key else "NOT_SET",
+                base_url or "default",
+                model)
     return options
 
 
