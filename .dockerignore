@@ -1,0 +1,47 @@
+# Git
+.git
+.gitignore
+
+# Docs (keep CLAUDE.md only)
+*.md
+!CLAUDE.md
+
+# Environment
+.env
+.env.example
+
+# Python
+.venv
+__pycache__
+*.pyc
+*.pyo
+*.egg-info
+dist
+build
+
+# Node
+node_modules
+frontend/node_modules
+
+# Runtime data
+data
+
+# Logs
+*.log
+server.log*
+
+# IDE
+.claude
+.idea
+.vscode
+*.swp
+*.swo
+.DS_Store
+
+# Tests (not needed in production image)
+tests
+frontend/src/**/*.test.*
+frontend/src/**/*.spec.*
+
+# CI/CD
+.github

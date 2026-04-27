@@ -22,6 +22,10 @@ if [ -f ".env" ]; then
   set +a
 fi
 
+# Override data paths for local development (relative to project root)
+export DATA_ROOT=./data
+export DATA_DB_PATH=./data/web-agent.db
+
 # Ensure frontend dependencies are installed
 if [ ! -d "frontend/node_modules" ]; then
   echo "Installing frontend dependencies..."

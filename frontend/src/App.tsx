@@ -384,6 +384,15 @@ function MainApp() {
 
   const handleIncomingMessage = useCallback(
     (msg: Message) => {
+      // Normalize snake_case fields from Python server to camelCase.
+      // Without this, dedup logic that checks clientMsgId silently fails
+      // because the server sends client_msg_id (snake_case) while the
+      // TypeScript interface expects clientMsgId (camelCase).
+      const raw = msg as unknown as Record<string, unknown>;
+      if (raw.client_msg_id && !msg.clientMsgId) {
+        msg.clientMsgId = raw.client_msg_id as string;
+      }
+
       const TERMINAL_STATES = new Set(["completed", "error", "cancelled"]);
 
       // Track heartbeat for staleness detection
@@ -551,10 +560,27 @@ function MainApp() {
 
         if (isFirstTurnMessage) {
           replayStartedRef.current = true;
-          // Append the incoming message to existing messages (which may
-          // include recovered history). Dedup by index only.
           if (prev.some((m) => m.index === msg.index)) {
             return prev;
+          }
+          if (
+            msg.type === "user" &&
+            !msg.replay
+          ) {
+            if (
+              msg.clientMsgId &&
+              prev.some((m) => m.clientMsgId === msg.clientMsgId)
+            ) {
+              return prev;
+            }
+            // Fallback: content match for messages without UUID
+            if (
+              prev.some(
+                (m) => m.type === "user" && m.content === msg.content,
+              )
+            ) {
+              return prev;
+            }
           }
           return [...prev, msg];
         }

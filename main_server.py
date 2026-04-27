@@ -97,6 +97,13 @@ else:
 PROD = os.getenv("PROD", "false").lower() == "true"
 app = FastAPI(title="Web Agent")
 
+
+@app.get("/api/health")
+async def health_check():
+    """Health check endpoint for Docker HEALTHCHECK."""
+    return {"status": "ok"}
+
+
 # ── Skill upload limits ──────────────────────────────────────────
 MAX_ZIP_SIZE = 50 * 1024 * 1024  # 50MB compressed
 MAX_UNCOMPRESSED = 100 * 1024 * 1024  # 100MB uncompressed

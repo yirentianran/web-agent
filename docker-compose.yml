@@ -1,0 +1,18 @@
+services:
+  web-agent:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: web-agent:latest
+    container_name: web-agent
+    ports:
+      - "${PORT:-8000}:8000"
+    env_file:
+      - .env
+    volumes:
+      - web-agent-data:/data
+    restart: unless-stopped
+
+volumes:
+  web-agent-data:
+    driver: local

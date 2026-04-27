@@ -1,326 +1,218 @@
 # Web Agent
 
-Multi-user web agent powered by Claude Agent SDK. Each user gets an isolated workspace with full session history, file management, skill sharing, and real-time WebSocket communication.
+Multi-user web agent powered by Claude Agent SDK. Each user gets isolated sessions, a private workspace, persistent memory, and real-time WebSocket streaming.
 
 ## Features
 
-- **Multi-user isolation** — each user has independent sessions, files, and workspace
-- **Real-time chat** — WebSocket-based streaming with progress indicators and tool call visualization
-- **Session management** — create, switch, delete, and fork sessions with full history
-- **File upload & download** — upload files for agent context, download agent-generated outputs
-- **Skill system** — create, share, and apply custom skills across users with feedback/ratings
+- **Multi-user isolation** — independent sessions, files, memory, and workspace per user
+- **Real-time streaming** — WebSocket-based chat with progressive text display and tool call visualization
+- **Session management** — create, switch, delete, fork sessions with full history and auto-generated titles
+- **File support** — upload files for agent context, browse and download agent-generated outputs
+- **Skill system** — create, share, and rate reusable skills across users
 - **User memory** — persistent preferences and entity memory per user
 - **MCP server registry** — admin-managed MCP tool servers
-- **Streaming output** — progressive text display as the agent generates content
 - **Timer persistence** — session timers survive page refresh via localStorage
-
-## Tech Stack
-
-| Layer | Technology |
-|-------|-----------|
-| Backend | Python 3.12, FastAPI, Uvicorn, aiosqlite |
-| AI Agent | Claude Agent SDK |
-| Frontend | React 18, TypeScript, Vite, Vitest + Testing Library |
-| Communication | WebSocket (real-time) + REST API |
-| Testing | pytest (backend), Vitest (frontend) |
-
-## System Requirements
-
-- Python 3.12+
-- Node.js 18+
-- npm 9+
 
 ## Quick Start
 
-### 1. Clone and setup
-
-**Linux/macOS:**
-```bash
-git clone <repo-url>
-cd web-agent
-./setup.sh
-```
-
-**Windows (PowerShell):**
-```powershell
-git clone <repo-url>
-cd web-agent
-.\setup.ps1
-```
-
-### 2. Configure environment
+### Docker (recommended)
 
 ```bash
 cp .env.example .env
+# Edit .env with your API key, then:
+docker compose up -d --build
 ```
 
-Edit `.env` with your settings:
+Open `http://localhost:8000`.
 
-```env
-# Anthropic API key
-# For direct Anthropic API: sk-ant-api03-...
-# For Alibaba Cloud Bailian: sk-sp-...
-ANTHROPIC_API_KEY=sk-...
+> **Users in China**: Configure Docker registry and PyPI mirrors first — see [Troubleshooting](#docker-network-issues-in-china).
 
-# Anthropic base URL (optional)
-# For Alibaba Cloud Bailian: https://coding.dashscope.aliyuncs.com/apps/anthropic
-# ANTHROPIC_BASE_URL=https://coding.dashscope.aliyuncs.com/apps/anthropic
+### Manual Setup
 
-# Model name (default: claude-sonnet-4-6)
-# MODEL=qwen3.6-plus
-```
+**Requirements**: Python 3.12+, Node.js 18+, npm 9+
 
-### 3. Start the dev server
-
-**Linux/macOS:**
 ```bash
+# macOS / Linux
+./setup.sh
+cp .env.example .env   # edit with your API key
 ./start-dev.sh
-```
 
-**Windows (PowerShell):**
-```powershell
+# Windows (PowerShell)
+.\setup.ps1
+cp .env.example .env   # edit with your API key
 .\start-dev.ps1
 ```
 
-This starts:
-- Backend on `http://127.0.0.1:8000` (with auto-reload)
-- Frontend on `http://127.0.0.1:3000` (Vite dev server with proxy)
+This starts the backend on `http://127.0.0.1:8000` and the frontend dev server on `http://127.0.0.1:3000`. Open `http://127.0.0.1:3000` in your browser.
 
-Open `http://127.0.0.1:3000` in your browser and log in with a user ID.
-
-> **Windows note**: Use `127.0.0.1` instead of `localhost`. Windows resolves `localhost` to IPv6 (::1) first,
-> which can cause WebSocket connection failures when the backend only listens on IPv4.
-
-## Architecture
-
-```
-┌─────────────┐     REST/WS      ┌──────────────────────────────────────┐
-│   Browser   │ ────────────────► │  FastAPI (main_server.py)            │
-│  (React)    │ ◄──────────────── │                                      │
-└─────────────┘                   │  ┌────────────┐  ┌────────────────┐ │
-                                  │  │ Session    │  │ MessageBuffer  │ │
-                                  │  │ Manager    │  │ (in-memory +   │ │
-                                  │  │            │  │  JSONL disk)   │ │
-                                  │  └─────┬──────┘  └───────┬────────┘ │
-                                  │        │                 │          │
-                                  │  ┌─────▼──────┐  ┌───────▼────────┐ │
-                                  │  │ Session    │  │ SQLite DB      │ │
-                                  │  │ Store      │  │ (sessions,     │ │
-                                  │  │ (JSON)     │  │  messages)     │ │
-                                  │  └────────────┘  └────────────────┘ │
-                                  │                                      │
-                                  │  ┌────────────────────────────────┐ │
-                                  │  │ Claude Agent SDK (subprocess)  │ │
-                                  │  │ → tools, hooks, streaming      │ │
-                                  │  └────────────────────────────────┘ │
-                                  └──────────────────────────────────────┘
-```
-
-### Key Components
-
-| Component | Purpose |
-|-----------|---------|
-| `main_server.py` | FastAPI entry point — REST endpoints, WebSocket bridge, session lifecycle |
-| `MessageBuffer` | In-memory message queue with JSONL disk persistence; manages session state, heartbeats, and history |
-| `SessionStore` | JSON-based session metadata persistence on disk |
-| `SQLite DB` | Persistent storage for messages and session data |
-| `useWebSocket` | React hook handling connection, reconnection, message queue, and send tracking |
-| `useStreamingText` | Aggregates `content_block_delta` stream events into progressive text display |
-
-## Project Structure
-
-```
-web-agent/
-├── main_server.py              # FastAPI server (REST + WebSocket)
-├── agent_server.py             # Agent subprocess endpoint
-├── src/                        # Backend modules
-│   ├── auth.py                 # Authentication & JWT
-│   ├── message_buffer.py       # Session message persistence & state
-│   ├── memory.py               # User memory management
-│   ├── file_validation.py      # Upload file validation
-│   ├── truncation.py           # Tool output truncation
-│   ├── models.py               # Pydantic models
-│   ├── hooks/                  # Tool call hooks (Write, Bash, etc.)
-│   └── ...
-├── frontend/                   # React frontend
-│   ├── src/
-│   │   ├── components/         # React components
-│   │   │   ├── ChatArea.tsx    # Main chat display with streaming text
-│   │   │   ├── MessageBubble.tsx # Message rendering (Markdown, tools, etc.)
-│   │   │   └── StatusSpinner.tsx # Agent working indicator with timer
-│   │   ├── hooks/
-│   │   │   ├── useWebSocket.ts # WebSocket connection & message handling
-│   │   │   └── useStreamingText.ts # Text delta aggregation
-│   │   ├── lib/                # Utilities & type definitions
-│   │   └── styles/             # Global CSS
-│   └── package.json
-├── tests/                      # Backend & frontend tests
-│   ├── unit/                   # pytest backend tests
-│   └── ...                     # Vitest frontend tests
-├── skills/                     # Custom skill definitions
-├── docs/                       # Architecture & planning docs
-├── plans/                      # Fix & feature plans
-├── scripts/
-│   ├── manage.sh               # Production server control
-│   ├── build.sh                # Frontend build script
-│   └── cleanup_stale_files.py  # Cleanup utility
-├── data/                       # Runtime data (never committed)
-├── .env.example                # Environment configuration template
-├── setup.sh                    # One-time setup script (Linux/macOS)
-├── setup.ps1                   # One-time setup script (Windows)
-├── start-dev.sh                # Development server launcher (Linux/macOS)
-└── start-dev.ps1               # Development server launcher (Windows)
-```
+> **Windows**: Use `127.0.0.1` instead of `localhost` — Windows resolves `localhost` to IPv6 first, which can break WebSocket connections.
 
 ## Environment Variables
 
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
-| `ANTHROPIC_API_KEY` | Yes | — | API key (Anthropic or Bailian) |
-| `ANTHROPIC_BASE_URL` | No | Anthropic default | Custom API endpoint |
-| `MODEL` | No | `claude-sonnet-4-6` | Model to use |
+| `ANTHROPIC_API_KEY` | Yes | — | Anthropic API key (`sk-ant-api03-...`) or Bailian key (`sk-sp-...`) |
+| `ANTHROPIC_BASE_URL` | No | Anthropic default | Custom API endpoint (e.g., Bailian: `https://coding.dashscope.aliyuncs.com/apps/anthropic`) |
+| `MODEL` | No | `claude-sonnet-4-6` | Model name |
 | `DATA_ROOT` | No | `./data` | Runtime data directory |
 | `AGENT_TASK_TIMEOUT` | No | `18000` | Max agent task duration (seconds) |
 | `MAX_TURNS` | No | `500` | Max agent turns per session |
 | `LOG_LEVEL` | No | `info` | Logging level |
 
+## Architecture
+
+```
+┌──────────┐      REST/WS       ┌──────────────────────────────────────┐
+│  Browser │ ─────────────────► │  FastAPI (main_server.py)            │
+│  (React) │ ◄───────────────── │                                      │
+└──────────┘                    │  ┌────────────┐  ┌────────────────┐  │
+                                │  │ Session    │  │ MessageBuffer  │  │
+                                │  │ Manager    │  │ (in-memory +   │  │
+                                │  │            │  │  JSONL disk)   │  │
+                                │  └─────┬──────┘  └───────┬────────┘  │
+                                │        │                 │           │
+                                │  ┌─────▼──────┐  ┌───────▼────────┐  │
+                                │  │ Session    │  │ SQLite DB      │  │
+                                │  │ Store      │  │ (sessions,     │  │
+                                │  │ (JSON)     │  │  messages)     │  │
+                                │  └────────────┘  └────────────────┘  │
+                                │                                      │
+                                │  ┌────────────────────────────────┐  │
+                                │  │ Claude Agent SDK (subprocess)  │  │
+                                │  │ → tools, hooks, streaming      │  │
+                                │  └────────────────────────────────┘  │
+                                └──────────────────────────────────────┘
+```
+
+## Project Structure
+
+```
+web-agent/
+├── main_server.py          # FastAPI entry point (REST + WebSocket)
+├── agent_server.py         # Agent subprocess endpoint
+├── src/                    # Backend modules
+│   ├── auth.py             # JWT authentication
+│   ├── message_buffer.py   # Session message persistence
+│   ├── memory.py           # User memory management
+│   ├── hooks/              # Tool call hooks (Write, Bash, etc.)
+│   └── ...
+├── frontend/               # React SPA
+│   └── src/
+│       ├── components/     # ChatArea, MessageBubble, StatusSpinner, etc.
+│       ├── hooks/          # useWebSocket, useStreamingText
+│       └── lib/            # Utilities and type definitions
+├── tests/                  # pytest (backend) + Vitest (frontend)
+├── skills/                 # Custom skill definitions
+├── scripts/                # manage.sh, build.sh
+├── data/                   # Runtime data (never committed)
+├── Dockerfile
+└── docker-compose.yml
+```
+
 ## API
 
-### Authentication
+### Auth & Sessions
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `POST` | `/api/auth/token` | Get JWT token for a user |
+| `POST` | `/api/auth/token` | Get JWT token |
+| `POST` | `/api/users/{uid}/sessions` | Create session |
+| `GET` | `/api/users/{uid}/sessions` | List sessions |
+| `DELETE` | `/api/users/{uid}/sessions/{id}` | Delete session |
+| `GET` | `/api/users/{uid}/sessions/{id}/history` | Get message history |
+| `GET` | `/api/users/{uid}/sessions/{id}/status` | Get live session state |
+| `PATCH` | `/api/users/{uid}/sessions/{id}/title` | Auto-generate title |
+| `POST` | `/api/users/{uid}/sessions/{id}/cancel` | Cancel running session |
+| `POST` | `/api/users/{uid}/sessions/{id}/fork` | Fork session |
 
-### Sessions
-
-| Method | Path | Description |
-|--------|------|-------------|
-| `POST` | `/api/users/{user_id}/sessions` | Create a session |
-| `GET` | `/api/users/{user_id}/sessions` | List sessions |
-| `DELETE` | `/api/users/{user_id}/sessions/{id}` | Delete a session |
-| `GET` | `/api/users/{user_id}/sessions/{id}/history` | Get session history |
-| `GET` | `/api/users/{user_id}/sessions/{id}/status` | Get live session state |
-| `PATCH` | `/api/users/{user_id}/sessions/{id}/title` | Auto-generate session title |
-| `POST` | `/api/users/{user_id}/sessions/{id}/cancel` | Cancel running session |
-| `POST` | `/api/users/{user_id}/sessions/{id}/fork` | Fork a session |
-
-### Files
+### Files, Skills & Memory
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `POST` | `/api/users/{user_id}/upload` | Upload a file |
-| `GET` | `/api/users/{user_id}/generated-files` | List generated output files |
-| `GET` | `/api/users/{user_id}/download/{path}` | Download a file |
-
-### Skills
-
-| Method | Path | Description |
-|--------|------|-------------|
-| `POST` | `/api/users/{user_id}/skills/upload` | Upload a skill (ZIP) |
-| `GET` | `/api/users/{user_id}/skills` | List skills |
-| `POST` | `/api/skills/{name}/feedback` | Submit skill feedback |
-
-### Memory
-
-| Method | Path | Description |
-|--------|------|-------------|
-| `PUT` | `/api/users/{user_id}/memory` | Update user memory |
-| `GET` | `/api/users/{user_id}/memory` | Get user memory |
+| `POST` | `/api/users/{uid}/upload` | Upload file |
+| `GET` | `/api/users/{uid}/generated-files` | List generated files |
+| `GET` | `/api/users/{uid}/download/{path}` | Download file |
+| `POST` | `/api/users/{uid}/skills/upload` | Upload skill (ZIP) |
+| `GET` | `/api/users/{uid}/skills` | List skills |
+| `POST` | `/api/skills/{name}/feedback` | Rate a skill |
+| `PUT` | `/api/users/{uid}/memory` | Update user memory |
+| `GET` | `/api/users/{uid}/memory` | Get user memory |
 
 ### WebSocket
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `WS` | `/ws` | Real-time agent communication (supports `?token=` auth) |
+| `WS` | `/ws?token=<jwt>` | Real-time agent streaming |
 
 ## Development
 
-### Running Tests
-
 ```bash
-# Backend
+# Backend tests
 uv run pytest
 
-# Frontend
+# Frontend tests
 cd frontend && npm test
 
-# All frontend tests with coverage
-cd frontend && npm test -- --coverage
-```
+# Format + lint (backend)
+uv run ruff format && uv run ruff check src/ main_server.py
 
-### Code Formatting & Linting
-
-```bash
-# Backend (ruff)
-uv run ruff format
-uv run ruff check src/ main_server.py
-
-# Frontend (prettier + eslint + tsc)
+# Format + lint + type check (frontend)
 cd frontend
 npx prettier --write "src/**/*.{ts,tsx}"
 npx eslint --fix "src/**/*.{ts,tsx}"
 npx tsc --noEmit
 ```
 
-### Development Workflow
-
-1. **Research & Reuse** — check GitHub, package registries, and existing skills first
-2. **Plan** — create a plan in `plans/` before implementing
-3. **TDD** — write tests first, then implement
-4. **Code Review** — review after writing code
-5. **Commit** — follow conventional commits format
-
-### Rules System
-
-This project uses a layered configuration system in `~/.claude/rules/`:
-
-```
-rules/
-├── common/          # Language-agnostic principles
-├── web/             # Web/frontend specific
-├── typescript/      # TypeScript/JavaScript specific
-├── python/          # Python specific
-└── zh/              # Chinese translations
-```
-
-Rules define coding standards, testing requirements, and development workflows. See `rules/README.md` for details.
-
 ## Deployment
 
-### Production Setup
+### Docker Compose
 
-1. **Build frontend assets**:
-   ```bash
-   ./scripts/build.sh
-   ```
+```bash
+docker compose up -d --build
+```
 
-2. **Start the server**:
-   ```bash
-   ./scripts/manage.sh start
-   ```
+The image includes a Python-based health check at `/api/health`. Data persists in the `web-agent-data` Docker volume.
 
-3. **Server management**:
-   | Command | Description |
-   |---------|-------------|
-   | `./scripts/manage.sh start` | Start server (background) |
-   | `./scripts/manage.sh stop` | Stop server |
-   | `./scripts/manage.sh restart` | Restart server |
-   | `./scripts/manage.sh status` | Check server status |
-   | `./scripts/manage.sh logs` | View server logs |
+### Manual
 
-4. **Access**: Open `http://<server-ip>:8000`
+```bash
+./scripts/build.sh           # build frontend assets
+./scripts/manage.sh start    # start server in background
+./scripts/manage.sh status   # check status
+./scripts/manage.sh logs     # view logs
+./scripts/manage.sh stop     # stop server
+```
+
+Access at `http://<server-ip>:8000`.
 
 ## Troubleshooting
 
 | Issue | Solution |
 |-------|----------|
-| Agent stuck on "working" after refresh | Timer recovery kicks in automatically after stale buffer detection (30s) |
-| Port already in use | Linux/macOS: `./scripts/manage.sh stop` or `pkill -f uvicorn`<br>Windows: `Get-Process uvicorn \| Stop-Process -Force` |
-| Frontend fails to connect | Verify backend is running on port 8000; check `.env` config |
-| Skill not loading | Ensure skill is in `skills/` directory and properly installed |
-| SQLite locked | Check no other process is holding the DB; remove `.lock` if stale |
-| PowerShell script blocked | Run `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` first |
+| Agent stuck on "working" | Timer recovery triggers automatically after 30s of stale buffer |
+| Port already in use | `./scripts/manage.sh stop` or `pkill -f uvicorn` |
+| Frontend can't connect | Verify backend is running on port 8000 |
+| SQLite locked | Remove stale `.lock` file if no other process holds the DB |
+| PowerShell script blocked | `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` |
+
+### Docker Network Issues in China
+
+If Docker builds fail with timeouts:
+
+1. **Docker registry mirror** — add to `~/.docker/daemon.json`:
+   ```json
+   {
+     "registry-mirrors": [
+       "https://docker.1ms.run",
+       "https://docker.xuanyuan.me"
+     ]
+   }
+   ```
+   Restart Docker Desktop after saving.
+
+2. **PyPI mirror** — the Dockerfile already uses Tsinghua mirror for pip and uv. If you need to change it, edit `Dockerfile` and update the index URLs.
+
+3. **Clash/VPN interference** — system proxy tools (Clash Mi, Clash Verge) in TUN mode can block Docker outbound traffic. Temporarily disable them before building.
 
 ## License
 
