@@ -5,6 +5,7 @@ import {
   useRef,
   type FormEvent,
 } from "react";
+import { generateUUID } from "./lib/uuid";
 import Sidebar from "./components/Sidebar";
 import Header from "./components/Header";
 import ChatArea from "./components/ChatArea";
@@ -795,7 +796,7 @@ function MainApp() {
         filename: f.name,
         size: f.size,
       }));
-      const clientMsgId = crypto.randomUUID();
+      const clientMsgId = generateUUID();
       const optimisticMsg: Message = {
         type: "user",
         content: message,

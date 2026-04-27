@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import type { Message } from "../lib/types";
+import { generateUUID } from "../lib/uuid";
 
 /** Outgoing WebSocket message shape — sent from frontend to backend. */
 export interface WSOutgoingMessage {
@@ -218,7 +219,7 @@ export function useWebSocket({
    */
   const sendMessage = useCallback(
     (data: WSOutgoingMessage): { clientMsgId: string } => {
-      const clientMsgId = data.client_msg_id || crypto.randomUUID();
+      const clientMsgId = data.client_msg_id || generateUUID();
       const enriched = { ...data, client_msg_id: clientMsgId };
       const ws = wsRef.current;
       console.log("[WebSocket] sendMessage: ws=", ws?.readyState, "wsRef=", wsRef.current === ws, "userId=", userIdRef.current);
