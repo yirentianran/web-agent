@@ -74,6 +74,7 @@ class MessageBuffer:
                 if self._sync_conn is None:
                     try:
                         self._sync_conn = sqlite3.connect(str(self.db.db_path))
+                        self._sync_conn.execute("PRAGMA busy_timeout=30000")
                     except Exception:
                         pass
                 if self._sync_conn is not None:
@@ -125,6 +126,7 @@ class MessageBuffer:
         if self._sync_conn is None:
             try:
                 self._sync_conn = sqlite3.connect(str(self.db.db_path))
+                self._sync_conn.execute("PRAGMA busy_timeout=30000")
             except Exception:
                 self.sessions[session_id]["db_failed"] = True
                 import logging
@@ -181,6 +183,7 @@ class MessageBuffer:
                     # Try to reconnect in case connection was lost
                     try:
                         self._sync_conn = sqlite3.connect(str(self.db.db_path))
+                        self._sync_conn.execute("PRAGMA busy_timeout=30000")
                         conn = self._sync_conn
                     except Exception:
                         pass
@@ -207,6 +210,7 @@ class MessageBuffer:
         if self.db is None or self._sync_conn is None:
             try:
                 self._sync_conn = sqlite3.connect(str(self.db.db_path))
+                self._sync_conn.execute("PRAGMA busy_timeout=30000")
             except Exception:
                 return []
 

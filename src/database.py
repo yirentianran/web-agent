@@ -143,8 +143,10 @@ class Database:
 
         # Enable WAL mode for concurrent reads
         await self._pool.execute("PRAGMA journal_mode=WAL")
-        # Set busy timeout to handle write contention gracefully
-        await self._pool.execute("PRAGMA busy_timeout=5000")
+        # Set busy timeout to handle write contention gracefully (30s)
+        await self._pool.execute("PRAGMA busy_timeout=30000")
+        # Use NORMAL synchronous for better write performance in WAL mode
+        await self._pool.execute("PRAGMA synchronous=NORMAL")
 
         # Create all tables
         await self._pool.executescript(_CREATE_TABLES)

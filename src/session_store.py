@@ -12,6 +12,7 @@ Usage:
 
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 from pathlib import Path
@@ -21,12 +22,40 @@ from fastapi import HTTPException
 
 from src.database import Database
 
+_RETRY_DELAYS = [0.1, 0.25, 0.5, 1.0, 2.0]  # exponential backoff steps
+
+
+def _is_lock_error(exc: Exception) -> bool:
+    """Check if an exception is a SQLite 'database is locked' error."""
+    return (
+        type(exc).__name__ == "OperationalError"
+        and "database is locked" in str(exc).lower()
+    )
+
 
 class SessionStore:
     """Session storage backed by SQLite."""
 
     def __init__(self, db: Database) -> None:
         self.db = db
+
+    async def _retry_on_lock(self, operation):
+        """Retry a write operation if SQLite returns 'database is locked'.
+
+        Uses exponential backoff with _RETRY_DELAYS. Re-raises the last
+        error if all retries are exhausted.
+        """
+        last_error = None
+        for delay in _RETRY_DELAYS:
+            try:
+                return await operation()
+            except Exception as exc:
+                if _is_lock_error(exc):
+                    last_error = exc
+                    await asyncio.sleep(delay)
+                else:
+                    raise
+        raise last_error  # type: ignore[misc]
 
     async def create_session(self, user_id: str, session_id: str) -> dict[str, str]:
         """Create a new session for a user. Idempotent."""
@@ -140,87 +169,102 @@ class SessionStore:
         self, user_id: str, session_id: str, title: str
     ) -> None:
         """Update the title of a session."""
-        async with self.db.connection() as conn:
-            await conn.execute(
-                "UPDATE sessions SET title = ? WHERE id = ? AND user_id = ?",
-                (title, session_id, user_id),
-            )
-            await conn.commit()
+        async def _do():
+            async with self.db.connection() as conn:
+                await conn.execute(
+                    "UPDATE sessions SET title = ? WHERE id = ? AND user_id = ?",
+                    (title, session_id, user_id),
+                )
+                await conn.commit()
+
+        await self._retry_on_lock(_do)
 
     async def update_session_status(
         self, user_id: str, session_id: str, status: str
     ) -> None:
         """Update the status of a session."""
-        async with self.db.connection() as conn:
-            await conn.execute(
-                "UPDATE sessions SET status = ?, last_active_at = ? "
-                "WHERE id = ? AND user_id = ?",
-                (status, time.time(), session_id, user_id),
-            )
-            await conn.commit()
+        async def _do():
+            async with self.db.connection() as conn:
+                await conn.execute(
+                    "UPDATE sessions SET status = ?, last_active_at = ? "
+                    "WHERE id = ? AND user_id = ?",
+                    (status, time.time(), session_id, user_id),
+                )
+                await conn.commit()
+
+        await self._retry_on_lock(_do)
 
     async def update_session_cost(
         self, user_id: str, session_id: str, cost_usd: float
     ) -> None:
         """Update the cost of a session."""
-        async with self.db.connection() as conn:
-            await conn.execute(
-                "UPDATE sessions SET cost_usd = ?, last_active_at = ? "
-                "WHERE id = ? AND user_id = ?",
-                (cost_usd, time.time(), session_id, user_id),
-            )
-            await conn.commit()
+        async def _do():
+            async with self.db.connection() as conn:
+                await conn.execute(
+                    "UPDATE sessions SET cost_usd = ?, last_active_at = ? "
+                    "WHERE id = ? AND user_id = ?",
+                    (cost_usd, time.time(), session_id, user_id),
+                )
+                await conn.commit()
+
+        await self._retry_on_lock(_do)
 
     async def update_session_stats(
         self, user_id: str, session_id: str, message_count: int, cost_usd: float
     ) -> None:
         """Update message count and cost for a session."""
-        async with self.db.connection() as conn:
-            await conn.execute(
-                "UPDATE sessions SET message_count = ?, cost_usd = ?, "
-                "last_active_at = ? WHERE id = ? AND user_id = ?",
-                (message_count, cost_usd, time.time(), session_id, user_id),
-            )
-            await conn.commit()
+        async def _do():
+            async with self.db.connection() as conn:
+                await conn.execute(
+                    "UPDATE sessions SET message_count = ?, cost_usd = ?, "
+                    "last_active_at = ? WHERE id = ? AND user_id = ?",
+                    (message_count, cost_usd, time.time(), session_id, user_id),
+                )
+                await conn.commit()
+
+        await self._retry_on_lock(_do)
 
     async def add_message(self, session_id: str, message: dict) -> None:
         """Append a message to a session."""
-        async with self.db.connection() as conn:
-            # Get current max seq for this session
-            cursor = await conn.execute(
-                "SELECT COALESCE(MAX(seq), -1) FROM messages WHERE session_id = ?",
-                (session_id,),
-            )
-            row = await cursor.fetchone()
-            seq = row[0] + 1
+        async def _do():
+            async with self.db.connection() as conn:
+                # Get current max seq for this session
+                cursor = await conn.execute(
+                    "SELECT COALESCE(MAX(seq), -1) FROM messages WHERE session_id = ?",
+                    (session_id,),
+                )
+                row = await cursor.fetchone()
+                seq = row[0] + 1
 
-            payload_json = None
-            if message.get("payload") or (
-                message.get("type") in ("tool_use", "tool_result", "user")
-                and (message.get("content") or message.get("id") or message.get("input") or message.get("tool_use_id") or message.get("data"))
-            ) or message.get("type") == "file_result":
-                # file_result always stores full JSON — its data lives in
-                # the "data" field, not "content" (which is empty string).
-                payload_json = json.dumps(message, ensure_ascii=False)
+                payload_json = None
+                if message.get("payload") or (
+                    message.get("type") in ("tool_use", "tool_result", "user")
+                    and (message.get("content") or message.get("id") or message.get("input") or message.get("tool_use_id") or message.get("data"))
+                ) or message.get("type") == "file_result":
+                    # file_result always stores full JSON — its data lives in
+                    # the "data" field, not "content" (which is empty string).
+                    payload_json = json.dumps(message, ensure_ascii=False)
 
-            usage_json = None
-            if message.get("usage"):
-                usage_json = json.dumps(message["usage"], ensure_ascii=False)
+                usage_json = None
+                if message.get("usage"):
+                    usage_json = json.dumps(message["usage"], ensure_ascii=False)
 
-            await conn.execute(
-                """INSERT INTO messages
-                   (session_id, seq, type, subtype, name, content, payload, usage, created_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (
-                    session_id,
-                    seq,
-                    message.get("type", ""),
-                    message.get("subtype"),
-                    message.get("name"),
-                    message.get("content"),
-                    payload_json,
-                    usage_json,
-                    time.time(),
-                ),
-            )
-            await conn.commit()
+                await conn.execute(
+                    """INSERT INTO messages
+                       (session_id, seq, type, subtype, name, content, payload, usage, created_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        session_id,
+                        seq,
+                        message.get("type", ""),
+                        message.get("subtype"),
+                        message.get("name"),
+                        message.get("content"),
+                        payload_json,
+                        usage_json,
+                        time.time(),
+                    ),
+                )
+                await conn.commit()
+
+        await self._retry_on_lock(_do)
