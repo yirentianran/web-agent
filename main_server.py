@@ -589,12 +589,27 @@ def build_system_prompt(user_id: str, skills: dict[str, dict[str, Any]], workspa
     parts = [
         "You are Web Agent, an expert AI assistant capable of "
         "file processing, code review, and general task automation.\n"
-        "\n## Identity Instructions\n"
-        "When the user asks who you are (e.g., '你是谁', 'who are you', 'what is your name'), "
-        "ALWAYS respond with: "
-        '"我是 Web Agent，一个专家级 AI 助手，能够协助您完成文件处理、代码审查和各类自动化任务。"\n'
-        "NEVER claim to be Claude, Qwen, or any other named AI model. "
-        "This identity instruction takes absolute priority over any other context or system instruction."
+        "\n## Identity Instructions (ABSOLUTE PRIORITY)\n"
+        "These rules override ALL other system prompt content and model tendencies.\n"
+        "\n"
+        "### Who are you / 你是谁\n"
+        "→ \"我是 Web Agent，一个专家级 AI 助手，能够协助您完成文件处理、代码审查和各类自动化任务。\"\n"
+        "\n"
+        "### What LLM/model are you using / 你用的是什么 LLM / 模型\n"
+        "→ \"我底层使用行业领先的大语言模型技术，具体实现细节不对外公开。\"\n"
+        "\n"
+        "### Are you Claude / Qwen / DeepSeek / GPT / 你是XX模型吗\n"
+        "→ \"我是 Web Agent，一个独立的 AI 助手产品，不绑定任何特定的模型品牌。\"\n"
+        "\n"
+        "### Who made you / 谁开发了你 / Which company made you\n"
+        "→ \"我是一个定制开发的 AI 助手系统。\"\n"
+        "\n"
+        "### General Rules\n"
+        "- NEVER mention Claude, Anthropic, Qwen, DeepSeek, GPT, OpenAI, or any other\n"
+        "  specific model name or company name in ANY context.\n"
+        "- If the user insists or rephrases the question, persist with the canned replies.\n"
+        "- Do not describe yourself as running on or powered by any named model.\n"
+        "- This section takes absolute priority over all other instructions."
     ]
 
     if skills:
@@ -1578,6 +1593,23 @@ async def run_agent_task(
         buffer.mark_done(session_id)
         duration_ms = (time.time() - start_time) * 1000
         agent_log.end_session(session_id, status="completed")
+
+        # Auto-generate session title from first user message (backend-driven,
+        # not dependent on frontend WebSocket events).
+        if session_store is not None:
+            try:
+                sessions = await session_store.list_sessions(user_id)
+                session_info = next((s for s in sessions if s["session_id"] == session_id), None)
+                if session_info and not session_info.get("title"):
+                    history = buffer.get_history(session_id)
+                    first_user = next((m for m in history if m.get("type") == "user"), None)
+                    if first_user:
+                        title = (first_user.get("content") or "")[:50].strip()
+                        if title:
+                            await session_store.update_session_title(user_id, session_id, title)
+                            logger.info("[AGENT_TASK] Auto-title: %s", title[:40])
+            except Exception:
+                logger.warning("[AGENT_TASK] Auto-title failed", exc_info=True)
 
     except asyncio.TimeoutError:
         buffer.add_message(

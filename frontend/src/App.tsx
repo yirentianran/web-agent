@@ -614,17 +614,6 @@ function MainApp() {
       if (msg.type === "result" && msg.session_id) {
         // result is always terminal — accept regardless of index
         setSessionStateFor(msg.session_id, "completed");
-        // Auto-generate title from first message
-        if (activeSessionRef.current && firstMessageRef.current) {
-          fetch(
-            `/api/users/${userId}/sessions/${activeSessionRef.current}/title`,
-            {
-              method: "PATCH",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ title: firstMessageRef.current }),
-            },
-          ).catch(() => {});
-        }
         loadSessions();
       }
       // Refresh file count from server when new files are generated
@@ -1057,6 +1046,33 @@ function MainApp() {
     [userId, authToken, activeSession],
   );
 
+  const handleRenameSession = useCallback(
+    async (sessionId: string, title: string) => {
+      try {
+        const headers: Record<string, string> = {};
+        if (authToken) headers["Authorization"] = `Bearer ${authToken}`;
+        headers["Content-Type"] = "application/json";
+        await fetch(
+          `/api/users/${userId}/sessions/${sessionId}/title`,
+          {
+            method: "PATCH",
+            headers,
+            body: JSON.stringify({ title }),
+          },
+        );
+        // Update local sessions state so sidebar reflects immediately
+        setSessions((prev) =>
+          prev.map((s) =>
+            s.session_id === sessionId ? { ...s, title } : s,
+          ),
+        );
+      } catch (err) {
+        logger.error("Failed to rename session", err);
+      }
+    },
+    [userId, authToken],
+  );
+
   const handleLogout = useCallback(() => {
     localStorage.removeItem("authToken");
     localStorage.removeItem("userId");
@@ -1166,6 +1182,7 @@ function MainApp() {
           onSelect={handleSelectSession}
           onNew={handleNewSession}
           onDelete={handleDeleteSession}
+          onRename={handleRenameSession}
           onOpenFiles={() => setFilesOpen(true)}
           filesCount={fileCount}
         />

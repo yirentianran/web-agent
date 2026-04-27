@@ -1,3 +1,4 @@
+import { useState, useRef, useEffect } from 'react'
 import type { SessionItem } from '../lib/types'
 
 interface SidebarProps {
@@ -6,11 +7,36 @@ interface SidebarProps {
   onSelect: (id: string) => void
   onNew: () => void
   onDelete?: (id: string) => void
+  onRename?: (id: string, title: string) => void
   onOpenFiles?: () => void
   filesCount?: number
 }
 
-export default function Sidebar({ sessions, activeSession, onSelect, onNew, onDelete, onOpenFiles, filesCount }: SidebarProps) {
+export default function Sidebar({ sessions, activeSession, onSelect, onNew, onDelete, onRename, onOpenFiles, filesCount }: SidebarProps) {
+  const [editingId, setEditingId] = useState<string | null>(null)
+  const editRef = useRef<HTMLInputElement>(null)
+
+  useEffect(() => {
+    if (editingId && editRef.current) {
+      editRef.current.focus()
+      editRef.current.select()
+    }
+  }, [editingId])
+
+  const handleDoubleClick = (session: SessionItem) => {
+    if (onRename) {
+      setEditingId(session.session_id)
+    }
+  }
+
+  const commitRename = (sessionId: string, value: string) => {
+    const trimmed = value.trim()
+    if (trimmed && onRename) {
+      onRename(sessionId, trimmed)
+    }
+    setEditingId(null)
+  }
+
   return (
     <aside className="sidebar">
       <button className="btn-new-session" onClick={onNew}>
@@ -27,7 +53,27 @@ export default function Sidebar({ sessions, activeSession, onSelect, onNew, onDe
             onClick={() => onSelect(session.session_id)}
           >
             <span className="session-dot">{activeSession === session.session_id ? '●' : '○'}</span>
-            <span className="session-title">{session.title || session.session_id.slice(0, 20)}</span>
+            {editingId === session.session_id ? (
+              <input
+                ref={editRef}
+                className="session-title-input"
+                defaultValue={session.title || session.session_id.slice(0, 20)}
+                onBlur={(e) => commitRename(session.session_id, e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') commitRename(session.session_id, e.currentTarget.value)
+                  if (e.key === 'Escape') setEditingId(null)
+                }}
+                onClick={(e) => e.stopPropagation()}
+              />
+            ) : (
+              <span
+                className="session-title"
+                onDoubleClick={() => handleDoubleClick(session)}
+                title="Double-click to rename"
+              >
+                {session.title || session.session_id.slice(0, 20)}
+              </span>
+            )}
             {onDelete && (
               <button
                 className="btn-delete-session"
