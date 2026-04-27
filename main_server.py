@@ -610,6 +610,25 @@ def build_system_prompt(user_id: str, skills: dict[str, dict[str, Any]], workspa
     extraction_rules = _load_extraction_rules()
     parts.append(f"\n{extraction_rules}")
 
+    # API body size limit — critical for large file handling
+    parts.append(
+        "\n## API Request Size Limit (6 MB)\n"
+        "The underlying model API enforces a strict 6 MB request body limit. "
+        "If the accumulated conversation exceeds this limit, the request will be rejected. "
+        "To prevent this:\n"
+        "- PDF files: ALWAYS use the `pages` parameter to read at most 20 pages per call "
+        "(e.g., `pages: \"1-20\"`, then `pages: \"21-40\"`). Process and summarize each chunk "
+        "before reading the next.\n"
+        "- Large text/excel files: ALWAYS use the `offset` and `limit` parameters to read in "
+        "chunks of at most 500 lines. Summarize findings progressively.\n"
+        "- For long documents, read the table of contents or first few pages first, then "
+        "selectively read relevant sections.\n"
+        "- When you encounter a \"request body too large\" error, immediately stop and re-read "
+        "using smaller chunks.\n"
+        "- Avoid holding full document text in the conversation — extract only what is needed "
+        "for the current task, then produce the output.\n"
+    )
+
     # File generation rules with actual workspace path
     if workspace is not None:
         parts.append(build_file_generation_rules_prompt(workspace))
@@ -950,8 +969,6 @@ def build_sdk_options(
         resume=resume_session_id,  # Resume a previous CLI session (native multi-turn)
         max_buffer_size=int(os.getenv("MAX_BUFFER_SIZE", str(10 * 1024 * 1024))),
     )
-    logger.debug("[STREAM_DEBUG] SDK options built: include_partial_messages=%s, model=%s",
-                options.include_partial_messages, options.model)
     logger.info("[AGENT_CONFIG] SDK env: ANTHROPIC_API_KEY=%s, ANTHROPIC_BASE_URL=%s",
                 "SET" if api_key else "NOT_SET",
                 base_url or "default")
@@ -1076,8 +1093,6 @@ def message_to_dicts(msg: Any) -> Iterator[dict[str, Any]]:
         return
 
     if isinstance(msg, StreamEvent):
-        event_type = msg.event.get("type", "unknown") if msg.event else "unknown"
-        logger.debug("[STREAM_DEBUG] StreamEvent received: type=%s, uuid=%s", event_type, msg.uuid)
         result = {
             "type": "stream_event",
             "uuid": msg.uuid,
@@ -1414,10 +1429,6 @@ async def run_agent_task(
                     content = event.get("content", "")
                     if content and len(content) > 1000:
                         event["content"] = truncate_tool_output(content)
-                # Debug log for stream_event
-                if event.get("type") == "stream_event":
-                    inner_type = event.get("event", {}).get("type", "unknown")
-                    logger.debug("[STREAM_DEBUG] Buffering stream_event: inner_type=%s, session=%s", inner_type, session_id)
                 buffer.add_message(session_id, event)
 
         # Persist CLI-generated session UUID as soon as the receive_response
@@ -2009,10 +2020,6 @@ async def handle_ws(websocket: WebSocket) -> None:
                         idx = last_seen + i
                         msg_type = h.get("type", "unknown")
                         msg_subtype = h.get("subtype", "")
-                        # Debug log for stream_event
-                        if msg_type == "stream_event":
-                            inner_type = h.get("event", {}).get("type", "unknown")
-                            logger.debug("[STREAM_DEBUG] WS sending stream_event: inner_type=%s, idx=%d, session=%s", inner_type, idx, session_id)
                         if msg_type == "system" and msg_subtype == "session_state_changed":
                             logger.debug(
                                 "WS: sending state_change=%s for session %s (idx=%d)",

@@ -2,7 +2,7 @@ import React from 'react'
 import { describe, it, expect, vi } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import '@testing-library/jest-dom/vitest'
-import MessageBubble, { formatBashCommand, formatFileContent } from '../components/MessageBubble'
+import MessageBubble, { formatBashCommand, formatFileContent, parseTagBlocks, hasIncompleteTag } from '../components/MessageBubble'
 import type { Message } from '../lib/types'
 
 function renderMessage(message: Message, overrides?: Partial<React.ComponentProps<typeof MessageBubble>>) {
@@ -1229,5 +1229,177 @@ describe('MessageBubble - streaming text (content_block_delta)', () => {
 
     // Non-text deltas should not render
     expect(container.firstChild).toBeNull()
+  })
+})
+
+describe('parseTagBlocks', () => {
+  it('returns single text block when no tags present', () => {
+    const result = parseTagBlocks('Hello world')
+    expect(result).toEqual([{ kind: 'text', content: 'Hello world' }])
+  })
+
+  it('parses analysis tag', () => {
+    const result = parseTagBlocks('<analysis>deep thinking here</analysis>')
+    expect(result).toEqual([
+      { kind: 'analysis', content: 'deep thinking here' },
+    ])
+  })
+
+  it('parses summary tag', () => {
+    const result = parseTagBlocks('<summary>key points</summary>')
+    expect(result).toEqual([
+      { kind: 'summary', content: 'key points' },
+    ])
+  })
+
+  it('parses mixed tags and text', () => {
+    const result = parseTagBlocks('<analysis>think</analysis>some text<summary>sum</summary>')
+    expect(result).toHaveLength(3)
+    expect(result[0]).toEqual({ kind: 'analysis', content: 'think' })
+    expect(result[1]).toEqual({ kind: 'text', content: 'some text' })
+    expect(result[2]).toEqual({ kind: 'summary', content: 'sum' })
+  })
+
+  it('trims whitespace from tag content', () => {
+    const result = parseTagBlocks('<analysis>\n  content with spaces  \n</analysis>')
+    expect(result[0]).toEqual({ kind: 'analysis', content: 'content with spaces' })
+  })
+
+  it('handles multiple analysis tags', () => {
+    const result = parseTagBlocks('<analysis>A</analysis><analysis>B</analysis>')
+    expect(result).toHaveLength(2)
+    expect(result[0]).toEqual({ kind: 'analysis', content: 'A' })
+    expect(result[1]).toEqual({ kind: 'analysis', content: 'B' })
+  })
+
+  it('handles empty input', () => {
+    const result = parseTagBlocks('')
+    expect(result).toEqual([{ kind: 'text', content: '' }])
+  })
+
+  it('preserves markdown inside tags', () => {
+    const result = parseTagBlocks('<analysis>## Heading\n- list item</analysis>')
+    expect(result[0].content).toContain('## Heading')
+    expect(result[0].content).toContain('- list item')
+  })
+
+  it('handles tag with no content', () => {
+    const result = parseTagBlocks('<analysis></analysis>text')
+    expect(result).toHaveLength(1)
+    expect(result[0]).toEqual({ kind: 'text', content: 'text' })
+  })
+})
+
+describe('hasIncompleteTag', () => {
+  it('returns false when no tags present', () => {
+    expect(hasIncompleteTag('plain text')).toBe(false)
+  })
+
+  it('returns false when all tags are balanced', () => {
+    expect(hasIncompleteTag('<analysis>text</analysis><summary>text</summary>')).toBe(false)
+  })
+
+  it('returns true when analysis tag is unclosed', () => {
+    expect(hasIncompleteTag('<analysis>partial content')).toBe(true)
+  })
+
+  it('returns true when summary tag is unclosed', () => {
+    expect(hasIncompleteTag('<summary>partial content')).toBe(true)
+  })
+
+  it('returns false for empty string', () => {
+    expect(hasIncompleteTag('')).toBe(false)
+  })
+
+  it('handles multiple tag instances', () => {
+    expect(hasIncompleteTag('<analysis>one</analysis><analysis>two')).toBe(true)
+  })
+})
+
+describe('MessageBubble - assistant message with analysis tag', () => {
+  it('renders analysis block as collapsible details', () => {
+    const message: Message = {
+      type: 'assistant',
+      content: '<analysis>step 1: inspect\nstep 2: plan</analysis>Final answer.',
+      index: 0,
+    }
+
+    const { container } = renderMessage(message)
+
+    const details = container.querySelector('details.analysis-block')
+    expect(details).toBeInTheDocument()
+    expect(details).not.toHaveAttribute('open')
+    const summary = details?.querySelector('summary')
+    expect(summary).toHaveTextContent('Analysis')
+  })
+
+  it('renders summary block as collapsible details', () => {
+    const message: Message = {
+      type: 'assistant',
+      content: '<summary>## Key Points\n- Point A\n- Point B</summary>Extra text.',
+      index: 0,
+    }
+
+    const { container } = renderMessage(message)
+
+    const details = container.querySelector('details.summary-block')
+    expect(details).toBeInTheDocument()
+    expect(details).not.toHaveAttribute('open')
+    expect(screen.getByText('Summary')).toBeInTheDocument()
+  })
+
+  it('renders markdown inside summary block', () => {
+    const message: Message = {
+      type: 'assistant',
+      content: '<summary>## Title\n\nContent here</summary>',
+      index: 0,
+    }
+
+    renderMessage(message)
+
+    const heading = screen.getByRole('heading', { level: 2 })
+    expect(heading).toHaveTextContent('Title')
+  })
+
+  it('renders both analysis and summary together', () => {
+    const message: Message = {
+      type: 'assistant',
+      content: '<analysis>internal reasoning</analysis><summary>user-facing summary</summary>Response text.',
+      index: 0,
+    }
+
+    const { container } = renderMessage(message)
+
+    expect(container.querySelector('details.analysis-block')).toBeInTheDocument()
+    expect(container.querySelector('.summary-block')).toBeInTheDocument()
+    expect(screen.getByText('Response text.')).toBeInTheDocument()
+  })
+
+  it('renders thinking and analysis/summary together', () => {
+    const message: Message = {
+      type: 'assistant',
+      content: '[thinking]old format[/thinking]<analysis>new format</analysis><summary>summary</summary>done',
+      index: 0,
+    }
+
+    const { container } = renderMessage(message)
+
+    expect(container.querySelector('details.thinking-block')).toBeInTheDocument()
+    expect(container.querySelector('details.analysis-block')).toBeInTheDocument()
+    expect(container.querySelector('.summary-block')).toBeInTheDocument()
+  })
+
+  it('handles only plain text without tags', () => {
+    const message: Message = {
+      type: 'assistant',
+      content: 'Just a normal response without any tags.',
+      index: 0,
+    }
+
+    const { container } = renderMessage(message)
+
+    expect(container.querySelector('.analysis-block')).not.toBeInTheDocument()
+    expect(container.querySelector('.summary-block')).not.toBeInTheDocument()
+    expect(screen.getByText('Just a normal response without any tags.')).toBeInTheDocument()
   })
 })

@@ -848,3 +848,111 @@ describe('Skill name derivation', () => {
     expect(container.querySelector('.feedback-skill-select')).not.toBeInTheDocument()
   })
 })
+
+// ── Streaming text with analysis/summary tags ─────────────────────
+
+describe('ChatArea - streaming text with analysis/summary tags', () => {
+  it('renders streaming text as plain text when tags are incomplete', () => {
+    const messages: Message[] = [
+      { type: 'user', content: 'Hello', index: 0 },
+    ]
+
+    const { container } = render(
+      <ChatArea
+        messages={messages}
+        sessionId="test-session"
+        sessionState="running"
+        onAnswer={() => {}}
+        scrollPositions={new Map()}
+        streamingText="<analysis>partial content"
+      />,
+    )
+
+    // Should show as plain streaming text (tag incomplete)
+    expect(container.querySelector('.streaming-text')).toBeInTheDocument()
+    expect(container.querySelector('.analysis-block')).not.toBeInTheDocument()
+  })
+
+  it('renders analysis block when tags are complete', () => {
+    const messages: Message[] = [
+      { type: 'user', content: 'Hello', index: 0 },
+    ]
+
+    const { container } = render(
+      <ChatArea
+        messages={messages}
+        sessionId="test-session"
+        sessionState="running"
+        onAnswer={() => {}}
+        scrollPositions={new Map()}
+        streamingText="<analysis>step by step reasoning</analysis>Final answer."
+      />,
+    )
+
+    expect(container.querySelector('details.analysis-block')).toBeInTheDocument()
+    expect(container.querySelector('.streaming-text')).toBeInTheDocument()
+  })
+
+  it('renders summary block as collapsible details', () => {
+    const messages: Message[] = [
+      { type: 'user', content: 'Hello', index: 0 },
+    ]
+
+    const { container } = render(
+      <ChatArea
+        messages={messages}
+        sessionId="test-session"
+        sessionState="running"
+        onAnswer={() => {}}
+        scrollPositions={new Map()}
+        streamingText="<summary>## Key Points\n- Point 1\n- Point 2</summary>"
+      />,
+    )
+
+    const details = container.querySelector('details.summary-block')
+    expect(details).toBeInTheDocument()
+    expect(details).not.toHaveAttribute('open')
+    expect(screen.getByText('Summary')).toBeInTheDocument()
+  })
+
+  it('renders both analysis and summary in streaming text', () => {
+    const messages: Message[] = [
+      { type: 'user', content: 'Hello', index: 0 },
+    ]
+
+    const { container } = render(
+      <ChatArea
+        messages={messages}
+        sessionId="test-session"
+        sessionState="running"
+        onAnswer={() => {}}
+        scrollPositions={new Map()}
+        streamingText="<analysis>think</analysis><summary>summary</summary>done"
+      />,
+    )
+
+    expect(container.querySelector('details.analysis-block')).toBeInTheDocument()
+    expect(container.querySelector('.summary-block')).toBeInTheDocument()
+  })
+
+  it('renders plain streaming text when no tags present', () => {
+    const messages: Message[] = [
+      { type: 'user', content: 'Hello', index: 0 },
+    ]
+
+    const { container } = render(
+      <ChatArea
+        messages={messages}
+        sessionId="test-session"
+        sessionState="running"
+        onAnswer={() => {}}
+        scrollPositions={new Map()}
+        streamingText="Just a normal streaming response."
+      />,
+    )
+
+    expect(container.querySelector('.streaming-text')).toBeInTheDocument()
+    expect(container.querySelector('.analysis-block')).not.toBeInTheDocument()
+    expect(container.querySelector('.summary-block')).not.toBeInTheDocument()
+  })
+})

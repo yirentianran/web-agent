@@ -1,5 +1,6 @@
 import { useEffect, useRef, useCallback, useState, useMemo } from "react";
-import MessageBubble from "./MessageBubble";
+import MessageBubble, { parseTagBlocks, hasIncompleteTag } from "./MessageBubble";
+import MarkdownRenderer from "./MarkdownRenderer";
 import SkillFeedbackWidget from "./SkillFeedbackWidget";
 import StatusSpinner from "./StatusSpinner";
 import type { Message } from "../lib/types";
@@ -357,14 +358,70 @@ export default function ChatArea({
         ))}
 
         {/* Streaming text indicator — shows accumulated content_block_delta text */}
-        {/* Show streaming text WHILE agent is running for progressive display */}
-        {streamingText && streamingText.trim() && (
-          <div className="message assistant-message streaming-message">
-            <div className="bubble">
-              <span className="streaming-text">{streamingText}</span>
+        {/* Parse analysis/summary tags when complete, fall back to plain text when incomplete */}
+        {streamingText && streamingText.trim() && (() => {
+          const isIncomplete = hasIncompleteTag(streamingText)
+          if (isIncomplete) {
+            return (
+              <div className="message assistant-message streaming-message">
+                <div className="bubble">
+                  <span className="streaming-text">{streamingText}</span>
+                </div>
+              </div>
+            )
+          }
+          const tagParts = parseTagBlocks(streamingText)
+          const hasAnalysis = tagParts.some(p => p.kind === 'analysis')
+          const hasSummary = tagParts.some(p => p.kind === 'summary')
+          const textContent = tagParts
+            .filter(p => p.kind === 'text')
+            .map(p => p.content)
+            .join('\n')
+          // If no tags found, render as plain streaming text
+          if (!hasAnalysis && !hasSummary) {
+            return (
+              <div className="message assistant-message streaming-message">
+                <div className="bubble">
+                  <span className="streaming-text">{textContent}</span>
+                </div>
+              </div>
+            )
+          }
+          // Render structured blocks
+          return (
+            <div className="message assistant-message streaming-message">
+              <div className="bubble">
+                {hasAnalysis && (
+                  <details className="analysis-block" open={false}>
+                    <summary>Analysis</summary>
+                    <div className="analysis-content">
+                      {tagParts.filter(p => p.kind === 'analysis').map((p, i) => (
+                        <div key={i} className="analysis-text">
+                          <MarkdownRenderer>{p.content}</MarkdownRenderer>
+                        </div>
+                      ))}
+                    </div>
+                  </details>
+                )}
+                {hasSummary && (
+                  <details className="summary-block" open={false}>
+                    <summary>Summary</summary>
+                    <div className="summary-content">
+                      {tagParts.filter(p => p.kind === 'summary').map((p, i) => (
+                        <div key={i} className="summary-text">
+                          <MarkdownRenderer>{p.content}</MarkdownRenderer>
+                        </div>
+                      ))}
+                    </div>
+                  </details>
+                )}
+                {textContent && (
+                  <span className="streaming-text">{textContent}</span>
+                )}
+              </div>
             </div>
-          </div>
-        )}
+          )
+        })()}
 
         {/* Show agent spinner when session is running */}
         {isAgentRunning && (

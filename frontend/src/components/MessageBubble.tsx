@@ -132,6 +132,49 @@ function parseThinkingBlocks(text: string): Array<{ kind: 'thinking' | 'text'; c
   return parts
 }
 
+// ── Analysis / Summary tag parser ────────────────────────────────
+
+export type TagBlock = { kind: 'analysis' | 'summary' | 'text'; content: string }
+
+export function parseTagBlocks(text: string): TagBlock[] {
+  const parts: TagBlock[] = []
+  const pattern = /<(analysis|summary)>([\s\S]*?)<\/\1>/g
+
+  let lastIndex = 0
+  let match: RegExpExecArray | null
+  while ((match = pattern.exec(text)) !== null) {
+    if (match.index > lastIndex) {
+      const trimmed = text.slice(lastIndex, match.index).trim()
+      if (trimmed) {
+        parts.push({ kind: 'text', content: trimmed })
+      }
+    }
+    const tagContent = match[2].trim()
+    if (tagContent) {
+      parts.push({ kind: match[1] as 'analysis' | 'summary', content: tagContent })
+    }
+    lastIndex = match.index + match[0].length
+  }
+  if (lastIndex < text.length) {
+    const trimmed = text.slice(lastIndex).trim()
+    if (trimmed) {
+      parts.push({ kind: 'text', content: trimmed })
+    }
+  }
+  if (parts.length === 0) {
+    return [{ kind: 'text', content: text }]
+  }
+  return parts
+}
+
+export function hasIncompleteTag(text: string): boolean {
+  const openAnalysis = (text.match(/<analysis>/g) || []).length
+  const closeAnalysis = (text.match(/<\/analysis>/g) || []).length
+  const openSummary = (text.match(/<summary>/g) || []).length
+  const closeSummary = (text.match(/<\/summary>/g) || []).length
+  return openAnalysis !== closeAnalysis || openSummary !== closeSummary
+}
+
 interface MessageBubbleProps {
   message: Message
   sessionId: string
@@ -440,8 +483,26 @@ export default function MessageBubble({ message, sessionId, onAnswer, onFileClic
   const hasContent = message.content && message.content.trim().length > 0
   if (!hasContent) return null
 
-  const parts = parseThinkingBlocks(message.content)
-  const hasThinking = parts.some(p => p.kind === 'thinking')
+  const thinkingParts = parseThinkingBlocks(message.content)
+  const hasThinking = thinkingParts.some(p => p.kind === 'thinking')
+
+  // For each text part, further parse analysis/summary tags
+  const tagParts = thinkingParts.flatMap(p => {
+    if (p.kind === 'thinking') return [p]
+    return parseTagBlocks(p.content).map(tp => ({
+      kind: tp.kind as 'thinking' | 'analysis' | 'summary' | 'text',
+      content: tp.content,
+    }))
+  })
+
+  const hasAnalysis = tagParts.some(p => p.kind === 'analysis')
+  const hasSummary = tagParts.some(p => p.kind === 'summary')
+
+  // Combine remaining text parts (text + thinking that stay visible)
+  const textContent = tagParts
+    .filter(p => p.kind === 'text')
+    .map(p => p.content)
+    .join('\n')
 
   return (
     <div className="message assistant-message">
@@ -450,15 +511,39 @@ export default function MessageBubble({ message, sessionId, onAnswer, onFileClic
           <details className="thinking-block" open={false}>
             <summary>Thinking</summary>
             <div className="thinking-content">
-              {parts.filter(p => p.kind === 'thinking').map((p, i) => (
+              {tagParts.filter(p => p.kind === 'thinking').map((p, i) => (
                 <div key={i} className="thinking-text">{p.content}</div>
               ))}
             </div>
           </details>
         )}
-        <MarkdownRenderer>
-          {parts.filter(p => p.kind === 'text').map(p => p.content).join('\n')}
-        </MarkdownRenderer>
+        {hasAnalysis && (
+          <details className="analysis-block" open={false}>
+            <summary>Analysis</summary>
+            <div className="analysis-content">
+              {tagParts.filter(p => p.kind === 'analysis').map((p, i) => (
+                <div key={i} className="analysis-text">
+                  <MarkdownRenderer>{p.content}</MarkdownRenderer>
+                </div>
+              ))}
+            </div>
+          </details>
+        )}
+        {hasSummary && (
+          <details className="summary-block" open={false}>
+            <summary>Summary</summary>
+            <div className="summary-content">
+              {tagParts.filter(p => p.kind === 'summary').map((p, i) => (
+                <div key={i} className="summary-text">
+                  <MarkdownRenderer>{p.content}</MarkdownRenderer>
+                </div>
+              ))}
+            </div>
+          </details>
+        )}
+        {textContent && (
+          <MarkdownRenderer>{textContent}</MarkdownRenderer>
+        )}
       </div>
     </div>
   )
