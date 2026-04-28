@@ -9,6 +9,7 @@ services:
       - "${PORT:-8000}:8000"
     env_file:
       - .env
+      - .env.docker
     volumes:
       - web-agent-data:/data
     restart: unless-stopped

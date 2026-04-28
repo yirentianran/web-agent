@@ -15,16 +15,12 @@ if [ -f ".venv/bin/activate" ]; then
   source .venv/bin/activate
 fi
 
-# Load environment variables from .env
+# Load environment variables from .env (includes local dev paths like DATA_ROOT=./data)
 if [ -f ".env" ]; then
   set -a
   source .env
   set +a
 fi
-
-# Override data paths for local development (relative to project root)
-export DATA_ROOT=./data
-export DATA_DB_PATH=./data/web-agent.db
 
 # Ensure frontend dependencies are installed
 if [ ! -d "frontend/node_modules" ]; then
