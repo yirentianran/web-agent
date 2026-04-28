@@ -136,13 +136,10 @@ export default function ChatArea({
           setAgentStartTime(now);
         }
       } else {
-        // Session is not running — clean up any stale stored start time
-        // so the next run gets a fresh timestamp instead of accumulating
-        // time from a previous run.
-        if (sessionId) {
-          sessionStartTimesRef.current.delete(sessionId);
-          saveStartTimes(sessionStartTimesRef.current);
-        }
+        // Session is not running on mount or change — hide the spinner.
+        // Do NOT delete the stored start time here: the state may
+        // later transition to 'running' (e.g. page refresh while agent
+        // is running, buffer status API returns after mount).
         setAgentStartTime(null);
       }
       return;
@@ -227,6 +224,21 @@ export default function ChatArea({
       scrollToBottom();
     }
   }, [sessionId, messages, scrollToBottom]);
+
+  // ── Auto-follow bottom when content height changes ───────────────
+  // Markdown rendering, code highlighting, and lazy-loaded media can
+  // increase scrollHeight after the initial scrollToBottom call.
+  // ResizeObserver keeps the viewport anchored to the bottom as long
+  // as the user hasn't scrolled away.
+  useEffect(() => {
+    const container = containerRef.current
+    if (!container || typeof ResizeObserver === 'undefined') return
+    const ro = new ResizeObserver(() => {
+      if (isUserAtBottomRef.current) scrollToBottom()
+    })
+    ro.observe(container)
+    return () => ro.disconnect()
+  }, [scrollToBottom])
 
   // ── Running transition — always scroll to bottom ────────────────
   const prevStateRef = useRef<string | null>(null);
