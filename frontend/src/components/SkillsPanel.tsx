@@ -186,16 +186,19 @@ function SkillList({ skills, isPersonal, onDelete, onView, onPromote, promoting 
   return (
     <div className="skill-list">
       {skills.map((skill) => (
-        <div key={skill.name} className="skill-row">
+        <div key={skill.name} className={`skill-row${skill.valid ? '' : ' skill-invalid'}`}>
           <div className="skill-header">
-            <span className="skill-icon">📦</span>
+            <span className="skill-icon">{skill.valid ? '📦' : '⚠️'}</span>
             <span className="skill-name">{skill.name}</span>
             <span className={`skill-badge ${skill.source}`}>{skill.source}</span>
+            {!skill.valid && <span className="skill-badge invalid">invalid</span>}
           </div>
-          <div className="skill-meta">Created: {skill.created_at ? new Date(skill.created_at).toLocaleDateString() : 'N/A'}</div>
+          <div className="skill-meta">{skill.description}</div>
           <div className="skill-actions">
-            <button className="skill-view-btn" onClick={() => onView(skill)} type="button">View</button>
-            {isPersonal && (
+            {skill.valid && (
+              <button className="skill-view-btn" onClick={() => onView(skill)} type="button">View</button>
+            )}
+            {isPersonal && skill.valid && (
               <button className="skill-promote-btn" onClick={() => onPromote(skill.name)} type="button" disabled={promoting === skill.name}>
                 {promoting === skill.name ? 'Promoting...' : 'Promote'}
               </button>

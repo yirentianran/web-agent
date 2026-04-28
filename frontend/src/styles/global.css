@@ -2881,6 +2881,17 @@ body {
   color: #15803d;
 }
 
+.skill-badge.invalid {
+  background: #fef3c7;
+  color: #a16207;
+}
+
+.skill-row.skill-invalid {
+  border-left: 3px solid #f59e0b;
+  background: #fffbeb;
+  opacity: 0.85;
+}
+
 .skill-meta {
   font-size: 12px;
   color: #71717a;

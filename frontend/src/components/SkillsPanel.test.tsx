@@ -35,6 +35,7 @@ function mockSkills(source: 'shared' | 'personal') {
       path: `/path/to/${source}-skills/code-review`,
       created_at: '2026-04-15T00:00:00Z',
       created_by: 'upload',
+      valid: true,
     },
   ]
 }

@@ -75,6 +75,7 @@ class SkillInfo(BaseModel):
     path: str = ""
     created_at: str = ""  # ISO 8601 timestamp
     created_by: str = ""  # "upload" | "skill-creator"
+    valid: bool = True  # False when SKILL.md is missing or unparseable
 
 
 

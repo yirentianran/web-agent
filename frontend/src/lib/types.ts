@@ -75,6 +75,7 @@ export interface Skill {
   path: string
   created_at: string
   created_by: string
+  valid: boolean
 }
 
 export interface TodoWriteTodo {

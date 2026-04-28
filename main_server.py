@@ -2500,20 +2500,29 @@ async def list_shared_skills() -> list[SkillInfo]:
         return []
     results = []
     for d in sorted(skills_dir.iterdir()):
-        if not d.is_dir() or not (d / "SKILL.md").exists():
+        if not d.is_dir():
             continue
         created_at, created_by = _read_skill_meta(d)
-        content = (d / "SKILL.md").read_text()
-        frontmatter = parse_skill_frontmatter(content)
+        skill_file = d / "SKILL.md"
+        if skill_file.exists():
+            content = skill_file.read_text()
+            frontmatter = parse_skill_frontmatter(content)
+            description = frontmatter.get("description") or ""
+            valid = True
+        else:
+            content = ""
+            description = "⚠ SKILL.md missing — this skill is invalid"
+            valid = False
         results.append(
             SkillInfo(
                 name=d.name,
                 source=SkillSource.SHARED,
                 content=content,
-                description=frontmatter.get("description") or "",
+                description=description,
                 path=str(d),
                 created_at=created_at,
                 created_by=created_by,
+                valid=valid,
             )
         )
     return results
@@ -2545,20 +2554,26 @@ async def list_user_skills(user_id: str) -> list[SkillInfo]:
         if not d.is_dir() or d.is_symlink() or (d / ".shared_skill_source").exists():
             continue  # skip symlinks and Windows-copied shared skills
         skill_file = d / "SKILL.md"
-        if not skill_file.exists():
-            continue
         created_at, created_by = _read_skill_meta(d)
-        content = skill_file.read_text()
-        frontmatter = parse_skill_frontmatter(content)
+        if skill_file.exists():
+            content = skill_file.read_text()
+            frontmatter = parse_skill_frontmatter(content)
+            description = frontmatter.get("description") or ""
+            valid = True
+        else:
+            content = ""
+            description = "⚠ SKILL.md missing — this skill is invalid"
+            valid = False
         results.append(
             SkillInfo(
                 name=d.name,
                 source=SkillSource.PERSONAL,
                 content=content,
-                description=frontmatter.get("description") or "",
+                description=description,
                 path=str(d),
                 created_at=created_at,
                 created_by=created_by,
+                valid=valid,
             )
         )
     return results
@@ -2586,18 +2601,30 @@ def _extract_zip_to_dir(zip_data: bytes, target_dir: Path) -> list[str]:
         raise HTTPException(status_code=400, detail="Invalid zip file")
     entries = zf.infolist()
 
-    if len(entries) > MAX_SKILL_FILES:
+    # Helper to detect macOS zip artifacts (resource forks, metadata)
+    def _mac_artifact(path: str) -> bool:
+        parts = path.split("/")
+        return any(p.startswith("__MACOSX") or p.startswith("._") for p in parts)
+
+    real_entries = [e for e in entries if not _mac_artifact(e.filename)]
+    if len(real_entries) > MAX_SKILL_FILES:
         raise HTTPException(status_code=400, detail=f"Too many files (max {MAX_SKILL_FILES})")
 
-    total_uncompressed = sum(e.file_size for e in entries)
+    total_uncompressed = sum(e.file_size for e in real_entries)
     if total_uncompressed > MAX_UNCOMPRESSED:
         raise HTTPException(status_code=400, detail="Zip too large when uncompressed (max 100MB)")
 
     target_resolved = target_dir.resolve()
     extracted: list[str] = []
 
-    # Collect all file paths and compute the common leading directory prefix
-    file_paths = [e.filename for e in entries if not e.is_dir() and e.filename]
+    # Collect all file paths and compute the common leading directory prefix.
+    # macOS zip artifacts are excluded from prefix computation so they don't
+    # break the common-prefix detection.
+    file_paths = [
+        e.filename
+        for e in real_entries
+        if not e.is_dir() and e.filename
+    ]
     dirs_per_file = [p.split("/")[:-1] for p in file_paths]
     common_prefix = ""
     if dirs_per_file and all(len(d) > 0 for d in dirs_per_file):
@@ -2612,6 +2639,9 @@ def _extract_zip_to_dir(zip_data: bytes, target_dir: Path) -> list[str]:
 
     for entry in entries:
         if entry.is_dir():
+            continue
+        # Skip macOS zip artifacts (resource forks, metadata)
+        if _mac_artifact(entry.filename):
             continue
         # Reject symlinks
         file_type = (entry.external_attr >> 16) & 0o170000
