@@ -204,7 +204,7 @@ function MainApp() {
   const activeSessionState = activeSession
     ? (sessionStates.get(activeSession) ?? "idle")
     : "idle";
-  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [skillsOpen, setSkillsOpen] = useState(false);
   const [filesOpen, setFilesOpen] = useState(false);
   const [showFeedback, setShowFeedback] = useState(false);
   const [showEvolution, setShowEvolution] = useState(false);
@@ -1193,7 +1193,7 @@ function MainApp() {
       <Header
         connectionStatus={status}
         userId={userId}
-        onOpenSettings={() => setSettingsOpen(true)}
+        onOpenSkills={() => setSkillsOpen(true)}
         onOpenFeedback={() => setShowFeedback(true)}
         onOpenEvolution={() => setShowEvolution(true)}
         onOpenMCP={() => setShowMCP(true)}
@@ -1251,12 +1251,12 @@ function MainApp() {
         </main>
       </div>
 
-      {/* Settings Overlay */}
-      {settingsOpen && (
+      {/* Skills Management Overlay */}
+      {skillsOpen && (
         <SettingsPanel
-          authToken={authToken ?? ""}
+          authToken={authToken}
           userId={userId}
-          onClose={() => setSettingsOpen(false)}
+          onClose={() => setSkillsOpen(false)}
         />
       )}
       {filesOpen && (

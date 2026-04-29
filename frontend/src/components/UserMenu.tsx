@@ -2,14 +2,14 @@ import { useState, useRef, useEffect, type MouseEvent } from 'react'
 
 interface UserMenuProps {
   userId: string
-  onOpenSettings: () => void
+  onOpenSkills: () => void
   onOpenFeedback: () => void
   onOpenEvolution: () => void
   onOpenMCP: () => void
   onLogout: () => void
 }
 
-export default function UserMenu({ userId, onOpenSettings, onOpenFeedback, onOpenEvolution, onOpenMCP, onLogout }: UserMenuProps) {
+export default function UserMenu({ userId, onOpenSkills, onOpenFeedback, onOpenEvolution, onOpenMCP, onLogout }: UserMenuProps) {
   const [open, setOpen] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
 
@@ -42,7 +42,7 @@ export default function UserMenu({ userId, onOpenSettings, onOpenFeedback, onOpe
       </button>
       {open && (
         <div className="user-menu-dropdown" role="menu">
-          <button className="user-menu-item" role="menuitem" onClick={() => handleAction(onOpenSettings)} type="button">
+          <button className="user-menu-item" role="menuitem" onClick={() => handleAction(onOpenSkills)} type="button">
             <span className="user-menu-item-icon">⚙</span>
             Skills Management
           </button>

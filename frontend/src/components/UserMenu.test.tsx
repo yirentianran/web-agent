@@ -5,7 +5,7 @@ import UserMenu from '../components/UserMenu'
 
 function renderUserMenu(props?: {
   userId?: string
-  onOpenSettings?: () => void
+  onOpenSkills?: () => void
   onOpenFeedback?: () => void
   onOpenEvolution?: () => void
   onOpenMCP?: () => void
@@ -14,7 +14,7 @@ function renderUserMenu(props?: {
   return render(
     <UserMenu
       userId={props?.userId ?? 'test-user'}
-      onOpenSettings={props?.onOpenSettings ?? (() => {})}
+      onOpenSkills={props?.onOpenSkills ?? (() => {})}
       onOpenFeedback={props?.onOpenFeedback ?? (() => {})}
       onOpenEvolution={props?.onOpenEvolution ?? (() => {})}
       onOpenMCP={props?.onOpenMCP ?? (() => {})}
@@ -89,12 +89,12 @@ describe('UserMenu - menu item order', () => {
 })
 
 describe('UserMenu - actions', () => {
-  it('calls onOpenSettings when Settings is clicked', () => {
-    const onOpenSettings = vi.fn()
-    renderUserMenu({ onOpenSettings })
+  it('calls onOpenSkills when Skills Management is clicked', () => {
+    const onOpenSkills = vi.fn()
+    renderUserMenu({ onOpenSkills })
     fireEvent.click(screen.getByText('test-user'))
     fireEvent.click(screen.getByText('Skills Management'))
-    expect(onOpenSettings).toHaveBeenCalledTimes(1)
+    expect(onOpenSkills).toHaveBeenCalledTimes(1)
   })
 
   it('calls onLogout when Logout is clicked', () => {
@@ -105,9 +105,9 @@ describe('UserMenu - actions', () => {
     expect(onLogout).toHaveBeenCalledTimes(1)
   })
 
-  it('closes dropdown after selecting Settings', () => {
-    const onOpenSettings = vi.fn()
-    renderUserMenu({ onOpenSettings })
+  it('closes dropdown after selecting Skills Management', () => {
+    const onOpenSkills = vi.fn()
+    renderUserMenu({ onOpenSkills })
     fireEvent.click(screen.getByText('test-user'))
     fireEvent.click(screen.getByText('Skills Management'))
     expect(screen.queryByText('Skills Management')).not.toBeInTheDocument()

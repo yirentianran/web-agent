@@ -1,7 +1,7 @@
 import SkillsPanel from './SkillsPanel'
 
 interface SettingsPanelProps {
-  authToken: string
+  authToken: string | null
   userId: string
   onClose: () => void
 }
@@ -12,10 +12,7 @@ export default function SettingsPanel({ authToken, userId, onClose }: SettingsPa
       <div className="settings-panel-container" onClick={(e) => e.stopPropagation()}>
         <div className="settings-panel">
           <div className="sp-tabs">
-            <button
-              className="sp-tab active"
-              disabled
-            >
+            <button className="sp-tab active" disabled>
               Skills Management
             </button>
           </div>
