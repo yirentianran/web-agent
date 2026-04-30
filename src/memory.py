@@ -32,10 +32,13 @@ def _deep_merge(base: dict[str, Any], patch: dict[str, Any]) -> dict[str, Any]:
     """Deep-merge *patch* into *base*, returning a new dict.
 
     Lists are extended, dicts are recursively merged, scalars are overwritten.
+    A value of ``None`` deletes the key from the result.
     """
     result = dict(base)
     for key, value in patch.items():
-        if (
+        if value is None:
+            result.pop(key, None)
+        elif (
             key in result
             and isinstance(result[key], dict)
             and isinstance(value, dict)
@@ -170,10 +173,17 @@ class MemoryManager:
     def _agent_memory_dir(self) -> Path:
         return self.user_dir / "memory"
 
-    def write_agent_note(self, filename: str, content: str) -> None:
-        """Write a Markdown note to the agent memory directory."""
+    def write_agent_note(self, filename: str, content: str) -> str:
+        """Write a Markdown note to the agent memory directory.
+
+        Auto-appends ``.md`` if the filename has no extension.
+        Returns the actual filename written (with extension).
+        """
+        if not Path(filename).suffix:
+            filename = f"{filename}.md"
         self._agent_memory_dir.mkdir(parents=True, exist_ok=True)
         (self._agent_memory_dir / filename).write_text(content)
+        return filename
 
     def read_agent_note(self, filename: str) -> str:
         """Read a Markdown note. Returns empty string if absent."""

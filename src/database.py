@@ -25,20 +25,25 @@ import aiosqlite
 _CREATE_TABLES = """
 -- Users table
 CREATE TABLE IF NOT EXISTS users (
-    id TEXT PRIMARY KEY,
-    created_at REAL NOT NULL DEFAULT (strftime('%s', 'now')),
+    user_id       TEXT PRIMARY KEY,
+    password_hash TEXT NOT NULL DEFAULT '',
+    role          TEXT NOT NULL DEFAULT 'user',
+    status        TEXT NOT NULL DEFAULT 'active',
+    disabled_at   REAL,
+    disabled_by   TEXT,
+    created_at    REAL NOT NULL DEFAULT (strftime('%s', 'now')),
     last_active_at REAL NOT NULL DEFAULT (strftime('%s', 'now'))
 );
 
 -- Sessions table
 CREATE TABLE IF NOT EXISTS sessions (
-    id TEXT PRIMARY KEY,
-    user_id TEXT NOT NULL REFERENCES users(id),
-    title TEXT NOT NULL DEFAULT '',
-    status TEXT NOT NULL DEFAULT 'idle',
-    cost_usd REAL NOT NULL DEFAULT 0,
+    session_id   TEXT PRIMARY KEY,
+    user_id      TEXT NOT NULL REFERENCES users(user_id),
+    title        TEXT NOT NULL DEFAULT '',
+    status       TEXT NOT NULL DEFAULT 'idle',
+    cost_usd     REAL NOT NULL DEFAULT 0,
     message_count INTEGER NOT NULL DEFAULT 0,
-    created_at REAL NOT NULL DEFAULT (strftime('%s', 'now')),
+    created_at   REAL NOT NULL DEFAULT (strftime('%s', 'now')),
     last_active_at REAL NOT NULL DEFAULT (strftime('%s', 'now'))
 );
 
@@ -48,7 +53,7 @@ CREATE INDEX IF NOT EXISTS idx_sessions_user_status ON sessions(user_id, status)
 -- Messages table
 CREATE TABLE IF NOT EXISTS messages (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    session_id TEXT NOT NULL REFERENCES sessions(id),
+    session_id TEXT NOT NULL REFERENCES sessions(session_id),
     seq INTEGER NOT NULL,
     type TEXT NOT NULL,
     subtype TEXT,
@@ -63,7 +68,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_session_seq ON messages(session_i
 
 -- User memory (L1 platform memory)
 CREATE TABLE IF NOT EXISTS user_memory (
-    user_id TEXT PRIMARY KEY REFERENCES users(id),
+    user_id TEXT PRIMARY KEY REFERENCES users(user_id),
     preferences TEXT NOT NULL DEFAULT '{}',
     entity_memory TEXT NOT NULL DEFAULT '{}',
     audit_context TEXT NOT NULL DEFAULT '{}',
@@ -74,7 +79,7 @@ CREATE TABLE IF NOT EXISTS user_memory (
 -- Tasks (sub-agent)
 CREATE TABLE IF NOT EXISTS tasks (
     id TEXT PRIMARY KEY,
-    user_id TEXT NOT NULL REFERENCES users(id),
+    user_id TEXT NOT NULL REFERENCES users(user_id),
     subject TEXT NOT NULL,
     description TEXT NOT NULL DEFAULT '',
     active_form TEXT NOT NULL DEFAULT '',
@@ -109,7 +114,7 @@ CREATE TABLE IF NOT EXISTS mcp_servers (
 CREATE TABLE IF NOT EXISTS skill_feedback (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     skill_name TEXT NOT NULL,
-    user_id TEXT NOT NULL REFERENCES users(id),
+    user_id TEXT NOT NULL REFERENCES users(user_id),
     session_id TEXT,
     rating INTEGER NOT NULL,
     comment TEXT NOT NULL DEFAULT '',
@@ -120,6 +125,51 @@ CREATE TABLE IF NOT EXISTS skill_feedback (
 );
 
 CREATE INDEX IF NOT EXISTS idx_skill_feedback_skill ON skill_feedback(skill_name);
+
+-- Audit log (SQL-based)
+CREATE TABLE IF NOT EXISTS audit_log (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    category   TEXT NOT NULL,
+    user_id    TEXT,
+    action     TEXT,
+    data       TEXT NOT NULL DEFAULT '{}',
+    created_at REAL NOT NULL DEFAULT (strftime('%s', 'now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_audit_log_category ON audit_log(category, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_audit_log_user ON audit_log(user_id, created_at DESC);
+
+-- Uploads
+CREATE TABLE IF NOT EXISTS uploads (
+    id          TEXT PRIMARY KEY,
+    user_id     TEXT NOT NULL REFERENCES users(user_id),
+    session_id  TEXT NOT NULL REFERENCES sessions(session_id),
+    filename    TEXT NOT NULL,
+    stored_name TEXT NOT NULL,
+    file_size   INTEGER NOT NULL DEFAULT 0,
+    mime_type   TEXT NOT NULL DEFAULT '',
+    url         TEXT NOT NULL DEFAULT '',
+    created_at  REAL NOT NULL DEFAULT (strftime('%s', 'now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_uploads_user ON uploads(user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_uploads_session ON uploads(session_id);
+
+-- Generated files
+CREATE TABLE IF NOT EXISTS generated_files (
+    id          TEXT PRIMARY KEY,
+    user_id     TEXT NOT NULL REFERENCES users(user_id),
+    session_id  TEXT NOT NULL REFERENCES sessions(session_id),
+    filename    TEXT NOT NULL,
+    stored_name TEXT NOT NULL,
+    file_size   INTEGER NOT NULL DEFAULT 0,
+    mime_type   TEXT NOT NULL DEFAULT '',
+    url         TEXT NOT NULL DEFAULT '',
+    created_at  REAL NOT NULL DEFAULT (strftime('%s', 'now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_generated_files_user ON generated_files(user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_generated_files_session ON generated_files(session_id);
 """
 
 
@@ -176,6 +226,86 @@ class Database:
         if self._pool is None:
             raise RuntimeError("Database not initialized. Call init() first.")
         yield self._pool
+
+    async def migrate_v2(self) -> None:
+        """Migrate existing databases from v1 to v2 schema.
+
+        Safe to run on already-migrated databases (all ALTER statements
+        are wrapped in try/except).
+        """
+        async with self.connection() as conn:
+            # Phase 1: Rename users.id -> users.user_id
+            try:
+                await conn.execute("ALTER TABLE users RENAME COLUMN id TO user_id")
+            except Exception:
+                pass  # Already renamed
+
+            # Add new columns to users
+            for col_stmt in [
+                "ALTER TABLE users ADD COLUMN password_hash TEXT NOT NULL DEFAULT ''",
+                "ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'user'",
+                "ALTER TABLE users ADD COLUMN status TEXT NOT NULL DEFAULT 'active'",
+                "ALTER TABLE users ADD COLUMN disabled_at REAL",
+                "ALTER TABLE users ADD COLUMN disabled_by TEXT",
+            ]:
+                try:
+                    await conn.execute(col_stmt)
+                except Exception:
+                    pass  # Column already exists
+
+            # Phase 2: Rename sessions.id -> sessions.session_id
+            try:
+                await conn.execute(
+                    "ALTER TABLE sessions RENAME COLUMN id TO session_id"
+                )
+            except Exception:
+                pass
+
+            # Phase 3: Add new tables (CREATE TABLE IF NOT EXISTS is idempotent)
+            await conn.executescript(
+                """CREATE TABLE IF NOT EXISTS audit_log (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    category TEXT NOT NULL,
+                    user_id TEXT,
+                    action TEXT,
+                    data TEXT NOT NULL DEFAULT '{}',
+                    created_at REAL NOT NULL DEFAULT (strftime('%s', 'now'))
+                );
+                CREATE INDEX IF NOT EXISTS idx_audit_log_category
+                    ON audit_log(category, created_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_audit_log_user
+                    ON audit_log(user_id, created_at DESC);
+                CREATE TABLE IF NOT EXISTS uploads (
+                    id TEXT PRIMARY KEY,
+                    user_id TEXT NOT NULL REFERENCES users(user_id),
+                    session_id TEXT NOT NULL REFERENCES sessions(session_id),
+                    filename TEXT NOT NULL,
+                    stored_name TEXT NOT NULL,
+                    file_size INTEGER NOT NULL DEFAULT 0,
+                    mime_type TEXT NOT NULL DEFAULT '',
+                    url TEXT NOT NULL DEFAULT '',
+                    created_at REAL NOT NULL DEFAULT (strftime('%s', 'now'))
+                );
+                CREATE INDEX IF NOT EXISTS idx_uploads_user
+                    ON uploads(user_id, created_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_uploads_session ON uploads(session_id);
+                CREATE TABLE IF NOT EXISTS generated_files (
+                    id TEXT PRIMARY KEY,
+                    user_id TEXT NOT NULL REFERENCES users(user_id),
+                    session_id TEXT NOT NULL REFERENCES sessions(session_id),
+                    filename TEXT NOT NULL,
+                    stored_name TEXT NOT NULL,
+                    file_size INTEGER NOT NULL DEFAULT 0,
+                    mime_type TEXT NOT NULL DEFAULT '',
+                    url TEXT NOT NULL DEFAULT '',
+                    created_at REAL NOT NULL DEFAULT (strftime('%s', 'now'))
+                );
+                CREATE INDEX IF NOT EXISTS idx_generated_files_user
+                    ON generated_files(user_id, created_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_generated_files_session
+                    ON generated_files(session_id);"""
+            )
+            await conn.commit()
 
     async def close(self) -> None:
         """Close the database connection."""

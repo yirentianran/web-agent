@@ -38,14 +38,14 @@ class TestCreateSession:
 
         # Verify user was created
         async with store.db.connection() as conn:
-            cursor = await conn.execute("SELECT id FROM users WHERE id = ?", ("u1",))
+            cursor = await conn.execute("SELECT user_id FROM users WHERE user_id = ?", ("u1",))
             row = await cursor.fetchone()
             assert row is not None
             assert row[0] == "u1"
 
         # Verify session was created
         async with store.db.connection() as conn:
-            cursor = await conn.execute("SELECT id, user_id FROM sessions WHERE id = ?", ("s1",))
+            cursor = await conn.execute("SELECT session_id, user_id FROM sessions WHERE session_id = ?", ("s1",))
             row = await cursor.fetchone()
             assert row is not None
             assert row[0] == "s1"
@@ -159,16 +159,16 @@ class TestGetSessionHistory:
     @pytest.mark.asyncio
     async def test_returns_empty_for_new_session(self, store: SessionStore) -> None:
         await store.create_session(user_id="u1", session_id="s1")
-        history = await store.get_session_history(session_id="s1")
+        history = await store.get_session_history(user_id="u1", session_id="s1")
         assert history == []
 
     @pytest.mark.asyncio
     async def test_returns_messages_ordered_by_seq(self, store: SessionStore) -> None:
         await store.create_session(user_id="u1", session_id="s1")
-        await store.add_message(session_id="s1", message={"type": "user", "content": "hello"})
-        await store.add_message(session_id="s1", message={"type": "assistant", "content": "hi"})
+        await store.add_message(user_id="u1", session_id="s1", message={"type": "user", "content": "hello"})
+        await store.add_message(user_id="u1", session_id="s1", message={"type": "assistant", "content": "hi"})
 
-        history = await store.get_session_history(session_id="s1")
+        history = await store.get_session_history(user_id="u1", session_id="s1")
         assert len(history) == 2
         assert history[0]["type"] == "user"
         assert history[1]["type"] == "assistant"
@@ -177,9 +177,9 @@ class TestGetSessionHistory:
     async def test_respects_after_index(self, store: SessionStore) -> None:
         await store.create_session(user_id="u1", session_id="s1")
         for i in range(5):
-            await store.add_message(session_id="s1", message={"type": "user", "content": f"msg-{i}"})
+            await store.add_message(user_id="u1", session_id="s1", message={"type": "user", "content": f"msg-{i}"})
 
-        history = await store.get_session_history(session_id="s1", after_index=3)
+        history = await store.get_session_history(user_id="u1", session_id="s1", after_index=3)
         assert len(history) == 2
         assert history[0]["content"] == "msg-3"
         assert history[1]["content"] == "msg-4"
@@ -193,9 +193,9 @@ class TestGetSessionHistory:
             "content": "echo hello",
             "usage": {"input_tokens": 100, "output_tokens": 50},
         }
-        await store.add_message(session_id="s1", message=complex_msg)
+        await store.add_message(user_id="u1", session_id="s1", message=complex_msg)
 
-        history = await store.get_session_history(session_id="s1")
+        history = await store.get_session_history(user_id="u1", session_id="s1")
         assert len(history) == 1
         assert history[0]["type"] == "tool_use"
         assert history[0]["name"] == "Bash"
@@ -212,9 +212,9 @@ class TestGetSessionHistory:
             "id": "toolu_abc123",
             "input": {"command": "echo hello", "description": "Print hello"},
         }
-        await store.add_message(session_id="s1", message=tool_use_msg)
+        await store.add_message(user_id="u1", session_id="s1", message=tool_use_msg)
 
-        history = await store.get_session_history(session_id="s1")
+        history = await store.get_session_history(user_id="u1", session_id="s1")
         assert len(history) == 1
         msg = history[0]
         assert msg["type"] == "tool_use"
@@ -235,9 +235,9 @@ class TestGetSessionHistory:
             "tool_use_id": "toolu_abc123",
             "content": "hello",
         }
-        await store.add_message(session_id="s1", message=tool_result_msg)
+        await store.add_message(user_id="u1", session_id="s1", message=tool_result_msg)
 
-        history = await store.get_session_history(session_id="s1")
+        history = await store.get_session_history(user_id="u1", session_id="s1")
         assert len(history) == 1
         msg = history[0]
         assert msg["type"] == "tool_result"
@@ -269,9 +269,9 @@ class TestGetSessionHistory:
                 },
             ],
         }
-        await store.add_message(session_id="s1", message=file_result_msg)
+        await store.add_message(user_id="u1", session_id="s1", message=file_result_msg)
 
-        history = await store.get_session_history(session_id="s1")
+        history = await store.get_session_history(user_id="u1", session_id="s1")
         assert len(history) == 1
         msg = history[0]
         assert msg["type"] == "file_result"
@@ -285,18 +285,18 @@ class TestGetSessionHistory:
         """file_result should appear before session_state_changed:completed
         in the history, matching the emission order in run_agent_task."""
         await store.create_session(user_id="u1", session_id="s1")
-        await store.add_message(session_id="s1", message={
+        await store.add_message(user_id="u1", session_id="s1", message={
             "type": "file_result",
             "content": "",
             "data": [{"filename": "app.py"}],
         })
-        await store.add_message(session_id="s1", message={
+        await store.add_message(user_id="u1", session_id="s1", message={
             "type": "system",
             "subtype": "session_state_changed",
             "state": "completed",
         })
 
-        history = await store.get_session_history(session_id="s1")
+        history = await store.get_session_history(user_id="u1", session_id="s1")
         assert len(history) == 2
         assert history[0]["type"] == "file_result"
         assert history[1]["type"] == "system"
@@ -322,9 +322,9 @@ class TestGetSessionHistory:
                 {"filename": "notes.txt", "size": 1024},
             ],
         }
-        await store.add_message(session_id="s1", message=user_msg)
+        await store.add_message(user_id="u1", session_id="s1", message=user_msg)
 
-        history = await store.get_session_history(session_id="s1")
+        history = await store.get_session_history(user_id="u1", session_id="s1")
         assert len(history) == 1
         msg = history[0]
         assert msg["type"] == "user"
@@ -337,12 +337,12 @@ class TestGetSessionHistory:
     async def test_user_message_without_data_roundtrips(self, store: SessionStore) -> None:
         """user messages without file attachments should still roundtrip cleanly."""
         await store.create_session(user_id="u1", session_id="s1")
-        await store.add_message(session_id="s1", message={
+        await store.add_message(user_id="u1", session_id="s1", message={
             "type": "user",
             "content": "Hello world",
         })
 
-        history = await store.get_session_history(session_id="s1")
+        history = await store.get_session_history(user_id="u1", session_id="s1")
         assert len(history) == 1
         assert history[0]["type"] == "user"
         assert history[0]["content"] == "Hello world"
@@ -356,17 +356,17 @@ class TestDeleteSession:
     @pytest.mark.asyncio
     async def test_deletes_session_and_messages(self, store: SessionStore) -> None:
         await store.create_session(user_id="u1", session_id="s1")
-        await store.add_message(session_id="s1", message={"type": "user", "content": "hi"})
-        await store.delete_session(session_id="s1")
+        await store.add_message(user_id="u1", session_id="s1", message={"type": "user", "content": "hi"})
+        await store.delete_session(user_id="u1", session_id="s1")
 
-        history = await store.get_session_history(session_id="s1")
+        history = await store.get_session_history(user_id="u1", session_id="s1")
         assert history == []
 
     @pytest.mark.asyncio
     async def test_delete_nonexistent_raises(self, store: SessionStore) -> None:
         from fastapi import HTTPException
         with pytest.raises(HTTPException):
-            await store.delete_session(session_id="nonexistent")
+            await store.delete_session(user_id="u1", session_id="nonexistent")
 
 
 # ── update_session_title ─────────────────────────────────────────
@@ -379,6 +379,6 @@ class TestUpdateSessionTitle:
         await store.update_session_title(user_id="u1", session_id="s1", title="New Title")
 
         async with store.db.connection() as conn:
-            cursor = await conn.execute("SELECT title FROM sessions WHERE id = ?", ("s1",))
+            cursor = await conn.execute("SELECT title FROM sessions WHERE session_id = ?", ("s1",))
             row = await cursor.fetchone()
             assert row[0] == "New Title"

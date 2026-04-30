@@ -8,6 +8,7 @@ interface HeaderProps {
   onOpenFeedback: () => void
   onOpenEvolution: () => void
   onOpenMCP: () => void
+  onOpenMemory: () => void
   onLogout: () => void
 }
 
@@ -18,7 +19,7 @@ const STATUS_LABELS: Record<ConnectionStatus, string> = {
   failed: 'Disconnected',
 }
 
-export default function Header({ connectionStatus, userId, onOpenSkills, onOpenFeedback, onOpenEvolution, onOpenMCP, onLogout }: HeaderProps) {
+export default function Header({ connectionStatus, userId, onOpenSkills, onOpenFeedback, onOpenEvolution, onOpenMCP, onOpenMemory, onLogout }: HeaderProps) {
   return (
     <header className="app-header">
       <div className="app-brand">
@@ -30,7 +31,7 @@ export default function Header({ connectionStatus, userId, onOpenSkills, onOpenF
           <span className={`app-status-dot ${connectionStatus === 'connected' ? 'connected' : connectionStatus === 'failed' ? 'failed' : 'reconnecting'}`} />
           <span className="app-status-text">{STATUS_LABELS[connectionStatus]}</span>
         </div>
-        <UserMenu userId={userId} onOpenSkills={onOpenSkills} onOpenFeedback={onOpenFeedback} onOpenEvolution={onOpenEvolution} onOpenMCP={onOpenMCP} onLogout={onLogout} />
+        <UserMenu userId={userId} onOpenSkills={onOpenSkills} onOpenFeedback={onOpenFeedback} onOpenEvolution={onOpenEvolution} onOpenMCP={onOpenMCP} onOpenMemory={onOpenMemory} onLogout={onLogout} />
       </div>
     </header>
   )

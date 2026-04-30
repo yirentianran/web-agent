@@ -29,12 +29,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Iterator
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File, HTTPException, Header
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File, HTTPException, Header, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from src.auth import create_token, verify_token, get_current_user, verify_path_user
+from src.admin_auth import require_admin
 from src.message_buffer import HEARTBEAT_INTERVAL, MessageBuffer, make_heartbeat
 from src.models import (
     McpServerConfig,
@@ -122,6 +124,7 @@ if not PROD:
 # Global state
 _db: Database | None = None  # SQLite database
 _mcp_store: MCPServerStore | None = None  # MCP server DB store
+_audit_logger: Any = None  # AuditLogger, initialized at startup
 buffer = MessageBuffer()
 session_store: SessionStore | None = None  # Initialized at startup if DATA_DB_PATH set
 active_tasks: dict[str, asyncio.Task] = {}
@@ -407,6 +410,23 @@ def is_path_within_workspace(file_path: str, workspace: Path) -> bool:
     return str(resolved).startswith(str(workspace.resolve()))
 
 
+def is_path_within_user_dir(file_path: str, user_id: str) -> bool:
+    """Check if a file path resolves within the user's data directory.
+
+    Broader than is_path_within_workspace — also permits access to
+    the memory/ directory, which is outside workspace but within the
+    user's isolated data directory.
+    """
+    user_dir = user_data_dir(user_id)
+    workspace = user_workspace_dir(user_id)
+    path = Path(file_path)
+    if path.is_absolute():
+        resolved = path.resolve()
+    else:
+        resolved = (workspace / path).resolve()
+    return str(resolved).startswith(str(user_dir.resolve()))
+
+
 def build_download_url(user_id: str, file_path: str, *, directory: str | None = None) -> str:
     """Build a download URL for a file, including the correct directory prefix.
 
@@ -659,6 +679,14 @@ def build_system_prompt(user_id: str, skills: dict[str, dict[str, Any]], workspa
     if memory_context:
         parts.append(f"\n## Memory Context\n\n{memory_context}")
 
+    # L2 Agent Memory — Markdown notes auto-loaded from user's memory/ directory
+    from src.memory import MemoryManager
+
+    mgr = MemoryManager(user_id=user_id, data_root=DATA_ROOT, db=_db)
+    agent_memory = mgr.load_agent_memory_for_prompt()
+    if agent_memory:
+        parts.append(f"\n{agent_memory}")
+
     return "\n".join(parts)
 
 
@@ -898,7 +926,7 @@ def build_sdk_options(
     # them (the CLI auto-discovers skills from <cwd>/.claude/skills).
     # Personal skills are already stored here by the upload endpoint.
     user_dir = user_data_dir(user_id)
-    workspace = user_dir / "workspace"
+    workspace = user_workspace_dir(user_id)
     project_skills = workspace / ".claude" / "skills"
     _sync_shared_skills(project_skills)
 
@@ -918,6 +946,10 @@ def build_sdk_options(
         file_path = str(tool_inp.get("file_path", ""))
         if not file_path:
             return {"sync": True, "continue_": True}
+        # Allow paths within user directory (workspace + memory)
+        if is_path_within_user_dir(file_path, user_id):
+            return {"sync": True, "continue_": True}
+        # Rewrite truly external paths to workspace
         rewritten = rewrite_path_to_workspace(file_path, workspace)
         if rewritten == file_path:
             return {"sync": True, "continue_": True}
@@ -1273,7 +1305,7 @@ async def run_agent_task(
     start_time = time.time()
 
     # Resolve workspace path — needed for both tool permission check and file snapshot
-    workspace = user_data_dir(user_id) / "workspace"
+    workspace = user_workspace_dir(user_id)
 
     # Build options
     async def can_use_tool_cb(
@@ -1281,13 +1313,13 @@ async def run_agent_task(
         tool_input: dict[str, Any],
         ctx: ToolPermissionContext,
     ) -> PermissionResult:
-        # Block file writes outside workspace
+        # Block file writes outside user directory (workspace + memory)
         if tool_name == "Write":
             file_path = str(tool_input.get("file_path", ""))
-            if file_path and not is_path_within_workspace(file_path, workspace):
+            if file_path and not is_path_within_user_dir(file_path, user_id):
                 return PermissionResultDeny(
-                    message=f"File path '{file_path}' is outside the workspace. "
-                    f"All files must be saved within the workspace directory.",
+                    message=f"File path '{file_path}' is outside the user directory. "
+                    f"All files must be saved within the workspace or memory directory.",
                 )
 
         # Block Bash commands that write to paths outside workspace
@@ -1447,6 +1479,15 @@ async def run_agent_task(
                                 "download_url": build_download_url(user_id, file_path, directory="outputs"),
                             }
                         )
+                        # Dedup: if agent writes the same file twice in one turn,
+                        # keep only the latest version (overwrite the old entry).
+                        dup_idx = next(
+                            (i for i, g in enumerate(generated_files[:-1]) if g["filename"] == filename),
+                            None,
+                        )
+                        if dup_idx is not None:
+                            generated_files[dup_idx] = generated_files[-1]
+                            generated_files.pop()
                 # Truncate oversized tool results
                 if event.get("type") == "tool_result":
                     from src.truncation import truncate_tool_output
@@ -1566,6 +1607,10 @@ async def run_agent_task(
             for f in generated_files:
                 if "download_url" not in f:
                     f["download_url"] = build_download_url(user_id, f["filename"], directory="outputs")
+            # Remove previous file_result messages — only the latest
+            # should exist per session, avoiding duplicate bubbles in
+            # multi-turn conversations.
+            buffer.remove_messages_by_type(session_id, "file_result", user_id=user_id)
             buffer.add_message(
                 session_id,
                 {
@@ -1699,6 +1744,17 @@ async def run_agent_task(
 async def _safe_ws_send(websocket: WebSocket, data: dict) -> bool:
     """Send a JSON message over WebSocket, returning False if the connection
     is already closed. Prevents RuntimeError from crashing the subscribe loop."""
+    # Check client_state first to avoid sending on a closed connection.
+    # This prevents the "Unexpected ASGI message 'websocket.send'" error
+    # that occurs when the WebSocket is closed during agent task cleanup.
+    client_state = getattr(websocket, "client_state", None)
+    if client_state is not None:
+        try:
+            from starlette.websockets import WebSocketState
+            if client_state is not WebSocketState.CONNECTED:
+                return False
+        except ImportError:
+            pass  # Fall through to send attempt
     try:
         await websocket.send_text(json.dumps(data))
         return True
@@ -1720,6 +1776,7 @@ async def handle_ws(websocket: WebSocket) -> None:
 
     token = websocket.query_params.get("token")
     _verified_user_id: str | None = None
+    _locked_user_id: str | None = None
     if ENFORCE_AUTH and token:
         try:
             _verified_user_id = verify_token(token)
@@ -1743,15 +1800,24 @@ async def handle_ws(websocket: WebSocket) -> None:
 
     # Coroutine that continuously reads WebSocket messages and queues them.
     async def ws_reader():
-        nonlocal user_id
+        nonlocal user_id, _locked_user_id
         try:
             while True:
                 raw = await websocket.receive_text()
                 data = json.loads(raw)
                 if ENFORCE_AUTH and _verified_user_id:
-                    user_id = _verified_user_id
+                    incoming_user_id = _verified_user_id
+                elif not ENFORCE_AUTH:
+                    incoming_user_id = data.get("user_id", "default")
                 else:
-                    user_id = data.get("user_id", "default")
+                    incoming_user_id = "unknown"
+
+                if _locked_user_id is None:
+                    _locked_user_id = incoming_user_id
+                    user_id = _locked_user_id
+                elif incoming_user_id != _locked_user_id:
+                    data["_user_id_mismatch"] = True
+                    data["_attempted_user_id"] = incoming_user_id
 
                 # If we're in a subscribe loop for a different session,
                 # queue the message so the subscribe loop can pick it up.
@@ -1776,6 +1842,17 @@ async def handle_ws(websocket: WebSocket) -> None:
                     item = pending_ws_msgs.get_nowait()
                     if item is None:
                         return  # WebSocket closed
+                    if item.get("_user_id_mismatch"):
+                        await _safe_ws_send(websocket, {
+                            "type": "error",
+                            "subtype": "user_id_mismatch",
+                            "message": (
+                                f"Connection is locked to user '{_locked_user_id}'. "
+                                f"Received message for user '{item.get('_attempted_user_id')}'. "
+                                "This message has been rejected."
+                            ),
+                        })
+                        continue
                     logger.info("[WS] Drained item: type=%s session_id=%s", item.get("type"), item.get("session_id"))
                     if item.get("type") == "answer":
                         sid = item.get("session_id", "")
@@ -1801,6 +1878,17 @@ async def handle_ws(websocket: WebSocket) -> None:
                 if item is None:
                     logger.info("[WS] Received None (WebSocket closed)")
                     return  # WebSocket closed
+                if item.get("_user_id_mismatch"):
+                    await _safe_ws_send(websocket, {
+                        "type": "error",
+                        "subtype": "user_id_mismatch",
+                        "message": (
+                            f"Connection is locked to user '{_locked_user_id}'. "
+                            f"Received message for user '{item.get('_attempted_user_id')}'. "
+                            "This message has been rejected."
+                        ),
+                    })
+                    continue
                 logger.info("[WS] Received item: type=%s session_id=%s", item.get("type"), item.get("session_id"))
                 if item.get("type") == "answer":
                     sid = item.get("session_id", "")
@@ -1853,6 +1941,17 @@ async def handle_ws(websocket: WebSocket) -> None:
                             item = pending_ws_msgs.get_nowait()
                             if item is None:
                                 return  # WebSocket closed
+                            if item.get("_user_id_mismatch"):
+                                await _safe_ws_send(websocket, {
+                                    "type": "error",
+                                    "subtype": "user_id_mismatch",
+                                    "message": (
+                                        f"Connection is locked to user '{_locked_user_id}'. "
+                                        f"Received message for user '{item.get('_attempted_user_id')}'. "
+                                        "This message has been rejected."
+                                    ),
+                                })
+                                continue
                             logger.info("[WS] Recover loop got item: type=%s session_id=%s", item.get("type"), item.get("session_id"))
                             # Always process answers regardless of session — they're time-sensitive
                             if item.get("type") == "answer":
@@ -2024,6 +2123,17 @@ async def handle_ws(websocket: WebSocket) -> None:
                         item = pending_ws_msgs.get_nowait()
                         if item is None:
                             return  # WebSocket closed
+                        if item.get("_user_id_mismatch"):
+                            await _safe_ws_send(websocket, {
+                                "type": "error",
+                                "subtype": "user_id_mismatch",
+                                "message": (
+                                    f"Connection is locked to user '{_locked_user_id}'. "
+                                    f"Received message for user '{item.get('_attempted_user_id')}'. "
+                                    "This message has been rejected."
+                                ),
+                            })
+                            continue
                         # Always process answers regardless of session — they're time-sensitive
                         if item.get("type") == "answer":
                             sid = item.get("session_id", "")
@@ -2205,12 +2315,21 @@ def user_data_dir(user_id: str) -> Path:
     return DATA_ROOT / "users" / user_id
 
 
+def user_workspace_dir(user_id: str) -> Path:
+    """Return the user's workspace directory (within their data dir)."""
+    return user_data_dir(user_id) / "workspace"
+
+
 # ── Session Management API ───────────────────────────────────────
 
 
 @app.post("/api/users/{user_id}/sessions")
-async def create_session(user_id: str) -> dict[str, str]:
+async def create_session(
+    user_id: str,
+    current_user: str = Depends(get_current_user),
+) -> dict[str, str]:
     """Create a new session for the user."""
+    verify_path_user(user_id, current_user)
     session_id = f"session_{user_id}_{time.time()}_{uuid.uuid4().hex[:8]}"
 
     # Initialize in MessageBuffer so history/status work immediately
@@ -2224,8 +2343,12 @@ async def create_session(user_id: str) -> dict[str, str]:
 
 
 @app.get("/api/users/{user_id}/sessions", response_model=list[dict[str, Any]])
-async def list_sessions(user_id: str) -> list[dict[str, Any]]:
+async def list_sessions(
+    user_id: str,
+    current_user: str = Depends(get_current_user),
+) -> list[dict[str, Any]]:
     """List all historical sessions for a user."""
+    verify_path_user(user_id, current_user)
     if session_store is not None:
         return await session_store.list_sessions(user_id=user_id)
     logger.warning("Session store unavailable — returning empty list for list_sessions")
@@ -2233,16 +2356,21 @@ async def list_sessions(user_id: str) -> list[dict[str, Any]]:
 
 
 @app.get("/api/users/{user_id}/sessions/{session_id}/history")
-async def get_session_history(user_id: str, session_id: str) -> list[dict[str, Any]]:
+async def get_session_history(
+    user_id: str,
+    session_id: str,
+    current_user: str = Depends(get_current_user),
+) -> list[dict[str, Any]]:
     """Get all messages for a historical session.
 
     Each message includes an absolute 'index' field for consistent
     dedup with WebSocket messages. Index 0 = first message ever
     sent for this session.
     """
+    verify_path_user(user_id, current_user)
     if session_store is not None:
-        messages = await session_store.get_session_history(session_id=session_id)
-        state = buffer.get_session_state(session_id)
+        messages = await session_store.get_session_history(user_id=user_id, session_id=session_id)
+        state = buffer.get_session_state(session_id, user_id=user_id)
         return [
             {**msg, "index": msg.get("seq", i), "session_id": session_id, "session_state": state.get("state", "idle")}
             for i, msg in enumerate(messages)
@@ -2252,8 +2380,13 @@ async def get_session_history(user_id: str, session_id: str) -> list[dict[str, A
 
 
 @app.get("/api/users/{user_id}/sessions/{session_id}/files")
-async def get_session_files(user_id: str, session_id: str) -> list[dict[str, Any]]:
+async def get_session_files(
+    user_id: str,
+    session_id: str,
+    current_user: str = Depends(get_current_user),
+) -> list[dict[str, Any]]:
     """Get all agent-generated files for a session, sorted by generation time descending."""
+    verify_path_user(user_id, current_user)
     messages = buffer.get_history(session_id, after_index=0)
     generated: list[dict[str, Any]] = []
     seen: set[str] = set()
@@ -2279,7 +2412,7 @@ async def get_session_files(user_id: str, session_id: str) -> list[dict[str, Any
 
     # Also scan the workspace/uploads and workspace/outputs directories recursively
     # for files created during this session (catches files in subdirectories).
-    workspace = user_data_dir(user_id) / "workspace"
+    workspace = user_workspace_dir(user_id)
     for scan_dir_name in ("uploads", "outputs"):
         scan_dir = workspace / scan_dir_name
         if scan_dir.exists():
@@ -2306,9 +2439,13 @@ async def get_session_files(user_id: str, session_id: str) -> list[dict[str, Any
 
 
 @app.get("/api/users/{user_id}/generated-files")
-async def get_all_generated_files(user_id: str) -> list[dict[str, Any]]:
+async def get_all_generated_files(
+    user_id: str,
+    current_user: str = Depends(get_current_user),
+) -> list[dict[str, Any]]:
     """Get all agent-generated files across all sessions, sorted by generation time descending."""
-    workspace = user_data_dir(user_id) / "workspace"
+    verify_path_user(user_id, current_user)
+    workspace = user_workspace_dir(user_id)
     generated: list[dict[str, Any]] = []
 
     scan_dir = workspace / "outputs"
@@ -2335,10 +2472,15 @@ async def get_all_generated_files(user_id: str) -> list[dict[str, Any]]:
 
 
 @app.delete("/api/users/{user_id}/sessions/{session_id}")
-async def delete_session(user_id: str, session_id: str) -> dict[str, str]:
+async def delete_session(
+    user_id: str,
+    session_id: str,
+    current_user: str = Depends(get_current_user),
+) -> dict[str, str]:
     """Delete a session, its messages, in-memory buffer, and active client (free disk)."""
+    verify_path_user(user_id, current_user)
     if session_store is not None:
-        await session_store.delete_session(session_id=session_id)
+        await session_store.delete_session(user_id=user_id, session_id=session_id)
 
     # Clean up in-memory buffer so it won't reappear in the list
     buffer.remove_session(session_id)
@@ -2353,16 +2495,27 @@ class TitleUpdate(BaseModel):
 
 
 @app.patch("/api/users/{user_id}/sessions/{session_id}/title")
-async def update_session_title(user_id: str, session_id: str, req: TitleUpdate) -> dict[str, str]:
+async def update_session_title(
+    user_id: str,
+    session_id: str,
+    req: TitleUpdate,
+    current_user: str = Depends(get_current_user),
+) -> dict[str, str]:
     """Update a session's title."""
+    verify_path_user(user_id, current_user)
     if session_store is not None:
         await session_store.update_session_title(user_id=user_id, session_id=session_id, title=req.title)
     return {"status": "ok", "title": req.title}
 
 
 @app.post("/api/users/{user_id}/sessions/{session_id}/cancel")
-async def cancel_session(user_id: str, session_id: str) -> dict[str, str]:
+async def cancel_session(
+    user_id: str,
+    session_id: str,
+    current_user: str = Depends(get_current_user),
+) -> dict[str, str]:
     """Cancel a running agent task."""
+    verify_path_user(user_id, current_user)
     task_key = f"task_{session_id}"
     task = active_tasks.get(task_key)
     if task and not task.done():
@@ -2373,13 +2526,18 @@ async def cancel_session(user_id: str, session_id: str) -> dict[str, str]:
             await task
         except asyncio.CancelledError:
             pass  # Expected — the task was cancelled
-    buffer.cancel(session_id)
+    buffer.cancel(session_id, user_id=user_id)
     return {"status": "ok"}
 
 
 @app.post("/api/users/{user_id}/sessions/{session_id}/fork")
-async def fork_session(user_id: str, session_id: str) -> dict[str, str]:
+async def fork_session(
+    user_id: str,
+    session_id: str,
+    current_user: str = Depends(get_current_user),
+) -> dict[str, str]:
     """Fork a session — duplicate state with a shared history prefix."""
+    verify_path_user(user_id, current_user)
     new_session_id = f"session_{user_id}_{time.time()}_{uuid.uuid4().hex[:8]}"
 
     # Copy history from original session to new session buffer
@@ -2402,9 +2560,14 @@ async def fork_session(user_id: str, session_id: str) -> dict[str, str]:
 
 
 @app.get("/api/users/{user_id}/sessions/{session_id}/status")
-async def get_session_status(user_id: str, session_id: str) -> SessionStatusResponse:
+async def get_session_status(
+    user_id: str,
+    session_id: str,
+    current_user: str = Depends(get_current_user),
+) -> SessionStatusResponse:
     """Get current session state (for cost/status display)."""
-    state = buffer.get_session_state(session_id)
+    verify_path_user(user_id, current_user)
+    state = buffer.get_session_state(session_id, user_id=user_id)
     return SessionStatusResponse(
         session_id=session_id,
         state=state["state"],
@@ -2418,8 +2581,13 @@ async def get_session_status(user_id: str, session_id: str) -> SessionStatusResp
 
 
 @app.post("/api/users/{user_id}/upload")
-async def upload_file(user_id: str, file: UploadFile = File(...)) -> JSONResponse:
+async def upload_file(
+    user_id: str,
+    file: UploadFile = File(...),
+    current_user: str = Depends(get_current_user),
+) -> JSONResponse:
     """Upload a file to the user's workspace."""
+    verify_path_user(user_id, current_user)
     from src.file_validation import ALLOWED_EXTENSIONS, MAX_UPLOAD_BYTES, validate_extension, validate_size
 
     filename = file.filename or "unnamed"
@@ -2432,7 +2600,7 @@ async def upload_file(user_id: str, file: UploadFile = File(...)) -> JSONRespons
     if size_error:
         return JSONResponse({"error": size_error}, status_code=413)
 
-    upload_dir = user_data_dir(user_id) / "workspace" / "uploads"
+    upload_dir = user_workspace_dir(user_id) / "uploads"
     upload_dir.mkdir(parents=True, exist_ok=True)
 
     dest = upload_dir / filename
@@ -2448,9 +2616,13 @@ async def upload_file(user_id: str, file: UploadFile = File(...)) -> JSONRespons
 
 
 @app.get("/api/users/{user_id}/files")
-async def list_files(user_id: str) -> list[dict[str, Any]]:
+async def list_files(
+    user_id: str,
+    current_user: str = Depends(get_current_user),
+) -> list[dict[str, Any]]:
     """List files in user's workspace."""
-    workspace = user_data_dir(user_id) / "workspace"
+    verify_path_user(user_id, current_user)
+    workspace = user_workspace_dir(user_id)
     files: list[dict[str, Any]] = []
     if workspace.exists():
         for f in workspace.rglob("*"):
@@ -2466,12 +2638,17 @@ async def list_files(user_id: str) -> list[dict[str, Any]]:
 
 
 @app.get("/api/users/{user_id}/download/{file_path:path}")
-async def download_file(user_id: str, file_path: str) -> FileResponse:
+async def download_file(
+    user_id: str,
+    file_path: str,
+    current_user: str = Depends(get_current_user),
+) -> FileResponse:
     """Download a file from user's workspace.
 
     Security: path is resolved within workspace only — no traversal.
     """
-    workspace = user_data_dir(user_id) / "workspace"
+    verify_path_user(user_id, current_user)
+    workspace = user_workspace_dir(user_id)
     full_path = (workspace / file_path).resolve()
     if not str(full_path).startswith(str(workspace.resolve())):
         return JSONResponse({"error": "path traversal blocked"}, status_code=403)
@@ -2481,9 +2658,14 @@ async def download_file(user_id: str, file_path: str) -> FileResponse:
 
 
 @app.delete("/api/users/{user_id}/files/{filename}")
-async def delete_file(user_id: str, filename: str) -> dict[str, str]:
+async def delete_file(
+    user_id: str,
+    filename: str,
+    current_user: str = Depends(get_current_user),
+) -> dict[str, str]:
     """Delete a file from user's workspace."""
-    target = user_data_dir(user_id) / "workspace" / filename
+    verify_path_user(user_id, current_user)
+    target = user_workspace_dir(user_id) / filename
     if target.exists():
         target.unlink()
     return {"status": "ok"}
@@ -2541,12 +2723,16 @@ def _read_skill_meta(skill_dir: Path) -> tuple[str, str]:
 
 
 @app.get("/api/users/{user_id}/skills", response_model=list[SkillInfo])
-async def list_user_skills(user_id: str) -> list[SkillInfo]:
+async def list_user_skills(
+    user_id: str,
+    current_user: str = Depends(get_current_user),
+) -> list[SkillInfo]:
     """List personal skills for a user (real directories only, not symlinks).
 
     Shared skills are served separately via /api/shared-skills.
     """
-    skills_dir = user_data_dir(user_id) / "workspace" / ".claude" / "skills"
+    verify_path_user(user_id, current_user)
+    skills_dir = user_workspace_dir(user_id) / ".claude" / "skills"
     if not skills_dir.exists():
         return []
     results = []
@@ -2674,6 +2860,7 @@ def _extract_zip_to_dir(zip_data: bytes, target_dir: Path) -> list[str]:
 async def upload_skill_files(
     user_id: str,
     file: UploadFile = File(...),
+    current_user: str = Depends(get_current_user),
 ) -> dict[str, Any]:
     """Upload a zip file and extract contents as a personal skill.
 
@@ -2681,6 +2868,7 @@ async def upload_skill_files(
     If a shared skill with the same name exists (symlink), it is removed
     so the personal version takes precedence.
     """
+    verify_path_user(user_id, current_user)
     if not file.filename or not file.filename.lower().endswith(".zip"):
         raise HTTPException(status_code=400, detail="Only .zip files are accepted")
 
@@ -2786,9 +2974,14 @@ async def delete_shared_skill(skill_name: str) -> dict[str, str]:
 
 
 @app.delete("/api/users/{user_id}/skills/{skill_name}")
-async def delete_skill(user_id: str, skill_name: str) -> dict[str, str]:
+async def delete_skill(
+    user_id: str,
+    skill_name: str,
+    current_user: str = Depends(get_current_user),
+) -> dict[str, str]:
     """Delete a personal skill (real directory only, not shared/symlink)."""
-    skill_dir = user_data_dir(user_id) / "workspace" / ".claude" / "skills" / skill_name
+    verify_path_user(user_id, current_user)
+    skill_dir = user_workspace_dir(user_id) / ".claude" / "skills" / skill_name
     _validate_skill_name(skill_name, skill_dir.parent)
     if not skill_dir.exists() or skill_dir.is_symlink():
         raise HTTPException(status_code=404, detail="Personal skill not found")
@@ -2800,15 +2993,20 @@ async def delete_skill(user_id: str, skill_name: str) -> dict[str, str]:
 
 
 @app.post("/api/users/{user_id}/skills/{skill_name}/promote")
-async def promote_skill_to_shared(user_id: str, skill_name: str) -> dict[str, Any]:
+async def promote_skill_to_shared(
+    user_id: str,
+    skill_name: str,
+    current_user: str = Depends(get_current_user),
+) -> dict[str, Any]:
     """Promote a personal skill directly to shared.
 
     Copies the skill to ``DATA_ROOT/shared-skills/<skill_name>/``.
     Returns 409 with conflict detail on name collision.
     """
-    _validate_skill_name(skill_name, user_data_dir(user_id) / "workspace" / ".claude" / "skills")
+    verify_path_user(user_id, current_user)
+    _validate_skill_name(skill_name, user_workspace_dir(user_id) / ".claude" / "skills")
     _validate_skill_name(skill_name, DATA_ROOT / "shared-skills")
-    personal_dir = user_data_dir(user_id) / "workspace" / ".claude" / "skills" / skill_name
+    personal_dir = user_workspace_dir(user_id) / ".claude" / "skills" / skill_name
     if not personal_dir.exists() or personal_dir.is_symlink():
         raise HTTPException(status_code=404, detail="Personal skill not found")
 
@@ -2880,8 +3078,12 @@ async def promote_skill_to_shared(user_id: str, skill_name: str) -> dict[str, An
 
 
 @app.get("/api/users/{user_id}/memory")
-async def get_memory(user_id: str) -> dict[str, Any]:
+async def get_memory(
+    user_id: str,
+    current_user: str = Depends(get_current_user),
+) -> dict[str, Any]:
     """Get user's platform memory (L1). Uses DB with file fallback."""
+    verify_path_user(user_id, current_user)
     from src.memory import MemoryManager
 
     mgr = MemoryManager(user_id=user_id, data_root=DATA_ROOT, db=_db)
@@ -2889,8 +3091,13 @@ async def get_memory(user_id: str) -> dict[str, Any]:
 
 
 @app.put("/api/users/{user_id}/memory")
-async def update_memory(user_id: str, update: MemoryUpdate) -> dict[str, str]:
+async def update_memory(
+    user_id: str,
+    update: MemoryUpdate,
+    current_user: str = Depends(get_current_user),
+) -> dict[str, str]:
     """Update user's platform memory (deep merge). Uses DB with file fallback."""
+    verify_path_user(user_id, current_user)
     from src.memory import MemoryManager
 
     mgr = MemoryManager(user_id=user_id, data_root=DATA_ROOT, db=_db)
@@ -2911,16 +3118,25 @@ async def update_memory(user_id: str, update: MemoryUpdate) -> dict[str, str]:
 
 
 @app.get("/api/users/{user_id}/memory/agent-notes")
-async def list_agent_notes(user_id: str) -> list[dict[str, Any]]:
+async def list_agent_notes(
+    user_id: str,
+    current_user: str = Depends(get_current_user),
+) -> list[dict[str, Any]]:
     """List all agent memory Markdown notes."""
+    verify_path_user(user_id, current_user)
     from src.memory import MemoryManager
 
     return MemoryManager(user_id=user_id).list_agent_notes()
 
 
 @app.get("/api/users/{user_id}/memory/agent-notes/{filename}")
-async def get_agent_note(user_id: str, filename: str) -> dict[str, str]:
+async def get_agent_note(
+    user_id: str,
+    filename: str,
+    current_user: str = Depends(get_current_user),
+) -> dict[str, str]:
     """Read a single agent memory note."""
+    verify_path_user(user_id, current_user)
     from src.memory import MemoryManager
 
     mgr = MemoryManager(user_id=user_id)
@@ -2928,17 +3144,28 @@ async def get_agent_note(user_id: str, filename: str) -> dict[str, str]:
 
 
 @app.put("/api/users/{user_id}/memory/agent-notes/{filename}")
-async def write_agent_note(user_id: str, filename: str, req: dict[str, str]) -> dict[str, str]:
+async def write_agent_note(
+    user_id: str,
+    filename: str,
+    req: dict[str, str],
+    current_user: str = Depends(get_current_user),
+) -> dict[str, str]:
     """Write or update an agent memory note."""
+    verify_path_user(user_id, current_user)
     from src.memory import MemoryManager
 
-    MemoryManager(user_id=user_id).write_agent_note(filename, req.get("content", ""))
-    return {"status": "ok"}
+    actual = MemoryManager(user_id=user_id).write_agent_note(filename, req.get("content", ""))
+    return {"status": "ok", "filename": actual}
 
 
 @app.delete("/api/users/{user_id}/memory/agent-notes/{filename}")
-async def delete_agent_note(user_id: str, filename: str) -> dict[str, str]:
+async def delete_agent_note(
+    user_id: str,
+    filename: str,
+    current_user: str = Depends(get_current_user),
+) -> dict[str, str]:
     """Delete an agent memory note."""
+    verify_path_user(user_id, current_user)
     from src.memory import MemoryManager
 
     MemoryManager(user_id=user_id).delete_agent_note(filename)
@@ -2965,8 +3192,13 @@ class TaskUpdateRequest(BaseModel):
 
 
 @app.post("/api/users/{user_id}/tasks")
-async def create_task(user_id: str, req: TaskCreateRequest) -> dict[str, str]:
+async def create_task(
+    user_id: str,
+    req: TaskCreateRequest,
+    current_user: str = Depends(get_current_user),
+) -> dict[str, str]:
     """Create a new sub-agent task."""
+    verify_path_user(user_id, current_user)
     from src.sub_agent import SubAgentManager
 
     mgr = SubAgentManager(user_id=user_id, db=_db)
@@ -2981,16 +3213,26 @@ async def create_task(user_id: str, req: TaskCreateRequest) -> dict[str, str]:
 
 
 @app.get("/api/users/{user_id}/tasks")
-async def list_tasks(user_id: str, status: str | None = None) -> list[dict[str, Any]]:
+async def list_tasks(
+    user_id: str,
+    status: str | None = None,
+    current_user: str = Depends(get_current_user),
+) -> list[dict[str, Any]]:
     """List all tasks for the user, optionally filtered by status."""
+    verify_path_user(user_id, current_user)
     from src.sub_agent import SubAgentManager
 
     return await SubAgentManager(user_id=user_id, db=_db).list_tasks(status=status)
 
 
 @app.get("/api/users/{user_id}/tasks/{task_id}")
-async def get_task(user_id: str, task_id: str) -> JSONResponse:
+async def get_task(
+    user_id: str,
+    task_id: str,
+    current_user: str = Depends(get_current_user),
+) -> JSONResponse:
     """Get a single task by ID."""
+    verify_path_user(user_id, current_user)
     from src.sub_agent import SubAgentManager
 
     task = await SubAgentManager(user_id=user_id, db=_db).get_task(task_id)
@@ -3000,8 +3242,14 @@ async def get_task(user_id: str, task_id: str) -> JSONResponse:
 
 
 @app.patch("/api/users/{user_id}/tasks/{task_id}")
-async def update_task(user_id: str, task_id: str, req: TaskUpdateRequest) -> JSONResponse:
+async def update_task(
+    user_id: str,
+    task_id: str,
+    req: TaskUpdateRequest,
+    current_user: str = Depends(get_current_user),
+) -> JSONResponse:
     """Update a task's status or fields."""
+    verify_path_user(user_id, current_user)
     from src.sub_agent import SubAgentManager
 
     mgr = SubAgentManager(user_id=user_id, db=_db)
@@ -3019,8 +3267,13 @@ async def update_task(user_id: str, task_id: str, req: TaskUpdateRequest) -> JSO
 
 
 @app.delete("/api/users/{user_id}/tasks/{task_id}")
-async def delete_task_endpoint(user_id: str, task_id: str) -> dict[str, str]:
+async def delete_task_endpoint(
+    user_id: str,
+    task_id: str,
+    current_user: str = Depends(get_current_user),
+) -> dict[str, str]:
     """Delete a task."""
+    verify_path_user(user_id, current_user)
     from src.sub_agent import SubAgentManager
 
     deleted = await SubAgentManager(user_id=user_id, db=_db).delete_task(task_id)
@@ -3045,10 +3298,10 @@ class SkillFeedbackRequest(BaseModel):
 async def submit_skill_feedback(
     skill_name: str,
     req: SkillFeedbackRequest,
-    authorization: str | None = Header(None),
+    current_user: str = Depends(get_current_user),
 ) -> dict[str, Any]:
     """Submit feedback for a skill."""
-    user_id = _get_user_id_from_header(authorization)
+    user_id = current_user
 
     # Use DB-backed manager if database is available
     if _db is not None:
@@ -3096,11 +3349,9 @@ async def get_skill_analytics(skill_name: str) -> dict[str, Any]:
 
 @app.get("/api/admin/skills/analytics")
 async def get_all_skills_analytics(
-    authorization: str | None = Header(None),
+    current_user: str = Depends(require_admin),
 ) -> dict[str, dict[str, Any]]:
     """Get analytics for all skills."""
-    current_user = _get_user_id_from_header(authorization)
-    require_admin(current_user)
     if _db is not None:
         from src.skill_feedback import DBSkillFeedbackManager
         return await DBSkillFeedbackManager(db=_db).get_all_analytics()
@@ -3220,10 +3471,9 @@ class SkillActivateRequest(BaseModel):
 async def activate_skill_version(
     skill_name: str,
     req: SkillActivateRequest,
-    authorization: str | None = Header(None),
+    current_user: str = Depends(get_current_user),
 ) -> dict[str, Any]:
     """Activate a specific pending version."""
-    current_user = _get_user_id_from_header(authorization)
     from src.skill_evolution import SkillEvolutionManager
 
     mgr = SkillEvolutionManager(db=_db)
@@ -3241,10 +3491,9 @@ async def activate_skill_version(
 @app.post("/api/skills/{skill_name}/rollback")
 async def rollback_skill(
     skill_name: str,
-    authorization: str | None = Header(None),
+    current_user: str = Depends(get_current_user),
 ) -> dict[str, Any]:
     """Rollback to the most recent backup version."""
-    current_user = _get_user_id_from_header(authorization)
     from src.skill_evolution import SkillEvolutionManager
 
     mgr = SkillEvolutionManager(db=_db)
@@ -3397,7 +3646,7 @@ def _build_evolution_sdk_options(
 
     # Copy personal skills (can't symlink across all setups; use mtime
     # caching to skip unchanged skills).
-    user_workspace = user_data_dir(user_id) / "workspace"
+    user_workspace = user_workspace_dir(user_id)
     user_skills = user_workspace / ".claude" / "skills"
     if user_skills.exists():
         for skill_dir in user_skills.iterdir():
@@ -3432,7 +3681,7 @@ def _message_to_dict_if_serializable(msg: Any) -> dict[str, Any] | None:
 async def trigger_skill_evolution_agent(
     skill_name: str,
     req: SkillEvolveAgentRequest,
-    authorization: str | None = Header(None),
+    current_user: str = Depends(get_current_user),
 ) -> dict[str, Any]:
     """Launch an Agent session to evolve a skill.
 
@@ -3440,8 +3689,6 @@ async def trigger_skill_evolution_agent(
     a full Agent session with all tools and skills available. The LLM
     autonomously decides HOW to improve the skill.
     """
-    current_user = _get_user_id_from_header(authorization)
-
     # Resolve skills directory
     skills_dir = DATA_ROOT / "shared-skills"
 
@@ -3491,10 +3738,9 @@ async def trigger_skill_evolution_agent(
 async def get_evolution_status(
     skill_name: str,
     task_id: str,
-    authorization: str | None = Header(None),
+    current_user: str = Depends(get_current_user),
 ) -> dict[str, Any]:
     """Get the status of an evolution task."""
-    _get_user_id_from_header(authorization)
 
     # Check if the task is in the active tasks map
     if task_id in active_tasks:
@@ -3534,10 +3780,9 @@ async def get_evolution_status(
 async def get_version_files(
     skill_name: str,
     version_number: int,
-    authorization: str | None = Header(None),
+    current_user: str = Depends(get_current_user),
 ) -> dict[str, Any]:
     """Get the list of files in a specific version."""
-    _get_user_id_from_header(authorization)
 
     skills_dir = DATA_ROOT / "shared-skills"
     version_dir = skills_dir / skill_name / "versions" / f"v{version_number}"
@@ -3565,10 +3810,9 @@ async def get_version_file_content(
     skill_name: str,
     version_number: int,
     file_path: str,
-    authorization: str | None = Header(None),
+    current_user: str = Depends(get_current_user),
 ) -> FileResponse | dict[str, Any]:
     """Get content of a specific file in a version."""
-    _get_user_id_from_header(authorization)
 
     skills_dir = DATA_ROOT / "shared-skills"
     version_dir = skills_dir / skill_name / "versions" / f"v{version_number}"
@@ -3583,10 +3827,9 @@ async def get_version_file_content(
 # ── Legacy: Evolution Candidates (still used by EvolutionPanel) ──
 @app.get("/api/admin/skills/evolution-candidates")
 async def list_evolution_candidates(
-    authorization: str | None = Header(None),
+    current_user: str = Depends(get_current_user),
 ) -> dict[str, list[dict[str, Any]]]:
     """List skills that should evolve."""
-    _get_user_id_from_header(authorization)
     from src.skill_evolution import SkillEvolutionManager
 
     mgr = SkillEvolutionManager(db=_db)
@@ -3609,11 +3852,9 @@ async def list_evolution_candidates(
 
 @app.get("/api/admin/feedback")
 async def list_all_feedback(
-    authorization: str | None = Header(None),
+    current_user: str = Depends(require_admin),
 ) -> dict[str, Any]:
     """Get all feedback entries across all users."""
-    current_user = _get_user_id_from_header(authorization)
-    require_admin(current_user)
 
     if _db is not None:
         from src.skill_feedback import DBSkillFeedbackManager
@@ -3711,23 +3952,19 @@ async def _load_mcp_servers() -> list[dict[str, Any]]:
 
 @app.get("/api/admin/mcp-servers")
 async def list_mcp_servers(
-    authorization: str | None = Header(None),
+    current_user: str = Depends(require_admin),
 ) -> list[dict[str, Any]]:
     """List all registered MCP servers."""
-    user_id = _get_user_id_from_header(authorization)
-    require_admin(user_id)
     return await _load_mcp_servers()
 
 
 @app.post("/api/admin/mcp-servers")
 async def register_mcp_server(
     server: McpServerConfig,
-    authorization: str | None = Header(None),
+    current_user: str = Depends(require_admin),
 ) -> dict[str, Any]:
     """Register a new MCP server."""
     global _mcp_store
-    user_id = _get_user_id_from_header(authorization)
-    require_admin(user_id)
     server_dict = server.model_dump()
 
     # Auto-discover tools for stdio servers when not explicitly provided
@@ -3755,12 +3992,10 @@ async def register_mcp_server(
 async def update_mcp_server(
     server_name: str,
     server: McpServerConfig,
-    authorization: str | None = Header(None),
+    current_user: str = Depends(require_admin),
 ) -> dict[str, Any]:
     """Update an existing MCP server."""
     global _mcp_store
-    user_id = _get_user_id_from_header(authorization)
-    require_admin(user_id)
     server_dict = server.model_dump()
 
     # Auto-discover tools for stdio servers when not explicitly provided
@@ -3793,12 +4028,10 @@ async def update_mcp_server(
 @app.post("/api/admin/mcp-servers/{server_name}/discover-tools")
 async def discover_mcp_tools(
     server_name: str,
-    authorization: str | None = Header(None),
+    current_user: str = Depends(require_admin),
 ) -> dict[str, Any]:
     """Force-refresh the tool list for an MCP server by reconnecting."""
     global _mcp_store
-    user_id = _get_user_id_from_header(authorization)
-    require_admin(user_id)
 
     # Load server config
     if _mcp_store is not None:
@@ -3835,12 +4068,10 @@ async def discover_mcp_tools(
 @app.delete("/api/admin/mcp-servers/{server_name}")
 async def unregister_mcp_server(
     server_name: str,
-    authorization: str | None = Header(None),
+    current_user: str = Depends(require_admin),
 ) -> dict[str, str]:
     """Unregister an MCP server."""
     global _mcp_store
-    user_id = _get_user_id_from_header(authorization)
-    require_admin(user_id)
     if _mcp_store is not None:
         await _mcp_store.delete(server_name)
     else:
@@ -3854,12 +4085,10 @@ async def unregister_mcp_server(
 async def toggle_mcp_server(
     server_name: str,
     enabled: bool,
-    authorization: str | None = Header(None),
+    current_user: str = Depends(require_admin),
 ) -> dict[str, str]:
     """Enable/disable an MCP server."""
     global _mcp_store
-    user_id = _get_user_id_from_header(authorization)
-    require_admin(user_id)
     if _mcp_store is not None:
         await _mcp_store.toggle(server_name, enabled)
     else:
@@ -3926,11 +4155,9 @@ async def _sync_tools_to_db(
 
 @app.get("/api/admin/mcp-servers/status")
 async def get_mcp_servers_status(
-    authorization: str | None = Header(None),
+    current_user: str = Depends(require_admin),
 ) -> list[dict[str, Any]]:
     """Check the connection status of all MCP servers."""
-    user_id = _get_user_id_from_header(authorization)
-    require_admin(user_id)
 
     servers = await _load_mcp_servers()
     results: list[dict[str, Any]] = []
@@ -4054,8 +4281,13 @@ def save_mcp_config(config: dict[str, Any]) -> None:
 
 
 @app.post("/api/users/{user_id}/feedback")
-async def submit_feedback(user_id: str, feedback: dict[str, Any]) -> dict[str, str]:
+async def submit_feedback(
+    user_id: str,
+    feedback: dict[str, Any],
+    current_user: str = Depends(get_current_user),
+) -> dict[str, str]:
     """Collect user feedback for skill evolution."""
+    verify_path_user(user_id, current_user)
     training_dir = DATA_ROOT / "training" / "qa"
     training_dir.mkdir(parents=True, exist_ok=True)
 
@@ -4075,8 +4307,12 @@ async def submit_feedback(user_id: str, feedback: dict[str, Any]) -> dict[str, s
 
 
 @app.get("/api/users/{user_id}/feedback")
-async def get_user_feedback(user_id: str) -> dict[str, Any]:
+async def get_user_feedback(
+    user_id: str,
+    current_user: str = Depends(get_current_user),
+) -> dict[str, Any]:
     """Get user's feedback records and stats."""
+    verify_path_user(user_id, current_user)
     if _db is not None:
         from src.skill_feedback import DBSkillFeedbackManager
 
@@ -4091,39 +4327,68 @@ async def get_user_feedback(user_id: str) -> dict[str, Any]:
 
 # ── Authentication ───────────────────────────────────────────────
 
-from src.auth import create_token, verify_token
-from src.admin_auth import require_admin
-
 
 class TokenRequest(BaseModel):
     user_id: str
-
-
-def _get_user_id_from_header(authorization: str | None = None) -> str:
-    """Extract user_id from Bearer token for admin endpoints."""
-    from src.auth import ENFORCE_AUTH
-
-    if not authorization or not authorization.startswith("Bearer "):
-        if ENFORCE_AUTH:
-            from fastapi import HTTPException, status
-
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Missing authentication token",
-            )
-        return "default"
-    token = authorization.split(" ", 1)[1]
-    try:
-        return verify_token(token)
-    except Exception:
-        if not ENFORCE_AUTH:
-            return "default"
-        raise
+    password: str = ""
 
 
 @app.post("/api/auth/token")
 async def get_auth_token(req: TokenRequest) -> dict[str, str]:
-    """Generate a JWT access token for the given user_id."""
+    """Generate a JWT access token. Verifies password when ENFORCE_AUTH is true."""
+    from src.auth import ENFORCE_AUTH, verify_password
+
+    if ENFORCE_AUTH and _db is not None:
+        async with _db.connection() as conn:
+            cursor = await conn.execute(
+                "SELECT user_id, password_hash, role, status FROM users WHERE user_id = ?",
+                (req.user_id,),
+            )
+            row = await cursor.fetchone()
+
+        if row is None:
+            raise HTTPException(status_code=401, detail="Invalid credentials")
+        if row[3] == "disabled":
+            raise HTTPException(status_code=403, detail="Account disabled")
+
+        if not verify_password(req.password, row[1]):
+            raise HTTPException(status_code=401, detail="Invalid credentials")
+
+        role = row[2]
+        token = create_token(req.user_id, role=role)
+    else:
+        token = create_token(req.user_id)
+
+    if _audit_logger is not None:
+        await _audit_logger.log(
+            "auth",
+            {"user_id": req.user_id, "action": "token_create", "result": "ok"},
+        )
+
+    return {"token": token, "user_id": req.user_id}
+
+
+@app.post("/api/auth/register")
+async def register_user(req: TokenRequest) -> dict[str, str]:
+    """Register a new user. Requires password when ENFORCE_AUTH is true."""
+    from src.auth import hash_password
+
+    if _db is None:
+        raise HTTPException(status_code=503, detail="Database not available")
+
+    password_hash_val = hash_password(req.password) if req.password else ""
+
+    async with _db.connection() as conn:
+        try:
+            await conn.execute(
+                "INSERT INTO users (user_id, password_hash, role, status, created_at, last_active_at) "
+                "VALUES (?, ?, 'user', 'active', ?, ?)",
+                (req.user_id, password_hash_val, time.time(), time.time()),
+            )
+            await conn.commit()
+        except Exception:
+            raise HTTPException(status_code=409, detail="User already exists")
+
     token = create_token(req.user_id)
     return {"token": token, "user_id": req.user_id}
 
@@ -4133,11 +4398,9 @@ async def get_auth_token(req: TokenRequest) -> dict[str, str]:
 
 @app.get("/api/admin/containers")
 async def list_containers(
-    authorization: str | None = Header(None),
+    current_user: str = Depends(require_admin),
 ) -> JSONResponse:
     """List all running user containers."""
-    user_id = _get_user_id_from_header(authorization)
-    require_admin(user_id)
     cm = _get_container_manager()
     if cm is None or not CONTAINER_MODE:
         return JSONResponse({"error": "container mode disabled"}, status_code=501)
@@ -4146,8 +4409,12 @@ async def list_containers(
 
 
 @app.post("/api/users/{user_id}/containers/start")
-async def start_container(user_id: str) -> JSONResponse:
+async def start_container(
+    user_id: str,
+    current_user: str = Depends(get_current_user),
+) -> JSONResponse:
     """Ensure a container is running for the user."""
+    verify_path_user(user_id, current_user)
     cm = _get_container_manager()
     if cm is None or not CONTAINER_MODE:
         return JSONResponse({"error": "container mode disabled"}, status_code=501)
@@ -4160,8 +4427,12 @@ async def start_container(user_id: str) -> JSONResponse:
 
 
 @app.post("/api/users/{user_id}/containers/pause")
-async def pause_container_endpoint(user_id: str) -> JSONResponse:
+async def pause_container_endpoint(
+    user_id: str,
+    current_user: str = Depends(get_current_user),
+) -> JSONResponse:
     """Pause a user's container."""
+    verify_path_user(user_id, current_user)
     cm = _get_container_manager()
     if cm is None or not CONTAINER_MODE:
         return JSONResponse({"error": "container mode disabled"}, status_code=501)
@@ -4170,8 +4441,12 @@ async def pause_container_endpoint(user_id: str) -> JSONResponse:
 
 
 @app.delete("/api/users/{user_id}/containers")
-async def destroy_container_endpoint(user_id: str) -> JSONResponse:
+async def destroy_container_endpoint(
+    user_id: str,
+    current_user: str = Depends(get_current_user),
+) -> JSONResponse:
     """Destroy a user's container."""
+    verify_path_user(user_id, current_user)
     cm = _get_container_manager()
     if cm is None or not CONTAINER_MODE:
         return JSONResponse({"error": "container mode disabled"}, status_code=501)
@@ -4184,19 +4459,21 @@ async def destroy_container_endpoint(user_id: str) -> JSONResponse:
 
 @app.get("/api/admin/resources")
 async def get_all_resources(
-    authorization: str | None = Header(None),
+    current_user: str = Depends(require_admin),
 ) -> JSONResponse:
     """Get resource stats for all active containers."""
-    user_id = _get_user_id_from_header(authorization)
-    require_admin(user_id)
     from src.resource_manager import get_all_resources as _get_all
 
     return JSONResponse(_get_all())
 
 
 @app.get("/api/users/{user_id}/resources")
-async def get_user_resources(user_id: str) -> JSONResponse:
+async def get_user_resources(
+    user_id: str,
+    current_user: str = Depends(get_current_user),
+) -> JSONResponse:
     """Get resource stats for a specific user's container."""
+    verify_path_user(user_id, current_user)
     from src.resource_manager import check_quota, get_container_stats, get_disk_usage
 
     return JSONResponse(
@@ -4217,16 +4494,14 @@ async def query_audit_logs(
     date: str | None = None,
     user_id: str | None = None,
     action: str | None = None,
-    authorization: str | None = Header(None),
+    current_user: str = Depends(require_admin),
 ) -> list[dict[str, Any]]:
     """Query audit log entries."""
-    current_user = _get_user_id_from_header(authorization)
-    require_admin(current_user)
-    from src.audit_logger import get_audit_logger
 
-    return get_audit_logger().query(
+    if _audit_logger is None:
+        return []
+    return await _audit_logger.query(
         category,
-        date=date,
         user_id=user_id,
         action=action,
     )
@@ -4237,11 +4512,9 @@ async def query_audit_logs(
 
 @app.post("/api/admin/logs/cleanup")
 async def trigger_log_cleanup(
-    authorization: str | None = Header(None),
+    current_user: str = Depends(require_admin),
 ) -> dict[str, int]:
     """Manually trigger log retention cleanup."""
-    current_user = _get_user_id_from_header(authorization)
-    require_admin(current_user)
     from src.log_cleanup import cleanup_old_logs
 
     return cleanup_old_logs()
@@ -4283,8 +4556,13 @@ async def startup() -> None:
 
         _db = Database(db_path=db_path)
         await _db.init()
+        await _db.migrate_v2()
         buffer.db = _db  # Wire DB into message buffer
         session_store = SessionStore(db=_db)
+
+        from src.audit_logger import AuditLogger
+        global _audit_logger
+        _audit_logger = AuditLogger(db=_db)
         logger.info("SQLite initialized: %s (%.2f MB)", db_path, db_path.stat().st_size / (1024 * 1024))
 
         # Initialize MCP store and migrate from file if needed

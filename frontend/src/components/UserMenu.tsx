@@ -6,10 +6,11 @@ interface UserMenuProps {
   onOpenFeedback: () => void
   onOpenEvolution: () => void
   onOpenMCP: () => void
+  onOpenMemory: () => void
   onLogout: () => void
 }
 
-export default function UserMenu({ userId, onOpenSkills, onOpenFeedback, onOpenEvolution, onOpenMCP, onLogout }: UserMenuProps) {
+export default function UserMenu({ userId, onOpenSkills, onOpenFeedback, onOpenEvolution, onOpenMCP, onOpenMemory, onLogout }: UserMenuProps) {
   const [open, setOpen] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
 
@@ -57,6 +58,10 @@ export default function UserMenu({ userId, onOpenSkills, onOpenFeedback, onOpenE
           <button className="user-menu-item" role="menuitem" onClick={() => handleAction(onOpenEvolution)} type="button">
             <span className="user-menu-item-icon">🧬</span>
             Skill Evolution
+          </button>
+          <button className="user-menu-item" role="menuitem" onClick={() => handleAction(onOpenMemory)} type="button">
+            <span className="user-menu-item-icon">🧠</span>
+            Memory Management
           </button>
           <button className="user-menu-item user-menu-item--logout" role="menuitem" onClick={() => handleAction(onLogout)} type="button">
             <span className="user-menu-item-icon">⏻</span>

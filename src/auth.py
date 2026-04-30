@@ -1,6 +1,6 @@
 """JWT authentication module.
 
-Provides token creation, verification, and FastAPI dependency for user auth.
+Provides token creation, verification, password hashing, and FastAPI dependency for user auth.
 """
 
 from __future__ import annotations
@@ -9,8 +9,9 @@ import os
 import warnings
 from datetime import datetime, timedelta, timezone
 
+import bcrypt
 import jwt
-from fastapi import HTTPException, Query, status
+from fastapi import HTTPException, Query, Header, status
 
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24  # 24 hours
@@ -30,14 +31,22 @@ if ENFORCE_AUTH and not _SECRET:
 JWT_SECRET = _SECRET or "dev-secret-change-in-production-use-at-least-32-chars"
 
 
+def hash_password(password: str) -> str:
+    """Hash a password with bcrypt. Returns the hashed string."""
+    return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+
+
+def verify_password(password: str, hashed: str) -> bool:
+    """Verify a password against a bcrypt hash."""
+    return bcrypt.checkpw(password.encode("utf-8"), hashed.encode("utf-8"))
+
+
 def create_token(
     user_id: str,
     role: str = "user",
     expires_minutes: int = ACCESS_TOKEN_EXPIRE_MINUTES,
 ) -> str:
     """Create a JWT access token for the given user_id."""
-    from src.audit_logger import get_audit_logger
-
     now = datetime.now(timezone.utc)
     payload = {
         "sub": user_id,
@@ -45,12 +54,7 @@ def create_token(
         "iat": now,
         "exp": now + timedelta(minutes=expires_minutes),
     }
-    token = jwt.encode(payload, JWT_SECRET, algorithm=ALGORITHM)
-    get_audit_logger().log(
-        "auth",
-        {"user_id": user_id, "action": "token_create", "role": role, "result": "ok"},
-    )
-    return token
+    return jwt.encode(payload, JWT_SECRET, algorithm=ALGORITHM)
 
 
 def verify_token(token: str) -> str:
@@ -84,23 +88,34 @@ def verify_token(token: str) -> str:
 
 
 def get_current_user(
-    token: str | None = Query(None, description="JWT access token"),
+    authorization: str | None = Header(None),
+    token: str | None = Query(None, description="JWT access token (fallback)"),
 ) -> str:
     """FastAPI dependency: extract and verify user from JWT token.
+
+    Accepts tokens from two sources, checked in priority order:
+    1. Authorization: Bearer <token> header (primary)
+    2. ?token=<jwt> query parameter (fallback, for WebSocket)
 
     When ENFORCE_AUTH is False, returns "default" without requiring a token.
     """
     if not ENFORCE_AUTH:
         return "default"
 
-    if token is None:
+    raw_token: str | None = None
+    if authorization and authorization.startswith("Bearer "):
+        raw_token = authorization.split(" ", 1)[1]
+    elif token:
+        raw_token = token
+
+    if raw_token is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Missing authentication token",
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    return verify_token(token)
+    return verify_token(raw_token)
 
 
 def require_user_match(path_user_id: str, current_user: str) -> str:
@@ -117,3 +132,12 @@ def require_user_match(path_user_id: str, current_user: str) -> str:
             detail="Cannot access another user's resources",
         )
     return current_user
+
+
+def verify_path_user(path_user_id: str, current_user: str) -> str:
+    """Verify path user_id matches current_user. Convenience wrapper.
+
+    Returns current_user on success, raises 403 on mismatch.
+    In dev mode (ENFORCE_AUTH=false), returns path_user_id.
+    """
+    return require_user_match(path_user_id, current_user)

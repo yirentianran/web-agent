@@ -10,8 +10,9 @@ import Sidebar from "./components/Sidebar";
 import Header from "./components/Header";
 import ChatArea from "./components/ChatArea";
 import InputBar, { type InputBarHandle } from "./components/InputBar";
-import SettingsPanel from "./components/SettingsPanel";
+import SkillsPage from "./components/SkillsPage";
 import FilesPanel from "./components/FilesPanel";
+import MemoryPanel from "./components/MemoryPanel";
 import FeedbackPage from "./components/FeedbackPage";
 import EvolutionPanel from "./components/EvolutionPanel";
 import MCPPage from "./components/MCPPage";
@@ -204,11 +205,12 @@ function MainApp() {
   const activeSessionState = activeSession
     ? (sessionStates.get(activeSession) ?? "idle")
     : "idle";
-  const [skillsOpen, setSkillsOpen] = useState(false);
   const [filesOpen, setFilesOpen] = useState(false);
   const [showFeedback, setShowFeedback] = useState(false);
   const [showEvolution, setShowEvolution] = useState(false);
   const [showMCP, setShowMCP] = useState(false);
+  const [showMemory, setShowMemory] = useState(false);
+  const [showSkills, setShowSkills] = useState(false);
   const [fileCount, setFileCount] = useState<number>(0);
   const inputBarRef = useRef<InputBarHandle>(null);
   // Index threshold: messages with index >= this are "new turn" messages.
@@ -1174,6 +1176,27 @@ function MainApp() {
     );
   }
 
+  // Skills management page
+  if (showSkills) {
+    return (
+      <SkillsPage
+        authToken={authToken}
+        userId={userId}
+        onBack={() => setShowSkills(false)}
+      />
+    );
+  }
+
+  if (showMemory) {
+    return (
+      <MemoryPanel
+        userId={userId}
+        authToken={authToken}
+        onBack={() => setShowMemory(false)}
+      />
+    );
+  }
+
   return (
     <div className="app">
       {/* Reconnection failure banner */}
@@ -1193,10 +1216,11 @@ function MainApp() {
       <Header
         connectionStatus={status}
         userId={userId}
-        onOpenSkills={() => setSkillsOpen(true)}
+        onOpenSkills={() => setShowSkills(true)}
         onOpenFeedback={() => setShowFeedback(true)}
         onOpenEvolution={() => setShowEvolution(true)}
         onOpenMCP={() => setShowMCP(true)}
+        onOpenMemory={() => setShowMemory(true)}
         onLogout={handleLogout}
       />
 
@@ -1251,14 +1275,6 @@ function MainApp() {
         </main>
       </div>
 
-      {/* Skills Management Overlay */}
-      {skillsOpen && (
-        <SettingsPanel
-          authToken={authToken}
-          userId={userId}
-          onClose={() => setSkillsOpen(false)}
-        />
-      )}
       {filesOpen && (
         <FilesPanel userId={userId} onClose={() => setFilesOpen(false)} />
       )}

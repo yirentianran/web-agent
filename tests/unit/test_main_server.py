@@ -18,6 +18,12 @@ import pytest
 
 # ── Mock claude_agent_sdk before main_server imports it ────────────
 
+# Save original modules so we don't permanently pollute sys.modules
+# (MagicMock objects in sys.modules would break any real SDK usage in
+# the same Python process, including other test modules.)
+_saved_sdk = sys.modules.get("claude_agent_sdk")
+_saved_sdk_types = sys.modules.get("claude_agent_sdk.types")
+
 _mock_sdk = MagicMock()
 _mock_sdk.ClaudeSDKClient = MagicMock()
 _mock_sdk.types = MagicMock()

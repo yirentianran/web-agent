@@ -54,8 +54,12 @@ class MessageBuffer:
 
     # ── internal helpers ─────────────────────────────────────────
 
-    def _ensure_buf(self, session_id: str) -> dict[str, Any]:
-        """Lazy-initialise a session buffer, restoring terminal state from DB."""
+    def _ensure_buf(self, session_id: str, user_id: str | None = None) -> dict[str, Any]:
+        """Lazy-initialise a session buffer, restoring terminal state from DB.
+
+        On first access, stores user_id for ownership verification.
+        On subsequent accesses, verifies user_id matches the stored owner.
+        """
         if session_id not in self.sessions:
             buf: dict[str, Any] = {
                 "messages": [],
@@ -65,6 +69,7 @@ class MessageBuffer:
                 "state": "idle",
                 "last_active": time.time(),
                 "cost_usd": 0.0,
+                "user_id": user_id,
             }
 
             # On first access (e.g. after server restart), check if the
@@ -109,6 +114,17 @@ class MessageBuffer:
                         pass  # DB unavailable — keep defaults
 
             self.sessions[session_id] = buf
+        else:
+            # Ownership verification on existing buffer
+            stored_user = self.sessions[session_id].get("user_id")
+            if user_id is not None and stored_user is not None and user_id != stored_user:
+                raise ValueError(
+                    f"Session {session_id} is owned by {stored_user}, "
+                    f"cannot access as {user_id}"
+                )
+            # Update user_id if it was previously None
+            if stored_user is None and user_id is not None:
+                self.sessions[session_id]["user_id"] = user_id
         return self.sessions[session_id]
 
     def _write_db_sync(self, session_id: str, message: dict) -> None:
@@ -175,6 +191,32 @@ class MessageBuffer:
                 # Success — clear any previous failure flag
                 self.sessions[session_id].pop("db_failed", None)
                 return
+            except sqlite3.IntegrityError:
+                # Duplicate seq — another writer or retry used the same seq.
+                # Reset in-memory counter from DB so the next attempt picks
+                # a fresh seq number instead of retrying with the same one.
+                conn.rollback()
+                import logging as _log
+                _log.getLogger(__name__).warning(
+                    "MessageBuffer: seq conflict for session %s — recalculating from DB",
+                    session_id,
+                )
+                # Force re-read from DB on next attempt by resetting in-memory seq
+                self._seq.pop(session_id, None)
+                if attempt < max_retries - 1:
+                    import time as _time
+                    _time.sleep(0.05)
+                    continue
+                # All retries exhausted
+                buf = self.sessions.get(session_id)
+                if buf:
+                    buf["db_failed"] = True
+                    buf.setdefault("unpersisted_messages", []).append(message)
+                _log.getLogger(__name__).error(
+                    "MessageBuffer: seq conflict unresolved after %d retries for session %s",
+                    max_retries,
+                    session_id,
+                )
             except Exception:
                 conn.rollback()
                 if attempt < max_retries - 1:
@@ -253,9 +295,40 @@ class MessageBuffer:
 
     # ── public API ───────────────────────────────────────────────
 
-    def add_message(self, session_id: str, message: dict) -> None:
+    def remove_messages_by_type(self, session_id: str, msg_type: str, user_id: str | None = None) -> None:
+        """Remove all messages of a given type from the buffer and DB.
+
+        Adjusts base_index so global after_index counters remain valid.
+        Used to dedup file_result messages across multi-turn sessions —
+        only the latest file_result should exist per session.
+        """
+        buf = self._ensure_buf(session_id, user_id)
+        old_msgs = buf["messages"]
+        removed = [m for m in old_msgs if m.get("type") == msg_type]
+        if not removed:
+            return
+        kept = [m for m in old_msgs if m.get("type") != msg_type]
+        buf["messages"] = kept
+        # Adjust base_index so clients tracking global indices
+        # (base_index + local_position) see the same messages at the same
+        # indices after removal. Removing N entries shifts all subsequent
+        # entries down by N, so we add N to base_index to compensate.
+        buf["base_index"] += len(removed)
+
+        # Delete from SQLite as well
+        if self._sync_conn is not None:
+            try:
+                self._sync_conn.execute(
+                    "DELETE FROM messages WHERE session_id = ? AND type = ?",
+                    (session_id, msg_type),
+                )
+                self._sync_conn.commit()
+            except Exception:
+                pass
+
+    def add_message(self, session_id: str, message: dict, user_id: str | None = None) -> None:
         """SDK produces a message → write to memory + SQLite (if DB attached)."""
-        buf = self._ensure_buf(session_id)
+        buf = self._ensure_buf(session_id, user_id)
         buf["messages"].append(message)
         self._evict_old(session_id)
         buf["last_active"] = time.time()
@@ -314,14 +387,14 @@ class MessageBuffer:
         buf["base_index"] += to_drop
         buf["messages"] = msgs[to_drop:]
 
-    def get_history(self, session_id: str, after_index: int = 0) -> list[dict]:
+    def get_history(self, session_id: str, after_index: int = 0, user_id: str | None = None) -> list[dict]:
         """Get messages for replay / reconnection.
 
         Falls back to SQLite when the in-memory list doesn't have enough history.
         The base_index offset ensures global after_index counters stay valid
         even after old messages are evicted.
         """
-        buf = self._ensure_buf(session_id)
+        buf = self._ensure_buf(session_id, user_id)
         messages = buf["messages"]
         base_index = buf.get("base_index", 0)
 
@@ -338,9 +411,9 @@ class MessageBuffer:
 
         return []
 
-    def get_session_state(self, session_id: str) -> dict[str, Any]:
+    def get_session_state(self, session_id: str, user_id: str | None = None) -> dict[str, Any]:
         """Return current session state snapshot."""
-        buf = self._ensure_buf(session_id)
+        buf = self._ensure_buf(session_id, user_id)
         now = time.time()
         last_active = buf.get("last_active", 0)
         elapsed = now - last_active if last_active > 0 else 0
@@ -354,12 +427,12 @@ class MessageBuffer:
             "stale_seconds": round(elapsed, 1) if is_stale else 0,
         }
 
-    def get_state(self, session_id: str) -> str:
+    def get_state(self, session_id: str, user_id: str | None = None) -> str:
         """Return the current state string for *session_id* (e.g. 'running')."""
-        return self._ensure_buf(session_id).get("state", "idle")
+        return self._ensure_buf(session_id, user_id).get("state", "idle")
 
-    def mark_done(self, session_id: str) -> None:
-        self._ensure_buf(session_id)["done"] = True
+    def mark_done(self, session_id: str, user_id: str | None = None) -> None:
+        self._ensure_buf(session_id, user_id)["done"] = True
         # Don't overwrite an already-set terminal state (e.g., 'cancelled'
         # from cancel()). Only set 'completed' if the session wasn't already
         # in a different terminal state.
@@ -372,28 +445,28 @@ class MessageBuffer:
         for event in list(buf.get("consumers", set())):
             event.set()
 
-    def is_done(self, session_id: str) -> bool:
-        return self._ensure_buf(session_id).get("done", False)
+    def is_done(self, session_id: str, user_id: str | None = None) -> bool:
+        return self._ensure_buf(session_id, user_id).get("done", False)
 
-    def cancel(self, session_id: str) -> None:
+    def cancel(self, session_id: str, user_id: str | None = None) -> None:
         """Cancel a running agent task - just sets state and wakes consumers.
         The CancelledError handler in run_agent_task will add the proper messages.
         """
-        buf = self._ensure_buf(session_id)
+        buf = self._ensure_buf(session_id, user_id)
         buf["state"] = "cancelled"
         buf["done"] = True
         # Wake up all waiting consumers so they can see the cancellation
         for event in list(buf["consumers"]):
             event.set()
 
-    def subscribe(self, session_id: str) -> Any:
+    def subscribe(self, session_id: str, user_id: str | None = None) -> Any:
         """Create an asyncio.Event consumer for this session.
 
         The caller should await the event and then call get_history().
         """
         import asyncio
 
-        buf = self._ensure_buf(session_id)
+        buf = self._ensure_buf(session_id, user_id)
         event: asyncio.Event = asyncio.Event()
         buf["consumers"].add(event)
         return event
