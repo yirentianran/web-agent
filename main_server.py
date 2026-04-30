@@ -513,6 +513,60 @@ def should_include_generated_file(filename: str) -> bool:
     return ext in DATA_EXTS
 
 
+def _insert_generated_file(user_id: str, session_id: str, filename: str, file_size: int) -> None:
+    """Insert a record into the generated_files table, ignoring duplicates."""
+    if _db is None or _db._pool is None:
+        return
+    import uuid
+    try:
+        import sqlite3 as _sqlite3
+        conn = _sqlite3.connect(str(_db.db_path))
+        conn.execute(
+            "INSERT OR IGNORE INTO generated_files (id, user_id, session_id, filename, stored_name, file_size, url) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                str(uuid.uuid4()),
+                user_id,
+                session_id,
+                filename,
+                filename,
+                file_size,
+                f"/api/users/{user_id}/download/{filename}",
+            ),
+        )
+        conn.commit()
+        conn.close()
+    except Exception:
+        pass
+
+
+def _insert_upload_file(user_id: str, session_id: str, filename: str, file_size: int) -> None:
+    """Insert a record into the uploads table, ignoring duplicates."""
+    if _db is None or _db._pool is None:
+        return
+    import uuid
+    try:
+        import sqlite3 as _sqlite3
+        conn = _sqlite3.connect(str(_db.db_path))
+        conn.execute(
+            "INSERT OR IGNORE INTO uploads (id, user_id, session_id, filename, stored_name, file_size, url) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                str(uuid.uuid4()),
+                user_id,
+                session_id,
+                filename,
+                filename,
+                file_size,
+                f"/api/users/{user_id}/download/{filename}",
+            ),
+        )
+        conn.commit()
+        conn.close()
+    except Exception:
+        pass
+
+
 def check_bash_command_for_external_writes(cmd: str, workspace: Path) -> str | None:
     """Return an error message if the command writes outside workspace, or None if safe."""
     # Patterns that indicate writes to paths outside the workspace
@@ -1528,6 +1582,10 @@ async def run_agent_task(
                                 "download_url": f"/api/users/{user_id}/download/{rel}",
                             }
                         )
+                        # Persist to generated_files table for session-scoped queries
+                        _insert_generated_file(
+                            user_id, session_id, rel, f.stat().st_size
+                        )
 
         # 2. Scan workspace root for data files that should be in outputs/
         #    Only downloadable result files are included; scripts and logs are left in place
@@ -2075,6 +2133,10 @@ async def handle_ws(websocket: WebSocket) -> None:
                         },
                     )
 
+                    if attached_files:
+                        for fname in attached_files:
+                            _insert_upload_file(user_id, session_id, fname, 0)
+
                     task = asyncio.create_task(
                         asyncio.wait_for(
                             run_agent_task(
@@ -2385,57 +2447,59 @@ async def get_session_files(
     session_id: str,
     current_user: str = Depends(get_current_user),
 ) -> list[dict[str, Any]]:
-    """Get all agent-generated files for a session, sorted by generation time descending."""
+    """Get all files (uploads + generated) for a session from the database."""
     verify_path_user(user_id, current_user)
-    messages = buffer.get_history(session_id, after_index=0)
-    generated: list[dict[str, Any]] = []
+    files: list[dict[str, Any]] = []
     seen: set[str] = set()
 
-    for msg in messages:
-        if msg.get("type") == "file_result":
-            files = msg.get("data") or []
-            for f in files:
-                if isinstance(f, dict):
-                    fname = f.get("filename", "")
-                    if fname and fname not in seen and should_include_generated_file(fname):
+    # Query uploads and generated_files tables
+    if _db is not None and _db._pool is not None:
+        import sqlite3 as _sqlite3
+        conn = _sqlite3.connect(str(_db.db_path))
+        conn.row_factory = _sqlite3.Row
+        try:
+            for table, source in [("uploads", "upload"), ("generated_files", "generated")]:
+                rows = conn.execute(
+                    f"SELECT filename, file_size, created_at FROM {table} WHERE session_id = ? ORDER BY created_at DESC",
+                    (session_id,),
+                ).fetchall()
+                for row in rows:
+                    fname = row["filename"]
+                    if fname not in seen:
                         seen.add(fname)
-                        generated.append(
-                            {
+                        files.append({
+                            "filename": fname,
+                            "size": row["file_size"],
+                            "source": source,
+                            "generated_at": datetime.fromtimestamp(row["created_at"], tz=timezone.utc).isoformat(),
+                            "download_url": f"/api/users/{user_id}/download/{fname}",
+                        })
+        except _sqlite3.OperationalError:
+            pass
+        finally:
+            conn.close()
+
+    # Fallback: scan message history for file_result events (backward compat)
+    if not files:
+        messages = buffer.get_history(session_id, after_index=0)
+        for msg in messages:
+            if msg.get("type") == "file_result":
+                data = msg.get("data") or []
+                for f in data:
+                    if isinstance(f, dict):
+                        fname = f.get("filename", "")
+                        if fname and fname not in seen and should_include_generated_file(fname):
+                            seen.add(fname)
+                            files.append({
                                 "filename": fname,
                                 "size": f.get("size", 0),
                                 "generated_at": f.get("generated_at", ""),
                                 "download_url": f.get(
                                     "download_url", build_download_url(user_id, fname, directory="outputs")
                                 ),
-                            }
-                        )
+                            })
 
-    # Also scan the workspace/uploads and workspace/outputs directories recursively
-    # for files created during this session (catches files in subdirectories).
-    workspace = user_workspace_dir(user_id)
-    for scan_dir_name in ("uploads", "outputs"):
-        scan_dir = workspace / scan_dir_name
-        if scan_dir.exists():
-            for f in scan_dir.rglob("*"):
-                if not f.is_file():
-                    continue
-                rel = f.relative_to(workspace).as_posix()
-                if rel in seen or not should_include_generated_file(f.name):
-                    continue
-                stat = f.stat()
-                seen.add(rel)
-                generated.append(
-                    {
-                        "filename": rel,
-                        "size": stat.st_size,
-                        "generated_at": datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat(),
-                        "download_url": f"/api/users/{user_id}/download/{rel}",
-                    }
-                )
-
-    # Sort by generation time descending
-    generated.sort(key=lambda x: x.get("generated_at", ""), reverse=True)
-    return generated
+    return files
 
 
 @app.get("/api/users/{user_id}/generated-files")

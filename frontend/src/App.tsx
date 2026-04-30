@@ -11,7 +11,7 @@ import Header from "./components/Header";
 import ChatArea from "./components/ChatArea";
 import InputBar, { type InputBarHandle } from "./components/InputBar";
 import SkillsPage from "./components/SkillsPage";
-import FilesPanel from "./components/FilesPanel";
+import SessionFilePanel from "./components/SessionFilePanel";
 import MemoryPanel from "./components/MemoryPanel";
 import FeedbackPage from "./components/FeedbackPage";
 import EvolutionPanel from "./components/EvolutionPanel";
@@ -205,13 +205,13 @@ function MainApp() {
   const activeSessionState = activeSession
     ? (sessionStates.get(activeSession) ?? "idle")
     : "idle";
-  const [filesOpen, setFilesOpen] = useState(false);
+  const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [filePanelOpen, setFilePanelOpen] = useState(false);
   const [showFeedback, setShowFeedback] = useState(false);
   const [showEvolution, setShowEvolution] = useState(false);
   const [showMCP, setShowMCP] = useState(false);
   const [showMemory, setShowMemory] = useState(false);
   const [showSkills, setShowSkills] = useState(false);
-  const [fileCount, setFileCount] = useState<number>(0);
   const inputBarRef = useRef<InputBarHandle>(null);
   // Index threshold: messages with index >= this are "new turn" messages.
   // Use MAX_SAFE_INTEGER so only replay messages trigger the first-turn path.
@@ -251,7 +251,6 @@ function MainApp() {
   // Load sessions and file count from API
   useEffect(() => {
     loadSessions();
-    loadFileCount();
   }, [userId]);
 
   // Restore message history for the active session on mount (survives page refresh)
@@ -342,18 +341,6 @@ function MainApp() {
       }
     } catch {
       // Silently fail — sessions list is non-critical
-    }
-  };
-
-  const loadFileCount = async () => {
-    try {
-      const resp = await fetch(`/api/users/${userId}/generated-files`);
-      if (resp.ok) {
-        const data = await resp.json();
-        setFileCount(Array.isArray(data) ? data.length : 0);
-      }
-    } catch {
-      setFileCount(0);
     }
   };
 
@@ -643,11 +630,6 @@ function MainApp() {
         // result is always terminal — accept regardless of index
         setSessionStateFor(msg.session_id, "completed");
         loadSessions();
-      }
-      // Refresh file count from server when new files are generated
-      // (cannot blindly increment because the agent may overwrite existing files)
-      if (msg.type === "file_result") {
-        loadFileCount();
       }
     },
     [userId, updateSendState],
@@ -1226,16 +1208,24 @@ function MainApp() {
 
       {/* Layout */}
       <div className="app-layout">
-        <Sidebar
-          sessions={sessions}
-          activeSession={activeSession}
-          onSelect={handleSelectSession}
-          onNew={handleNewSession}
-          onDelete={handleDeleteSession}
-          onRename={handleRenameSession}
-          onOpenFiles={() => setFilesOpen(true)}
-          filesCount={fileCount}
-        />
+        <div className={`sidebar-wrapper ${sidebarOpen ? 'open' : ''}`}>
+          <button
+            className="sidebar-toggle"
+            onClick={() => setSidebarOpen(v => !v)}
+            title={sidebarOpen ? 'Collapse sidebar' : 'Expand sidebar'}
+            type="button"
+          >
+            <span className="sidebar-toggle-icon">{sidebarOpen ? '◂' : '▸'}</span>
+          </button>
+          <Sidebar
+            sessions={sessions}
+            activeSession={activeSession}
+            onSelect={handleSelectSession}
+            onNew={handleNewSession}
+            onDelete={handleDeleteSession}
+            onRename={handleRenameSession}
+          />
+        </div>
         <main className="main">
           {queueFull && (
             <div
@@ -1273,11 +1263,23 @@ function MainApp() {
             userId={userId}
           />
         </main>
+        <div className={`file-panel-wrapper ${filePanelOpen ? 'open' : ''}`}>
+          <button
+            className="file-panel-toggle"
+            onClick={() => setFilePanelOpen(v => !v)}
+            title={filePanelOpen ? 'Collapse files' : 'Expand files'}
+            type="button"
+          >
+            <span className="file-panel-toggle-icon">{filePanelOpen ? '▸' : '◂'}</span>
+          </button>
+          <SessionFilePanel
+            userId={userId}
+            authToken={authToken}
+            activeSessionId={activeSession}
+            onFileClick={handleFileClick}
+          />
+        </div>
       </div>
-
-      {filesOpen && (
-        <FilesPanel userId={userId} onClose={() => setFilesOpen(false)} />
-      )}
     </div>
   );
 }

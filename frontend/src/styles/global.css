@@ -65,15 +65,80 @@ body {
 }
 
 /* Sidebar */
+@media (min-width: 1024px) {
+  .sidebar-wrapper {
+    position: relative;
+    flex-shrink: 0;
+    width: 260px;
+    transition: width 0.3s ease;
+  }
+
+  .sidebar-wrapper:not(.open) {
+    width: 0;
+  }
+
+  .sidebar {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 260px;
+    height: 100%;
+    transition: transform 0.3s ease;
+  }
+
+  .sidebar-wrapper:not(.open) .sidebar {
+    transform: translateX(-100%);
+  }
+
+  .sidebar-toggle {
+    position: absolute;
+    right: -24px;
+    top: 8px;
+    width: 24px;
+    height: 36px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid var(--color-border);
+    border-left: none;
+    border-radius: 0 4px 4px 0;
+    background: var(--color-surface);
+    color: var(--color-text-secondary);
+    font-size: 0.6rem;
+    cursor: pointer;
+    padding: 0;
+    z-index: 1;
+  }
+
+  .sidebar-toggle:hover {
+    background: var(--color-bg-hover);
+    color: var(--color-text);
+  }
+
+  .sidebar-toggle-icon {
+    display: inline-block;
+  }
+}
+
 .sidebar {
   width: 260px;
+  min-width: 0;
+  min-height: 0;
   background: var(--color-surface);
-  border-right: 1px solid var(--color-border);
   display: flex;
   flex-direction: column;
-  flex-shrink: 0;
-  padding: 12px;
   height: 100%;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+.sidebar-inner {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  padding: 12px;
+  border-right: 1px solid var(--color-border);
 }
 
 .btn-new-session {
@@ -93,6 +158,7 @@ body {
   transition: all 0.15s ease;
   box-shadow: 0 2px 8px rgba(59, 130, 246, 0.3);
   margin-bottom: 12px;
+  flex-shrink: 0;
 }
 
 .btn-new-session:hover {
@@ -102,6 +168,7 @@ body {
 
 .sidebar-list {
   flex: 1;
+  min-height: 0;
   overflow-y: auto;
   padding-top: 12px;
 }
@@ -196,29 +263,6 @@ body {
 .dot.active {
   background: var(--color-primary);
   box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.2);
-}
-
-.sidebar-toggle {
-  position: fixed;
-  top: 12px;
-  left: 12px;
-  z-index: 10;
-  background: var(--color-surface);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-sm);
-  padding: 8px 10px;
-  cursor: pointer;
-  color: var(--color-text-secondary);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  box-shadow: var(--shadow-sm);
-  transition: background var(--transition-fast), color var(--transition-fast);
-}
-
-.sidebar-toggle:hover {
-  background: var(--color-primary-light);
-  color: var(--color-primary);
 }
 
 .sidebar-empty {
@@ -1937,12 +1981,13 @@ body {
     transition: transform 0.25s ease;
   }
 
-  .sidebar.open {
+  .sidebar.open,
+  .sidebar-wrapper.open .sidebar {
     transform: translateX(0);
   }
 
   .sidebar-toggle {
-    display: block;
+    display: none;
   }
 }
 
@@ -1964,7 +2009,12 @@ body {
     border-radius: 12px 12px 0 0;
   }
 
-  .sidebar.open {
+  .sidebar-inner {
+    border-right: none;
+  }
+
+  .sidebar.open,
+  .sidebar-wrapper.open .sidebar {
     transform: translateY(0);
   }
 
@@ -1985,8 +2035,8 @@ body {
   }
 }
 
-/* Desktop: >=1024px — current two-column layout */
-/* No override needed: .sidebar-toggle is already flex by default and visible when sidebar is collapsed */
+/* Desktop: >=1024px — sidebar slide toggle via .sidebar-wrapper */
+/* Sidebar slide styles are in min-width: 1024px media query above */
 
 /* ── Sidebar Footer Buttons (moved to main styles section) ──────────── */
 
@@ -4202,5 +4252,260 @@ body {
 
 .app-status-dot.failed {
   background: #ef4444;
+}
+
+/* ── Session File Panel ──────────────────────────────────────── */
+
+.file-panel-wrapper {
+  position: relative;
+  display: flex;
+  flex-shrink: 0;
+  width: 290px;
+  transition: width var(--transition-normal, 0.3s) ease;
+}
+
+.file-panel-wrapper:not(.open) {
+  width: 0;
+}
+
+.file-panel-toggle {
+  position: absolute;
+  left: -24px;
+  top: 8px;
+  width: 24px;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--color-border);
+  border-right: none;
+  border-radius: 4px 0 0 4px;
+  background: var(--color-surface);
+  color: var(--color-text-secondary);
+  font-size: 0.6rem;
+  cursor: pointer;
+  padding: 0;
+  z-index: 1;
+}
+
+.file-panel-toggle:hover {
+  background: var(--color-bg-hover);
+  color: var(--color-text);
+}
+
+.file-panel-toggle-icon {
+  display: inline-block;
+  transition: transform var(--transition-fast, 0.15s) ease;
+}
+
+.session-file-panel {
+  width: 290px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  border-left: 1px solid var(--color-border);
+  background: var(--color-surface);
+  overflow-y: auto;
+}
+
+.sfp-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 16px 10px;
+  flex-shrink: 0;
+}
+
+.sfp-header h3 {
+  margin: 0;
+  font-size: 0.95rem;
+  font-weight: 600;
+}
+
+.sfp-close-btn {
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 6px;
+  background: none;
+  color: var(--color-text-secondary);
+  font-size: 18px;
+  cursor: pointer;
+}
+
+.sfp-close-btn:hover {
+  background: var(--color-bg-hover);
+  color: var(--color-text);
+}
+
+.sfp-scope-tabs {
+  display: flex;
+  gap: 0;
+  border-bottom: 1px solid var(--color-border);
+  padding: 0 12px;
+  flex-shrink: 0;
+}
+
+.sfp-scope-tab {
+  padding: 8px 14px;
+  border: none;
+  background: none;
+  color: var(--color-text-secondary);
+  font-size: 0.8rem;
+  font-weight: 500;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  transition: color var(--transition-fast), border-color var(--transition-fast);
+}
+
+.sfp-scope-tab:hover {
+  color: var(--color-text);
+}
+
+.sfp-scope-tab.active {
+  color: var(--color-primary);
+  border-bottom-color: var(--color-primary);
+}
+
+.sfp-error {
+  margin: 8px 12px;
+  padding: 8px 12px;
+  border-radius: 6px;
+  background: #fef2f2;
+  color: #b91c1c;
+  font-size: 0.8rem;
+}
+
+.sfp-loading,
+.sfp-empty {
+  padding: 24px 16px;
+  text-align: center;
+  color: var(--color-text-secondary);
+  font-size: 0.8rem;
+}
+
+.sfp-groups {
+  flex: 1;
+  overflow-y: auto;
+}
+
+.sfp-group {
+  border-bottom: 1px solid var(--color-border-soft, #f0f0f0);
+}
+
+.sfp-group-title {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 16px;
+  border: none;
+  background: none;
+  color: var(--color-text);
+  font-size: 0.8rem;
+  font-weight: 600;
+  cursor: pointer;
+  text-align: left;
+}
+
+.sfp-group-title:hover {
+  background: var(--color-bg-hover);
+}
+
+.sfp-group-arrow {
+  font-size: 8px;
+  transition: transform var(--transition-fast);
+  display: inline-block;
+}
+
+.sfp-group-arrow.open {
+  transform: rotate(90deg);
+}
+
+.sfp-group-empty {
+  padding: 12px 16px;
+  color: var(--color-text-secondary);
+  font-size: 0.75rem;
+}
+
+.sfp-item {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 16px 6px 28px;
+  font-size: 0.78rem;
+}
+
+.sfp-item:hover {
+  background: var(--color-bg-hover);
+}
+
+.sfp-item-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 2px 0;
+  border: none;
+  background: none;
+  color: var(--color-primary);
+  font-size: 0.78rem;
+  cursor: pointer;
+  text-align: left;
+}
+
+.sfp-item-name:hover {
+  text-decoration: underline;
+}
+
+.sfp-item-size {
+  color: var(--color-text-secondary);
+  font-size: 0.7rem;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.sfp-item-dl,
+.sfp-item-del {
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 12px;
+  flex-shrink: 0;
+  text-decoration: none;
+}
+
+.sfp-item-dl {
+  color: var(--color-text-secondary);
+  background: none;
+}
+
+.sfp-item-dl:hover {
+  background: var(--color-bg-hover);
+  color: var(--color-primary);
+}
+
+.sfp-item-del {
+  color: var(--color-text-secondary);
+  background: none;
+}
+
+.sfp-item-del:hover:not(:disabled) {
+  background: #fef2f2;
+  color: #dc2626;
+}
+
+.sfp-item-del:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
 }
 
