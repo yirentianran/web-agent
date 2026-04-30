@@ -14,6 +14,7 @@ interface SessionFilePanelProps {
   authToken?: string | null
   activeSessionId: string | null
   onFileClick: (filename: string) => void
+  refreshKey?: number
 }
 
 function formatBytes(bytes: number): string {
@@ -27,6 +28,7 @@ export default function SessionFilePanel({
   authToken,
   activeSessionId,
   onFileClick,
+  refreshKey,
 }: SessionFilePanelProps) {
   const [scope, setScope] = useState<'all' | 'session'>('session')
   const [files, setFiles] = useState<FileInfo[]>([])
@@ -82,7 +84,7 @@ export default function SessionFilePanel({
       setError(err instanceof Error ? err.message : 'Failed to load files')
     }
     setLoading(false)
-  }, [userId, activeSessionId, scope])
+  }, [userId, activeSessionId, scope, refreshKey])
 
   useEffect(() => {
     fetchFiles()

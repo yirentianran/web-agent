@@ -207,6 +207,7 @@ function MainApp() {
     : "idle";
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [filePanelOpen, setFilePanelOpen] = useState(false);
+  const [fileRefreshKey, setFileRefreshKey] = useState(0);
   const [showFeedback, setShowFeedback] = useState(false);
   const [showEvolution, setShowEvolution] = useState(false);
   const [showMCP, setShowMCP] = useState(false);
@@ -536,6 +537,8 @@ function MainApp() {
           } else {
             setSessionStateFor(msg.session_id, newState);
           }
+          // Refresh file panel on session state changes (files may have been generated)
+          setFileRefreshKey(k => k + 1);
         }
         return;
       }
@@ -606,6 +609,15 @@ function MainApp() {
         }
         return [...prev, msg];
       });
+
+      // Trigger file panel refresh when files are generated or session state changes
+      if (
+        msg.type === 'file_upload' ||
+        msg.type === 'file_result' ||
+        (msg.type === 'system' && msg.subtype === 'session_state_changed')
+      ) {
+        setFileRefreshKey(k => k + 1);
+      }
 
       if (!activeSessionRef.current && msg.session_id) {
         setActiveSession(msg.session_id);
@@ -1266,7 +1278,12 @@ function MainApp() {
         <div className={`file-panel-wrapper ${filePanelOpen ? 'open' : ''}`}>
           <button
             className="file-panel-toggle"
-            onClick={() => setFilePanelOpen(v => !v)}
+            onClick={() => {
+              setFilePanelOpen(v => {
+                if (!v) setFileRefreshKey(k => k + 1);
+                return !v;
+              });
+            }}
             title={filePanelOpen ? 'Collapse files' : 'Expand files'}
             type="button"
           >
@@ -1277,6 +1294,7 @@ function MainApp() {
             authToken={authToken}
             activeSessionId={activeSession}
             onFileClick={handleFileClick}
+            refreshKey={fileRefreshKey}
           />
         </div>
       </div>
