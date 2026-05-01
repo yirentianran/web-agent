@@ -708,17 +708,12 @@ function MainApp() {
             }
           } else {
             // Live (non-replay) message for the active session.
-            // The subscribe loop sends old buffered messages with replay=False,
-            // so old terminal states (completed/error/cancelled from a previous
-            // run) can arrive here and overwrite a live "running" state.
-            // Never downgrade "running" to a stale terminal from a previous run.
-            const currentState = sessionStatesRef.current.get(msg.session_id);
-            if (currentState === "running" && isTerminal) {
-              // Skip — preserve live "running" over stale terminal state.
-              // The backend will send a fresh terminal when the current task ends.
-            } else {
-              setSessionStateFor(msg.session_id, newState);
-            }
+            // Live session_state_changed messages from the subscribe loop
+            // are always current-run signals — the loop starts from
+            // last_seen which is beyond any previous-run messages.
+            // Old state changes only arrive in the initial replay (handled
+            // above in the replay branch).
+            setSessionStateFor(msg.session_id, newState);
           }
           // Refresh file panel on session state changes (files may have been generated)
           setFileRefreshKey(k => k + 1);
@@ -812,27 +807,20 @@ function MainApp() {
         msg.session_id
       ) {
         const newState = msg.state || msg.content || "completed";
-        const isTerminal = TERMINAL_STATES.has(newState);
-        const currentState = sessionStatesRef.current.get(msg.session_id);
-        // Never downgrade a live "running" to a stale terminal from a previous run
-        if (currentState === "running" && isTerminal) {
-          // Skip — preserve live "running"; backend sends fresh terminal on completion
-        } else if (msg.index == null || msg.index >= highestUserMsgIndexRef.current || isTerminal) {
-          setSessionStateFor(
-            msg.session_id,
-            newState,
-          );
-        }
+        // Live session_state_changed — accept it (subscribe loop
+        // only sends current-run messages after last_seen).
+        setSessionStateFor(
+          msg.session_id,
+          newState,
+        );
       }
       if (msg.type === "result" && msg.session_id) {
-        const currentState = sessionStatesRef.current.get(msg.session_id);
-        if (currentState === "running") {
-          // Skip — stale result from a previous run; current task still
-          // in progress. Backend sends a fresh result on completion.
-        } else if (msg.index == null || msg.index >= highestUserMsgIndexRef.current) {
-          setSessionStateFor(msg.session_id, "completed");
-          loadSessions();
-        }
+        // result is always terminal — accept it. The last_index
+        // parameter sent to the backend ensures only current-run
+        // results reach the frontend (old results are filtered by
+        // after_index on the backend side).
+        setSessionStateFor(msg.session_id, "completed");
+        loadSessions();
       }
     },
     [userId, updateSendState],
