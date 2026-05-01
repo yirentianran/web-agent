@@ -1,4 +1,4 @@
-import { useState, useRef, useImperativeHandle, forwardRef, type FormEvent } from 'react'
+import { useState, useRef, useImperativeHandle, forwardRef, useEffect, type FormEvent } from 'react'
 
 type UploadStatus = 'pending' | 'uploading' | 'uploaded' | 'failed'
 
@@ -41,6 +41,22 @@ const InputBar = forwardRef<InputBarHandle, InputBarProps>(
         textareaRef.current?.focus()
       },
     }))
+
+    const autoResize = () => {
+      const ta = textareaRef.current
+      if (ta) {
+        ta.style.height = 'auto'
+        ta.style.height = Math.min(ta.scrollHeight, 120) + 'px'
+      }
+    }
+
+    // Reset textarea height after input is cleared (form submit)
+    // Call autoResize — it recalculates height based on current content
+    useEffect(() => {
+      if (input === '' && attachedFiles.length === 0) {
+        autoResize()
+      }
+    }, [input, attachedFiles])
 
     // ── Upload helpers ────────────────────────────────────────
 
@@ -173,14 +189,6 @@ const InputBar = forwardRef<InputBarHandle, InputBarProps>(
       setAttachedFiles(prev => prev.map((f, i) =>
         i === index ? { ...f, status: success ? 'uploaded' as const : 'failed' as const } : f,
       ))
-    }
-
-    const autoResize = () => {
-      const ta = textareaRef.current
-      if (ta) {
-        ta.style.height = 'auto'
-        ta.style.height = Math.min(ta.scrollHeight, 120) + 'px'
-      }
     }
 
     // ── Derived state ────────────────────────────────────────
