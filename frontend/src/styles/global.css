@@ -4347,7 +4347,6 @@ body {
 
 .file-panel-wrapper {
   position: relative;
-  display: flex;
   flex-shrink: 0;
   width: 290px;
   transition: width var(--transition-normal, 0.3s) ease;
@@ -4388,13 +4387,21 @@ body {
 }
 
 .session-file-panel {
+  position: absolute;
+  right: 0;
+  top: 0;
   width: 290px;
-  min-width: 0;
+  height: 100%;
   display: flex;
   flex-direction: column;
   border-left: 1px solid var(--color-border);
   background: var(--color-surface);
   overflow-y: auto;
+  transition: transform 0.3s ease;
+}
+
+.file-panel-wrapper:not(.open) .session-file-panel {
+  transform: translateX(100%);
 }
 
 .sfp-header {
