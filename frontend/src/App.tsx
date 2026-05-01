@@ -134,8 +134,8 @@ interface MainLayoutProps {
   setSidebarOpen: (v: boolean | ((v: boolean) => boolean)) => void;
   sessions: SessionItem[];
   activeSession: string | null;
-  onSelectSession: (id: string) => Promise<void>;
-  onNewSession: () => Promise<void>;
+  onSelectSession: (id: string) => void;
+  onNewSession: () => void;
   onDeleteSession: (id: string) => Promise<void>;
   onRenameSession: (id: string, title: string) => Promise<void>;
   messages: Message[];
@@ -153,6 +153,7 @@ interface MainLayoutProps {
   setFileRefreshKey: (v: number | ((v: number) => number)) => void;
   handleLogout: () => void;
   navigate: ReturnType<typeof useNavigate>;
+  sessionLoading: boolean;
 }
 
 function MainLayout({
@@ -182,6 +183,7 @@ function MainLayout({
   setFileRefreshKey,
   handleLogout,
   navigate,
+  sessionLoading,
 }: MainLayoutProps) {
   return (
     <div className="app">
@@ -255,6 +257,7 @@ function MainLayout({
             onFileClick={handleFileClick}
             authToken={authToken}
             streamingText={streamingText}
+            sessionLoading={sessionLoading}
           />
           <InputBar
             key={activeSession}
@@ -303,9 +306,7 @@ function MainApp() {
   });
   const [messages, setMessages] = useState<Message[]>([]);
   const [sessions, setSessions] = useState<SessionItem[]>([]);
-  const [activeSession, setActiveSession] = useState<string | null>(() => {
-    return localStorage.getItem("activeSession");
-  });
+  const [activeSession, setActiveSession] = useState<string | null>(null);
   const activeSessionRef = useRef<string | null>(null);
   // Keep ref in sync so handleIncomingMessage doesn't need activeSession as a dep
   useEffect(() => {
@@ -353,6 +354,7 @@ function MainApp() {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [filePanelOpen, setFilePanelOpen] = useState(false);
   const [fileRefreshKey, setFileRefreshKey] = useState(0);
+  const [sessionLoading, setSessionLoading] = useState(false);
   const inputBarRef = useRef<InputBarHandle>(null);
   const navigate = useNavigate();
   const sessionMatch = useMatch("/chat/:sessionId");
@@ -364,6 +366,9 @@ function MainApp() {
   // Tracks whether replay has started for the current turn.
   // If replay sends messages, we don't clear (replay already handles ordering).
   const replayStartedRef = useRef(false);
+  // When true, block the auto-activate in handleIncomingMessage (line 767).
+  // Set by handleNewSession, cleared by handleSend when a real session starts.
+  const suppressAutoActivateRef = useRef(false);
 
   // Pending user messages per session — tracks messages sent via WebSocket
   // but not yet confirmed by the backend. When switching sessions, pending
@@ -762,7 +767,7 @@ function MainApp() {
         setFileRefreshKey(k => k + 1);
       }
 
-      if (!activeSessionRef.current && msg.session_id) {
+      if (!activeSessionRef.current && msg.session_id && !suppressAutoActivateRef.current) {
         setActiveSession(msg.session_id);
       }
 
@@ -931,8 +936,9 @@ function MainApp() {
           // Session creation failed — fall back to synthetic ID so UX isn't broken
           const errorMsg = err instanceof Error ? err.message : String(err);
           logger.error("Session creation failed, using synthetic ID", errorMsg);
-          sessionId = `session_${userId}_${Date.now()}`;
+          sessionId = `sess_${generateUUID().replace(/-/g, "").slice(0, 12)}`;
           setActiveSession(sessionId);
+          navigate("/chat/" + sessionId);
           setSessionStateFor(sessionId, "error");
           setTimeout(() => setSessionStateFor(sessionId!, "idle"), 3000);
         }
@@ -970,6 +976,8 @@ function MainApp() {
       }
       setMessages((prev) => [...prev, optimisticMsg]);
       setSessionStateFor(sessionId!, "running");
+      // Clear the suppress flag — a real session is now active
+      suppressAutoActivateRef.current = false;
 
       // Send via WebSocket with send state tracking
       sendMessage({
@@ -987,25 +995,35 @@ function MainApp() {
     [messagesRef, sendMessage, authToken, userId, navigate],
   );
 
-  const handleNewSession = useCallback(async () => {
+  const [newSessionKey, setNewSessionKey] = useState(0);
+
+  const handleNewSession = useCallback(() => {
     // Clean up old session's pending messages and last_known_index
     const oldSessionId = activeSessionRef.current;
     if (oldSessionId) {
       pendingUserMsgsRef.current.delete(oldSessionId);
     }
-    setMessages([]);
-    setActiveSession(null);
     // Reset tracking refs — no active session means input should be enabled
     clearThresholdRef.current = Number.MAX_SAFE_INTEGER;
     replayStartedRef.current = false;
     highestUserMsgIndexRef.current = -1;
-    // Reset streaming text state for new session
     setStreamingTextState(useStreamingText.createInitialState());
-  }, []);
+    setSessionLoading(false);
+    setMessages([]);
+    setActiveSession(null);
+    // Prevent WebSocket messages from old sessions from re-activating
+    suppressAutoActivateRef.current = true;
+    // Force remount of / route's MainLayout for visible feedback
+    setNewSessionKey(k => k + 1);
+    navigate("/");
+  }, [navigate]);
 
   const handleSelectSession = useCallback(
     async (id: string) => {
-      // Flush last_known_index for the old session before switching
+      // Guard: if already on this session, skip
+      if (activeSessionRef.current === id) return;
+
+      setSessionLoading(true);
       const oldSessionId = activeSessionRef.current;
       if (oldSessionId) {
         const oldMaxIndex = computeRecoverIndex(messages) - 1;
@@ -1045,6 +1063,8 @@ function MainApp() {
           `/api/users/${userId}/sessions/${id}/history`,
           { headers },
         );
+        // Guard: user switched to a different session while fetching
+        if (activeSessionRef.current !== id) { setSessionLoading(false); return; }
         if (resp.ok) {
           const data = await resp.json();
           const msgs = (data as any[]).map((m: any) => ({
@@ -1070,6 +1090,7 @@ function MainApp() {
             // Backend confirmed — clear pending
             pendingUserMsgsRef.current.delete(id);
           }
+          setSessionLoading(false);
 
           // Restore first user message for title
           const firstUser = msgs.find((m: Message) => m.type === "user");
@@ -1115,6 +1136,9 @@ function MainApp() {
             // Status endpoint unavailable — fall back to DB-derived state
           }
 
+          // Guard: user switched to a different session while fetching status
+          if (activeSessionRef.current !== id) return;
+
           // If buffer says "running" but is stale (>30s), don't trust it —
           // the agent likely exited and the completion signal was lost.
           // Trigger recovery instead to get the real state.
@@ -1155,6 +1179,7 @@ function MainApp() {
             setMessages([]);
           }
           setSessionStateFor(id, "idle");
+          setSessionLoading(false);
         }
       } catch {
         // History fetch failed — restore pending if available
@@ -1164,6 +1189,7 @@ function MainApp() {
           setMessages([]);
         }
         setSessionStateFor(id, "idle");
+        setSessionLoading(false);
       }
     },
     [userId, authToken, messages, setSessionStateFor, sendRecover],
@@ -1175,9 +1201,16 @@ function MainApp() {
   selectSessionRef.current = handleSelectSession;
 
   // Sync URL /chat/:sessionId → actual session loading
+  // Guard with suppressAutoActivateRef to prevent transient state after
+  // handleNewSession from re-loading the old session (activeSession=null
+  // but urlSessionId still has the old value until navigate("/") is processed).
   useEffect(() => {
-    if (urlSessionId && urlSessionId !== activeSession) {
+    if (urlSessionId && urlSessionId !== activeSession && !suppressAutoActivateRef.current) {
       selectSessionRef.current(urlSessionId);
+    }
+    // Clear suppress flag once URL has settled to / (welcome page)
+    if (!urlSessionId) {
+      suppressAutoActivateRef.current = false;
     }
   }, [urlSessionId, activeSession]);
 
@@ -1358,7 +1391,7 @@ function MainApp() {
             sessions={sessions}
             activeSession={activeSession}
             onSelectSession={(id) => navigate("/chat/" + id)}
-            onNewSession={() => { handleNewSession(); navigate("/"); }}
+            onNewSession={handleNewSession}
             onDeleteSession={handleDeleteSession}
             onRenameSession={handleRenameSession}
             messages={messages}
@@ -1376,6 +1409,7 @@ function MainApp() {
             setFileRefreshKey={setFileRefreshKey}
             handleLogout={handleLogout}
             navigate={navigate}
+            sessionLoading={sessionLoading}
           />
         }
       />
@@ -1383,6 +1417,7 @@ function MainApp() {
         path="/"
         element={
           <MainLayout
+            key={newSessionKey}
             status={status}
             queueFull={queueFull}
             userId={userId}
@@ -1391,7 +1426,7 @@ function MainApp() {
             sessions={sessions}
             activeSession={activeSession}
             onSelectSession={(id) => navigate("/chat/" + id)}
-            onNewSession={() => { handleNewSession(); navigate("/"); }}
+            onNewSession={handleNewSession}
             onDeleteSession={handleDeleteSession}
             onRenameSession={handleRenameSession}
             messages={messages}
@@ -1409,6 +1444,7 @@ function MainApp() {
             setFileRefreshKey={setFileRefreshKey}
             handleLogout={handleLogout}
             navigate={navigate}
+            sessionLoading={sessionLoading}
           />
         }
       />

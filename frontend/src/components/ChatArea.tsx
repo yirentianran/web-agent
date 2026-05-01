@@ -49,6 +49,7 @@ interface ChatAreaProps {
   onFileClick?: (filename: string) => void;
   authToken?: string | null;
   streamingText?: string; // Accumulated streaming text from content_block_delta
+  sessionLoading?: boolean;
 }
 
 export default function ChatArea({
@@ -60,6 +61,7 @@ export default function ChatArea({
   onFileClick,
   authToken,
   streamingText,
+  sessionLoading,
 }: ChatAreaProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const isUserAtBottomRef = useRef(true);
@@ -349,15 +351,28 @@ export default function ChatArea({
   return (
     <div className="chat-area">
       <div className="messages" ref={containerRef} onScroll={handleScroll}>
-        {!hasVisibleMessages && (
+        {/* No active session → always show welcome, never messages */}
+        {sessionId === null && !sessionLoading && (
           <div className="chat-welcome">
             <div className="welcome-logo">◎</div>
             <h1 className="welcome-title">Web Agent</h1>
             <p className="welcome-desc">Your AI-powered companion</p>
           </div>
         )}
+        {sessionId !== null && !hasVisibleMessages && !sessionLoading && (
+          <div className="chat-welcome">
+            <div className="welcome-logo">◎</div>
+            <h1 className="welcome-title">Web Agent</h1>
+            <p className="welcome-desc">Your AI-powered companion</p>
+          </div>
+        )}
+        {sessionId !== null && sessionLoading && (
+          <div className="chat-welcome">
+            <StatusSpinner isRunning={true} label="Switching session…" />
+          </div>
+        )}
 
-        {filteredMessages.map((msg, i) => (
+        {sessionId !== null && filteredMessages.map((msg, i) => (
           <MessageBubble
             key={msg.clientMsgId ?? `${msg.index}-${i}`}
             message={msg}
@@ -371,7 +386,7 @@ export default function ChatArea({
 
         {/* Streaming text indicator — shows accumulated content_block_delta text */}
         {/* Parse analysis/summary tags when complete, fall back to plain text when incomplete */}
-        {streamingText && streamingText.trim() && (() => {
+        {sessionId !== null && streamingText && streamingText.trim() && (() => {
           const isIncomplete = hasIncompleteTag(streamingText)
           if (isIncomplete) {
             return (
@@ -436,7 +451,7 @@ export default function ChatArea({
         })()}
 
         {/* Show agent spinner when session is running */}
-        {isAgentRunning && (
+        {sessionId !== null && isAgentRunning && (
           <div className="message system-message">
             <StatusSpinner
               variant="agent"
@@ -447,14 +462,14 @@ export default function ChatArea({
         )}
 
         {/* Error state indicator */}
-        {sessionState === "error" && (
+        {sessionId !== null && sessionState === "error" && (
           <div className="message system-message session-error-banner">
             <p>An error occurred while processing your request. Please try again.</p>
           </div>
         )}
       </div>
 
-      {sessionState === "completed" && (
+      {sessionId !== null && sessionState === "completed" && (
         <SkillFeedbackWidget
           skillNames={
             feedbackSkillNames.length > 0 ? feedbackSkillNames : undefined
