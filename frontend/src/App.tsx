@@ -144,6 +144,7 @@ interface MainLayoutProps {
   activeSessionState: string;
   sendAnswer: (sessionId: string, answers: Record<string, string>) => void;
   handleFileClick: (filename: string) => void;
+  handleResend: (message: Message) => void;
   authToken: string | null;
   streamingText: string;
   inputBarRef: React.RefObject<InputBarHandle | null>;
@@ -174,6 +175,7 @@ function MainLayout({
   activeSessionState,
   sendAnswer,
   handleFileClick,
+  handleResend,
   authToken,
   streamingText,
   inputBarRef,
@@ -257,6 +259,7 @@ function MainLayout({
             onAnswer={sendAnswer}
             scrollPositions={sessionScrollPositions}
             onFileClick={handleFileClick}
+            onResend={handleResend}
             authToken={authToken}
             streamingText={streamingText}
             sessionLoading={sessionLoading}
@@ -385,11 +388,21 @@ function MainApp() {
     inputBarRef.current?.insertText(`@${filename} `);
   }, []);
 
-  // Keep a ref to messages count for accurate last_index (Step 1 + 4)
+  // Track highest message index for accurate last_index and optimistic message ordering
   const messagesRef = useRef(0);
+  // Track the highest message index across all received messages.
+  // Used to assign a valid index to optimistic user messages so they
+  // sort after all existing messages, not before them.
+  const maxMsgIndexRef = useRef(0);
   const firstMessageRef = useRef<string | null>(null);
   useEffect(() => {
     messagesRef.current = messages.length;
+    // Update maxMsgIndex from the actual message indices (not array length)
+    let maxIdx = 0;
+    for (const m of messages) {
+      if (m.index != null && m.index > maxIdx) maxIdx = m.index;
+    }
+    maxMsgIndexRef.current = maxIdx;
     // Capture first user message for auto-title
     if (!firstMessageRef.current && messages.length > 0) {
       const firstUser = messages.find((m) => m.type === "user");
@@ -915,6 +928,41 @@ function MainApp() {
     return () => clearInterval(checkInterval);
   }, [activeSessionState, messages, sendRecover]);
 
+  const handleResend = useCallback(
+    (failedMessage: Message) => {
+      const sessionId = activeSessionRef.current || failedMessage.session_id;
+      if (!sessionId) return;
+
+      const newClientMsgId = generateUUID();
+      const files = (failedMessage.data as Array<{ filename: string; size?: number }> | undefined) || [];
+
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.clientMsgId === failedMessage.clientMsgId
+            ? { ...m, clientMsgId: newClientMsgId, sendState: "sending" as MessageSendState }
+            : m,
+        ),
+      );
+      sendStateMapRef.current.set(newClientMsgId, "sending");
+      const resentMsg: Message = {
+        ...failedMessage,
+        clientMsgId: newClientMsgId,
+        sendState: "sending",
+      };
+      pendingUserMsgsRef.current.set(sessionId, resentMsg);
+      setSessionStateFor(sessionId, "running");
+
+      sendMessage({
+        message: failedMessage.content,
+        session_id: sessionId,
+        last_index: maxMsgIndexRef.current,
+        files: files.map((f) => f.filename),
+        client_msg_id: newClientMsgId,
+      });
+    },
+    [sendMessage, setSessionStateFor],
+  );
+
 
   const handleSend = useCallback(
     async (message: string, files?: File[]) => {
@@ -946,11 +994,11 @@ function MainApp() {
         }
       }
 
-      // Add user message immediately for UI responsiveness.
-      // Use index = lastBackendIndex - 1 so it sorts BEFORE any replay
-      // messages (which start at lastBackendIndex) but won't collide
-      // with them during dedup.
-      const lastBackendIndex = messagesRef.current;
+      // Use index = maxMsgIndex + 1 so it sorts AFTER all existing
+      // messages (including the last assistant result) but won't collide
+      // with backend-assigned indices during dedup. When the backend
+      // echoes the user message, it will have its own proper index.
+      const lastBackendIndex = maxMsgIndexRef.current;
       // Set threshold: messages with index >= this are "new turn".
       // When first such message arrives, clear old messages.
       clearThresholdRef.current = lastBackendIndex;
@@ -963,7 +1011,7 @@ function MainApp() {
       const optimisticMsg: Message = {
         type: "user",
         content: message,
-        index: lastBackendIndex - 1,
+        index: lastBackendIndex + 1,
         data: fileMetadata,
         clientMsgId,
         sendState: "sending",
@@ -1400,6 +1448,7 @@ function MainApp() {
             activeSessionState={activeSessionState}
             sendAnswer={sendAnswer}
             handleFileClick={handleFileClick}
+            handleResend={handleResend}
             authToken={authToken}
             streamingText={streamingTextState.accumulatedText}
             inputBarRef={inputBarRef}
@@ -1435,6 +1484,7 @@ function MainApp() {
             activeSessionState={activeSessionState}
             sendAnswer={sendAnswer}
             handleFileClick={handleFileClick}
+            handleResend={handleResend}
             authToken={authToken}
             streamingText={streamingTextState.accumulatedText}
             inputBarRef={inputBarRef}
