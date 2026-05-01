@@ -442,7 +442,9 @@ function MainApp() {
             session_id: activeSession,
           }));
           setMessages(msgs);
-          // Derive sessionState from history
+          // Derive sessionState from history, but never overwrite
+          // a live "running" state — the agent task may already be in
+          // progress while history fetch returns stale/empty data.
           let derivedState = "idle";
           for (let i = msgs.length - 1; i >= 0; i--) {
             const m = msgs[i];
@@ -459,7 +461,16 @@ function MainApp() {
               break;
             }
           }
-          setSessionStateFor(activeSession, derivedState);
+          // Only apply derived state if it's more progressed than current,
+          // or if we're not currently running (avoid overwriting a live "running"
+          // with stale "idle" from empty history of a brand-new session).
+          const currentState = sessionStatesRef.current.get(activeSession) ?? "idle";
+          if (currentState === "running" && derivedState !== "running") {
+            // Preserve live "running" — don't downgrade to "idle"/"completed"
+            // from stale history. The WebSocket will deliver the correct state.
+          } else {
+            setSessionStateFor(activeSession, derivedState);
+          }
           // Fetch live buffer state — may differ from persisted DB state.
           // If buffer says running but is stale (>30s), don't trust it —
           // the agent likely exited and the completion signal was lost.
