@@ -74,7 +74,7 @@ export default function FeedbackPage({ userId: _userId, authToken, onBack }: Fee
       <div className="feedback-page">
         <div className="feedback-header">
           <button className="feedback-back-btn" onClick={onBack} type="button">
-            &larr; {t('common.back')}
+            {t('common.back')}
           </button>
           <h2>{t('feedback.title')}</h2>
         </div>
@@ -88,7 +88,7 @@ export default function FeedbackPage({ userId: _userId, authToken, onBack }: Fee
       <div className="feedback-page">
         <div className="feedback-header">
           <button className="feedback-back-btn" onClick={onBack} type="button">
-            &larr; {t('common.back')}
+            {t('common.back')}
           </button>
           <h2>{t('feedback.title')}</h2>
         </div>
@@ -102,7 +102,7 @@ export default function FeedbackPage({ userId: _userId, authToken, onBack }: Fee
       <div className="feedback-page">
         <div className="feedback-header">
           <button className="feedback-back-btn" onClick={onBack} type="button">
-            &larr; {t('common.back')}
+            {t('common.back')}
           </button>
           <h2>{t('feedback.title')}</h2>
         </div>
@@ -115,7 +115,7 @@ export default function FeedbackPage({ userId: _userId, authToken, onBack }: Fee
     <div className="feedback-page">
       <div className="feedback-header">
         <button className="feedback-back-btn" onClick={onBack} type="button">
-          &larr; {t('common.back')}
+          {t('common.back')}
         </button>
         <h2>{t('feedback.title')}</h2>
       </div>

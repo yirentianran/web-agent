@@ -184,7 +184,7 @@ export default function MemoryPanel({ userId, authToken, onBack }: MemoryPanelPr
   return (
     <div className="memory-page feedback-page">
       <div className="memory-header feedback-header">
-        <button className="memory-back-btn feedback-back-btn" onClick={onBack}>&larr; {t('common.back')}</button>
+        <button className="memory-back-btn feedback-back-btn" onClick={onBack}>{t('common.back')}</button>
         <h2>{t('memory.title')}</h2>
       </div>
 

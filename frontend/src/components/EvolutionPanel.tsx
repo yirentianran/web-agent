@@ -192,7 +192,7 @@ export default function EvolutionPanel({ userId: _userId, authToken, onBack }: E
   return (
     <div className="evolution-panel feedback-page">
       <div className="evolution-panel-header feedback-header">
-        <button className="evolution-back-btn feedback-back-btn" onClick={onBack}>&larr; {t('common.back')}</button>
+        <button className="evolution-back-btn feedback-back-btn" onClick={onBack}>{t('common.back')}</button>
         <h2>{t('evolution.title')}</h2>
       </div>
 

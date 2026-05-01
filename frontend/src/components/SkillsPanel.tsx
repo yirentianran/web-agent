@@ -103,7 +103,7 @@ export default function SkillsPanel({ authToken, userId, onClose, embedded }: Sk
         <div className="skill-view">
           <div className="skill-view-header">
             <button className="btn-back" onClick={() => setViewingSkill(null)} type="button">
-              ← Back
+              {t('common.back')}
             </button>
             <div className="skill-view-title">
               <h3>{viewingSkill.name}</h3>
