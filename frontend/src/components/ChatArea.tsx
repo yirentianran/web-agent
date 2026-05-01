@@ -48,6 +48,7 @@ interface ChatAreaProps {
   onAnswer: (sessionId: string, answers: Record<string, string>) => void;
   scrollPositions: Map<string, number>;
   onFileClick?: (filename: string) => void;
+  onResend?: (message: Message) => void;
   authToken?: string | null;
   streamingText?: string; // Accumulated streaming text from content_block_delta
   sessionLoading?: boolean;
@@ -60,6 +61,7 @@ export default function ChatArea({
   onAnswer,
   scrollPositions,
   onFileClick,
+  onResend,
   authToken,
   streamingText,
   sessionLoading,
@@ -381,6 +383,7 @@ export default function ChatArea({
             sessionId={sessionId || ""}
             onAnswer={onAnswer}
             onFileClick={onFileClick}
+            onResend={onResend}
             lastTodoWriteIndex={lastTodoWriteIndex}
             lastUserMsgIndex={lastUserMsgIndex}
           />

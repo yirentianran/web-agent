@@ -181,11 +181,12 @@ interface MessageBubbleProps {
   sessionId: string
   onAnswer: (sessionId: string, answers: Record<string, string>) => void
   onFileClick?: (filename: string) => void
+  onResend?: (message: Message) => void
   lastTodoWriteIndex?: number
   lastUserMsgIndex?: number
 }
 
-export default function MessageBubble({ message, sessionId, onAnswer, onFileClick, lastTodoWriteIndex, lastUserMsgIndex }: MessageBubbleProps) {
+export default function MessageBubble({ message, sessionId, onAnswer, onFileClick, onResend, lastTodoWriteIndex, lastUserMsgIndex }: MessageBubbleProps) {
   const { t } = useTranslation()
   if (message.type === 'user') {
     const files = (message.data as Array<{ filename: string; size?: number }> | undefined) || []
@@ -197,12 +198,8 @@ export default function MessageBubble({ message, sessionId, onAnswer, onFileClic
     // Send state indicator
     const sendStateIcon = message.sendState === 'sending'
       ? <span className="send-state send-state--sending" title={t('message.sending')} aria-label={t('message.sending')}>◌</span>
-      : message.sendState === 'sent'
-      ? <span className="send-state send-state--sent" title={t('message.sent')} aria-label={t('message.sent')}>✓</span>
       : message.sendState === 'failed'
-      ? <span className="send-state send-state--failed" title={t('message.sendFailed')} aria-label={t('message.sendFailed')}>✗</span>
-      : message.sendState === 'timeout'
-      ? <span className="send-state send-state--timeout" title={t('message.sendTimedOut')} aria-label={t('message.sendTimedOut')}>⏱</span>
+      ? <span className="send-state send-state--failed" title={t('message.sendFailed')} aria-label={t('message.sendFailed')} role="button" tabIndex={0} onClick={() => onResend?.(message)}>✗</span>
       : null
 
     return (
@@ -219,8 +216,8 @@ export default function MessageBubble({ message, sessionId, onAnswer, onFileClic
         {message.content && message.content.trim() && (
           <div className="message user-message">
             <div className="bubble">
-              <MarkdownRenderer>{message.content}</MarkdownRenderer>
               {sendStateIcon && <span className="send-state-wrapper">{sendStateIcon}</span>}
+              <MarkdownRenderer>{message.content}</MarkdownRenderer>
             </div>
           </div>
         )}

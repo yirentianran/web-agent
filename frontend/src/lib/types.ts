@@ -33,7 +33,7 @@ export interface Message {
 }
 
 /** Send state machine for user messages */
-export type MessageSendState = 'sending' | 'sent' | 'failed' | 'timeout'
+export type MessageSendState = 'sending' | 'sent' | 'failed'
 
 /** WebSocket connection status */
 export type ConnectionStatus = 'connected' | 'connecting' | 'reconnecting' | 'failed'
