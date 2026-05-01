@@ -5,6 +5,7 @@ import {
   useRef,
   type FormEvent,
 } from "react";
+import { Routes, Route, useNavigate, useMatch } from "react-router-dom";
 import { generateUUID } from "./lib/uuid";
 import Sidebar from "./components/Sidebar";
 import Header from "./components/Header";
@@ -24,7 +25,7 @@ import {
   useStreamingText,
   type StreamingTextState,
 } from "./hooks/useStreamingText";
-import type { Message, SessionItem, MessageSendState } from "./lib/types";
+import type { Message, SessionItem, MessageSendState, ConnectionStatus } from "./lib/types";
 import {
   mergeSessionStates,
   computeRecoverIndex,
@@ -58,30 +59,6 @@ function loadScrollPositions(): Map<string, number> {
 }
 
 const sessionScrollPositions = loadScrollPositions();
-
-// Check if we're on design preview page
-function isDesignPreviewRoute(): boolean {
-  return (
-    window.location.pathname === "/design-preview" ||
-    window.location.hash === "#/design-preview"
-  );
-}
-
-// Check if we're on settings preview page
-function isSettingsPreviewRoute(): boolean {
-  return (
-    window.location.pathname === "/settings-preview" ||
-    window.location.hash === "#/settings-preview"
-  );
-}
-
-// Check if we're on tech preview page
-function isTechPreviewRoute(): boolean {
-  return (
-    window.location.pathname === "/tech-preview" ||
-    window.location.hash === "#/tech-preview"
-  );
-}
 
 interface LoginScreenProps {
   onLogin: (userId: string) => void;
@@ -149,6 +126,174 @@ function LoginScreen({ onLogin }: LoginScreenProps) {
 }
 
 // Main App component (internal)
+interface MainLayoutProps {
+  status: string;
+  queueFull: boolean;
+  userId: string;
+  sidebarOpen: boolean;
+  setSidebarOpen: (v: boolean | ((v: boolean) => boolean)) => void;
+  sessions: SessionItem[];
+  activeSession: string | null;
+  onSelectSession: (id: string) => Promise<void>;
+  onNewSession: () => Promise<void>;
+  onDeleteSession: (id: string) => Promise<void>;
+  onRenameSession: (id: string, title: string) => Promise<void>;
+  messages: Message[];
+  activeSessionState: string;
+  sendAnswer: (requestId: number, answer: string) => void;
+  handleFileClick: (filename: string) => void;
+  authToken: string | null;
+  streamingText: string;
+  inputBarRef: React.RefObject<InputBarHandle | null>;
+  handleSend: (message: string, files?: File[]) => Promise<void>;
+  stopSession: () => Promise<void>;
+  filePanelOpen: boolean;
+  setFilePanelOpen: (v: boolean | ((v: boolean) => boolean)) => void;
+  fileRefreshKey: number;
+  setFileRefreshKey: (v: number | ((v: number) => number)) => void;
+  handleLogout: () => void;
+  navigate: ReturnType<typeof useNavigate>;
+}
+
+function MainLayout({
+  status,
+  queueFull,
+  userId,
+  sidebarOpen,
+  setSidebarOpen,
+  sessions,
+  activeSession,
+  onSelectSession,
+  onNewSession,
+  onDeleteSession,
+  onRenameSession,
+  messages,
+  activeSessionState,
+  sendAnswer,
+  handleFileClick,
+  authToken,
+  streamingText,
+  inputBarRef,
+  handleSend,
+  stopSession,
+  filePanelOpen,
+  setFilePanelOpen,
+  fileRefreshKey,
+  setFileRefreshKey,
+  handleLogout,
+  navigate,
+}: MainLayoutProps) {
+  return (
+    <div className="app">
+      {/* Reconnection failure banner */}
+      {status === "failed" && (
+        <div className="connection-banner connection-banner--failed">
+          <span>Connection lost after multiple attempts.</span>
+          <button onClick={() => window.location.reload()}>Refresh Page</button>
+        </div>
+      )}
+      {/* Reconnecting indicator */}
+      {status === "reconnecting" && (
+        <div className="connection-banner connection-banner--reconnecting">
+          <span>Reconnecting...</span>
+        </div>
+      )}
+      {/* Header */}
+      <Header
+        connectionStatus={status as ConnectionStatus}
+        userId={userId}
+        onOpenSkills={() => navigate("/skills")}
+        onOpenFeedback={() => navigate("/feedback")}
+        onOpenEvolution={() => navigate("/evolution")}
+        onOpenMCP={() => navigate("/mcp")}
+        onOpenMemory={() => navigate("/memory")}
+        onLogout={handleLogout}
+      />
+
+      {/* Layout */}
+      <div className="app-layout">
+        <div className={`sidebar-wrapper ${sidebarOpen ? 'open' : ''}`}>
+          <button
+            className="sidebar-toggle"
+            onClick={() => setSidebarOpen(v => !v)}
+            title={sidebarOpen ? 'Collapse sidebar' : 'Expand sidebar'}
+            type="button"
+          >
+            <span className="sidebar-toggle-icon">{sidebarOpen ? '\u25C2' : '\u25B8'}</span>
+          </button>
+          <Sidebar
+            sessions={sessions}
+            activeSession={activeSession}
+            onSelect={onSelectSession}
+            onNew={onNewSession}
+            onDelete={onDeleteSession}
+            onRename={onRenameSession}
+          />
+        </div>
+        <main className="main">
+          {queueFull && (
+            <div
+              style={{
+                background: "#fff3cd",
+                color: "#856404",
+                padding: "8px 16px",
+                fontSize: "0.85rem",
+                textAlign: "center",
+                borderBottom: "1px solid #ffc107",
+              }}
+            >
+              Connection is slow — some messages may be queued. Waiting for
+              reconnection…
+            </div>
+          )}
+          <ChatArea
+            messages={messages}
+            sessionId={activeSession}
+            sessionState={activeSessionState}
+            onAnswer={sendAnswer}
+            scrollPositions={sessionScrollPositions}
+            onFileClick={handleFileClick}
+            authToken={authToken}
+            streamingText={streamingText}
+          />
+          <InputBar
+            key={activeSession}
+            ref={inputBarRef}
+            onSend={handleSend}
+            onStop={stopSession}
+            disabled={
+              status !== "connected" || activeSessionState === "running"
+            }
+            userId={userId}
+          />
+        </main>
+        <div className={`file-panel-wrapper ${filePanelOpen ? 'open' : ''}`}>
+          <button
+            className="file-panel-toggle"
+            onClick={() => {
+              setFilePanelOpen(v => {
+                if (!v) setFileRefreshKey(k => k + 1);
+                return !v;
+              });
+            }}
+            title={filePanelOpen ? 'Collapse files' : 'Expand files'}
+            type="button"
+          >
+            <span className="file-panel-toggle-icon">{filePanelOpen ? '\u25B8' : '\u25C2'}</span>
+          </button>
+          <SessionFilePanel
+            userId={userId}
+            authToken={authToken}
+            activeSessionId={activeSession}
+            onFileClick={handleFileClick}
+            refreshKey={fileRefreshKey}
+          />
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function MainApp() {
   const [userId, setUserId] = useState<string>(() => {
     return localStorage.getItem("userId") || "default";
@@ -208,12 +353,10 @@ function MainApp() {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [filePanelOpen, setFilePanelOpen] = useState(false);
   const [fileRefreshKey, setFileRefreshKey] = useState(0);
-  const [showFeedback, setShowFeedback] = useState(false);
-  const [showEvolution, setShowEvolution] = useState(false);
-  const [showMCP, setShowMCP] = useState(false);
-  const [showMemory, setShowMemory] = useState(false);
-  const [showSkills, setShowSkills] = useState(false);
   const inputBarRef = useRef<InputBarHandle>(null);
+  const navigate = useNavigate();
+  const sessionMatch = useMatch("/chat/:sessionId");
+  const urlSessionId = sessionMatch?.params.sessionId ?? null;
   // Index threshold: messages with index >= this are "new turn" messages.
   // Use MAX_SAFE_INTEGER so only replay messages trigger the first-turn path.
   // Live messages (index < MAX) fall through to normal append logic.
@@ -782,6 +925,7 @@ function MainApp() {
           const data = await resp.json();
           sessionId = data.session_id;
           setActiveSession(sessionId);
+          navigate("/chat/" + sessionId);
           await loadSessions();
         } catch (err) {
           // Session creation failed — fall back to synthetic ID so UX isn't broken
@@ -840,7 +984,7 @@ function MainApp() {
       // Since sendMessage returns a clientMsgId, we track it here.
       // The actual resolution happens when backend echoes or timeout fires.
     },
-    [messagesRef, sendMessage, authToken, userId],
+    [messagesRef, sendMessage, authToken, userId, navigate],
   );
 
   const handleNewSession = useCallback(async () => {
@@ -1025,6 +1169,18 @@ function MainApp() {
     [userId, authToken, messages, setSessionStateFor, sendRecover],
   );
 
+  // Stable ref to handleSelectSession so the URL-sync effect doesn't
+  // re-fire on every messages change.
+  const selectSessionRef = useRef(handleSelectSession);
+  selectSessionRef.current = handleSelectSession;
+
+  // Sync URL /chat/:sessionId → actual session loading
+  useEffect(() => {
+    if (urlSessionId && urlSessionId !== activeSession) {
+      selectSessionRef.current(urlSessionId);
+    }
+  }, [urlSessionId, activeSession]);
+
   const handleDeleteSession = useCallback(
     async (id: string) => {
       if (!confirm("Delete this session?")) return;
@@ -1059,13 +1215,14 @@ function MainApp() {
           clearThresholdRef.current = Number.MAX_SAFE_INTEGER;
           replayStartedRef.current = false;
           highestUserMsgIndexRef.current = -1;
+          navigate("/");
         }
       } catch (err) {
         logger.error("Failed to delete session", err);
         alert(err instanceof Error ? err.message : "Failed to delete session");
       }
     },
-    [userId, authToken, activeSession],
+    [userId, authToken, activeSession, navigate],
   );
 
   const handleRenameSession = useCallback(
@@ -1137,186 +1294,135 @@ function MainApp() {
     );
   }
 
-  // Feedback management page
-  if (showFeedback) {
-    return (
-      <FeedbackPage
-        userId={userId}
-        authToken={authToken}
-        onBack={() => setShowFeedback(false)}
-      />
-    );
-  }
-
-  // Skill evolution review page
-  if (showEvolution) {
-    return (
-      <EvolutionPanel
-        userId={userId}
-        authToken={authToken}
-        onBack={() => setShowEvolution(false)}
-      />
-    );
-  }
-
-  // MCP servers management page
-  if (showMCP) {
-    return (
-      <MCPPage
-        userId={userId}
-        authToken={authToken}
-        onBack={() => setShowMCP(false)}
-      />
-    );
-  }
-
-  // Skills management page
-  if (showSkills) {
-    return (
-      <SkillsPage
-        authToken={authToken}
-        userId={userId}
-        onBack={() => setShowSkills(false)}
-      />
-    );
-  }
-
-  if (showMemory) {
-    return (
-      <MemoryPanel
-        userId={userId}
-        authToken={authToken}
-        onBack={() => setShowMemory(false)}
-      />
-    );
-  }
-
   return (
-    <div className="app">
-      {/* Reconnection failure banner */}
-      {status === "failed" && (
-        <div className="connection-banner connection-banner--failed">
-          <span>Connection lost after multiple attempts.</span>
-          <button onClick={() => window.location.reload()}>Refresh Page</button>
-        </div>
-      )}
-      {/* Reconnecting indicator */}
-      {status === "reconnecting" && (
-        <div className="connection-banner connection-banner--reconnecting">
-          <span>Reconnecting...</span>
-        </div>
-      )}
-      {/* Header */}
-      <Header
-        connectionStatus={status}
-        userId={userId}
-        onOpenSkills={() => setShowSkills(true)}
-        onOpenFeedback={() => setShowFeedback(true)}
-        onOpenEvolution={() => setShowEvolution(true)}
-        onOpenMCP={() => setShowMCP(true)}
-        onOpenMemory={() => setShowMemory(true)}
-        onLogout={handleLogout}
+    <Routes>
+      <Route
+        path="/skills"
+        element={
+          <SkillsPage
+            authToken={authToken}
+            userId={userId}
+            onBack={() => navigate("/")}
+          />
+        }
       />
-
-      {/* Layout */}
-      <div className="app-layout">
-        <div className={`sidebar-wrapper ${sidebarOpen ? 'open' : ''}`}>
-          <button
-            className="sidebar-toggle"
-            onClick={() => setSidebarOpen(v => !v)}
-            title={sidebarOpen ? 'Collapse sidebar' : 'Expand sidebar'}
-            type="button"
-          >
-            <span className="sidebar-toggle-icon">{sidebarOpen ? '◂' : '▸'}</span>
-          </button>
-          <Sidebar
+      <Route
+        path="/feedback"
+        element={
+          <FeedbackPage
+            userId={userId}
+            authToken={authToken}
+            onBack={() => navigate("/")}
+          />
+        }
+      />
+      <Route
+        path="/memory"
+        element={
+          <MemoryPanel
+            userId={userId}
+            authToken={authToken}
+            onBack={() => navigate("/")}
+          />
+        }
+      />
+      <Route
+        path="/mcp"
+        element={
+          <MCPPage
+            userId={userId}
+            authToken={authToken}
+            onBack={() => navigate("/")}
+          />
+        }
+      />
+      <Route
+        path="/evolution"
+        element={
+          <EvolutionPanel
+            userId={userId}
+            authToken={authToken}
+            onBack={() => navigate("/")}
+          />
+        }
+      />
+      <Route
+        path="/chat/:sessionId"
+        element={
+          <MainLayout
+            status={status}
+            queueFull={queueFull}
+            userId={userId}
+            sidebarOpen={sidebarOpen}
+            setSidebarOpen={setSidebarOpen}
             sessions={sessions}
             activeSession={activeSession}
-            onSelect={handleSelectSession}
-            onNew={handleNewSession}
-            onDelete={handleDeleteSession}
-            onRename={handleRenameSession}
-          />
-        </div>
-        <main className="main">
-          {queueFull && (
-            <div
-              style={{
-                background: "#fff3cd",
-                color: "#856404",
-                padding: "8px 16px",
-                fontSize: "0.85rem",
-                textAlign: "center",
-                borderBottom: "1px solid #ffc107",
-              }}
-            >
-              Connection is slow — some messages may be queued. Waiting for
-              reconnection…
-            </div>
-          )}
-          <ChatArea
+            onSelectSession={(id) => navigate("/chat/" + id)}
+            onNewSession={() => { handleNewSession(); navigate("/"); }}
+            onDeleteSession={handleDeleteSession}
+            onRenameSession={handleRenameSession}
             messages={messages}
-            sessionId={activeSession}
-            sessionState={activeSessionState}
-            onAnswer={sendAnswer}
-            scrollPositions={sessionScrollPositions}
-            onFileClick={handleFileClick}
+            activeSessionState={activeSessionState}
+            sendAnswer={sendAnswer}
+            handleFileClick={handleFileClick}
             authToken={authToken}
             streamingText={streamingTextState.accumulatedText}
+            inputBarRef={inputBarRef}
+            handleSend={handleSend}
+            stopSession={stopSession}
+            filePanelOpen={filePanelOpen}
+            setFilePanelOpen={setFilePanelOpen}
+            fileRefreshKey={fileRefreshKey}
+            setFileRefreshKey={setFileRefreshKey}
+            handleLogout={handleLogout}
+            navigate={navigate}
           />
-          <InputBar
-            key={activeSession}
-            ref={inputBarRef}
-            onSend={handleSend}
-            onStop={stopSession}
-            disabled={
-              status !== "connected" || activeSessionState === "running"
-            }
+        }
+      />
+      <Route
+        path="/"
+        element={
+          <MainLayout
+            status={status}
+            queueFull={queueFull}
             userId={userId}
-          />
-        </main>
-        <div className={`file-panel-wrapper ${filePanelOpen ? 'open' : ''}`}>
-          <button
-            className="file-panel-toggle"
-            onClick={() => {
-              setFilePanelOpen(v => {
-                if (!v) setFileRefreshKey(k => k + 1);
-                return !v;
-              });
-            }}
-            title={filePanelOpen ? 'Collapse files' : 'Expand files'}
-            type="button"
-          >
-            <span className="file-panel-toggle-icon">{filePanelOpen ? '▸' : '◂'}</span>
-          </button>
-          <SessionFilePanel
-            userId={userId}
+            sidebarOpen={sidebarOpen}
+            setSidebarOpen={setSidebarOpen}
+            sessions={sessions}
+            activeSession={activeSession}
+            onSelectSession={(id) => navigate("/chat/" + id)}
+            onNewSession={() => { handleNewSession(); navigate("/"); }}
+            onDeleteSession={handleDeleteSession}
+            onRenameSession={handleRenameSession}
+            messages={messages}
+            activeSessionState={activeSessionState}
+            sendAnswer={sendAnswer}
+            handleFileClick={handleFileClick}
             authToken={authToken}
-            activeSessionId={activeSession}
-            onFileClick={handleFileClick}
-            refreshKey={fileRefreshKey}
+            streamingText={streamingTextState.accumulatedText}
+            inputBarRef={inputBarRef}
+            handleSend={handleSend}
+            stopSession={stopSession}
+            filePanelOpen={filePanelOpen}
+            setFilePanelOpen={setFilePanelOpen}
+            fileRefreshKey={fileRefreshKey}
+            setFileRefreshKey={setFileRefreshKey}
+            handleLogout={handleLogout}
+            navigate={navigate}
           />
-        </div>
-      </div>
-    </div>
+        }
+      />
+    </Routes>
   );
 }
 
 export default function App() {
-  // Design Preview Route - check before any hooks
-  if (isDesignPreviewRoute()) {
-    return <DesignPreviewPage />;
-  }
-
-  // Settings Preview Route - check before any hooks
-  if (isSettingsPreviewRoute()) {
-    return <SettingsPreviewPage />;
-  }
-
-  // Tech Preview Route - check before any hooks
-  if (isTechPreviewRoute()) {
-    return <TechPreviewPage />;
-  }
-
-  return <MainApp />;
+  return (
+    <Routes>
+      <Route path="/design-preview" element={<DesignPreviewPage />} />
+      <Route path="/settings-preview" element={<SettingsPreviewPage />} />
+      <Route path="/tech-preview" element={<TechPreviewPage />} />
+      <Route path="/*" element={<MainApp />} />
+    </Routes>
+  );
 }
