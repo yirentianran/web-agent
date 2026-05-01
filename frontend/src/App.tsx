@@ -691,8 +691,6 @@ function MainApp() {
               if (currentState !== "running") {
                 setSessionStateFor(msg.session_id, newState);
               }
-              // If currently running, preserve it — old terminal must
-              // not terminate a live run.
             }
           } else if (msg.replay) {
             const currentState = sessionStatesRef.current.get(msg.session_id);
@@ -709,7 +707,18 @@ function MainApp() {
               setSessionStateFor(msg.session_id, newState);
             }
           } else {
-            setSessionStateFor(msg.session_id, newState);
+            // Live (non-replay) message for the active session.
+            // The subscribe loop sends old buffered messages with replay=False,
+            // so old terminal states (completed/error/cancelled from a previous
+            // run) can arrive here and overwrite a live "running" state.
+            // Never downgrade "running" to a stale terminal from a previous run.
+            const currentState = sessionStatesRef.current.get(msg.session_id);
+            if (currentState === "running" && isTerminal) {
+              // Skip — preserve live "running" over stale terminal state.
+              // The backend will send a fresh terminal when the current task ends.
+            } else {
+              setSessionStateFor(msg.session_id, newState);
+            }
           }
           // Refresh file panel on session state changes (files may have been generated)
           setFileRefreshKey(k => k + 1);
@@ -804,8 +813,11 @@ function MainApp() {
       ) {
         const newState = msg.state || msg.content || "completed";
         const isTerminal = TERMINAL_STATES.has(newState);
-        // Accept terminal state changes regardless of index
-        if (msg.index == null || msg.index >= highestUserMsgIndexRef.current || isTerminal) {
+        const currentState = sessionStatesRef.current.get(msg.session_id);
+        // Never downgrade a live "running" to a stale terminal from a previous run
+        if (currentState === "running" && isTerminal) {
+          // Skip — preserve live "running"; backend sends fresh terminal on completion
+        } else if (msg.index == null || msg.index >= highestUserMsgIndexRef.current || isTerminal) {
           setSessionStateFor(
             msg.session_id,
             newState,
