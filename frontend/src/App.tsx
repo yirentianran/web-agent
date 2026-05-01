@@ -264,9 +264,8 @@ function MainLayout({
             ref={inputBarRef}
             onSend={handleSend}
             onStop={stopSession}
-            disabled={
-              status !== "connected" || activeSessionState === "running"
-            }
+            disabled={status !== "connected" || activeSessionState === "running"}
+            isRunning={activeSessionState === "running" && status === "connected"}
             userId={userId}
           />
         </main>

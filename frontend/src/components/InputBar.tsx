@@ -12,6 +12,7 @@ interface InputBarProps {
   onSend: (message: string, files?: File[]) => void
   onStop?: () => void
   disabled?: boolean
+  isRunning?: boolean
   userId?: string
 }
 
@@ -22,7 +23,7 @@ export interface InputBarHandle {
 let fileCounter = 0
 
 const InputBar = forwardRef<InputBarHandle, InputBarProps>(
-  function InputBar({ onSend, onStop, disabled, userId }: InputBarProps, ref) {
+  function InputBar({ onSend, onStop, disabled, isRunning, userId }: InputBarProps, ref) {
     const [input, setInput] = useState('')
     const [attachedFiles, setAttachedFiles] = useState<AttachedFile[]>([])
     const fileInputRef = useRef<HTMLInputElement>(null)
@@ -294,7 +295,7 @@ const InputBar = forwardRef<InputBarHandle, InputBarProps>(
         </div>
 
         {/* Send/Stop Button - Circular */}
-        {disabled && onStop ? (
+        {isRunning && onStop ? (
           <button
             type="button"
             className="btn-stop"
