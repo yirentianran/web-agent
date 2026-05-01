@@ -825,9 +825,14 @@ function MainApp() {
         }
       }
       if (msg.type === "result" && msg.session_id) {
-        // result is always terminal — accept regardless of index
-        setSessionStateFor(msg.session_id, "completed");
-        loadSessions();
+        const currentState = sessionStatesRef.current.get(msg.session_id);
+        if (currentState === "running") {
+          // Skip — stale result from a previous run; current task still
+          // in progress. Backend sends a fresh result on completion.
+        } else if (msg.index == null || msg.index >= highestUserMsgIndexRef.current) {
+          setSessionStateFor(msg.session_id, "completed");
+          loadSessions();
+        }
       }
     },
     [userId, updateSendState],
@@ -978,7 +983,7 @@ function MainApp() {
       sendMessage({
         message: failedMessage.content,
         session_id: sessionId,
-        last_index: maxMsgIndexRef.current,
+        last_index: maxMsgIndexRef.current + 1,
         files: files.map((f) => f.filename),
         client_msg_id: newClientMsgId,
       });
@@ -1056,7 +1061,7 @@ function MainApp() {
       sendMessage({
         message,
         session_id: sessionId ?? undefined,
-        last_index: lastBackendIndex,
+        last_index: lastBackendIndex + 1,
         files: files?.map((f) => f.name),
         client_msg_id: clientMsgId,
       });
