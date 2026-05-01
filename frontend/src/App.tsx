@@ -728,64 +728,71 @@ function MainApp() {
           !replayStartedRef.current &&
           (msg.replay || msg.index >= clearThresholdRef.current);
 
+        let next: Message[];
+
         if (isFirstTurnMessage) {
           replayStartedRef.current = true;
           if (prev.some((m) => m.index === msg.index)) {
-            return prev;
-          }
-          if (
-            msg.type === "user" &&
-            !msg.replay
-          ) {
+            next = prev;
+          } else if (msg.type === "user" && !msg.replay) {
             if (
               msg.clientMsgId &&
               prev.some((m) => m.clientMsgId === msg.clientMsgId)
             ) {
-              return prev;
-            }
-            // Fallback: content match for messages without UUID
-            if (
+              next = prev;
+            } else if (
               prev.some(
                 (m) => m.type === "user" && m.content === msg.content,
               )
             ) {
-              return prev;
+              next = prev;
+            } else {
+              next = [...prev, msg];
             }
+          } else {
+            next = [...prev, msg];
           }
-          return [...prev, msg];
-        }
-
-        // Non-first message: append with dedup.
-        // Replay dedup: skip if we already have this exact index
-        if (msg.replay && prev.some((m) => m.index === msg.index)) {
-          return prev;
-        }
-        // Live dedup for user messages: prefer UUID-based matching,
-        // fallback to content match for backward compatibility with
-        // messages that don't have clientMsgId.
-        if (msg.type === "user" && !msg.replay) {
+        } else if (msg.replay && prev.some((m) => m.index === msg.index)) {
+          next = prev;
+        } else if (msg.type === "user" && !msg.replay) {
           if (
             msg.clientMsgId &&
             prev.some((m) => m.clientMsgId === msg.clientMsgId)
           ) {
-            return prev;
-          }
-          // Fallback: content match for old messages without UUID
-          if (
+            next = prev;
+          } else if (
             !msg.clientMsgId &&
             prev.some((m) => m.type === "user" && m.content === msg.content)
           ) {
-            return prev;
+            next = prev;
+          } else {
+            next = [...prev, msg];
           }
-        }
-        // Live dedup for non-user messages: dedup by index to prevent
-        // duplicates when messages arrive via both recovery and subscribe paths.
-        if (!msg.replay && msg.type !== "user") {
+        } else if (!msg.replay && msg.type !== "user") {
           if (msg.index != null && prev.some((m) => m.index === msg.index)) {
-            return prev;
+            next = prev;
+          } else {
+            next = [...prev, msg];
           }
+        } else {
+          next = [...prev, msg];
         }
-        return [...prev, msg];
+
+        // Restore send states from the source-of-truth map. This
+        // ensures the UI reflects the real state regardless of
+        // whether the optimistic insert or the WebSocket echo
+        // was processed first.
+        let sendStateChanged = false;
+        const withStates = next.map((m) => {
+          if (!m.clientMsgId) return m;
+          const state = sendStateMapRef.current.get(m.clientMsgId);
+          if (state && m.sendState !== state) {
+            sendStateChanged = true;
+            return { ...m, sendState: state };
+          }
+          return m;
+        });
+        return sendStateChanged ? withStates : next;
       });
 
       // Trigger file panel refresh when files are generated or session state changes
@@ -1040,7 +1047,20 @@ function MainApp() {
       if (sessionId) {
         pendingUserMsgsRef.current.set(sessionId, optimisticMsg);
       }
-      setMessages((prev) => [...prev, optimisticMsg]);
+      setMessages((prev) => {
+        // If WebSocket echo already added this message (race: echo beat
+        // the optimistic insert), update sendState from the source-of-truth
+        // map instead of duplicating the user message.
+        const existing = prev.find((m) => m.clientMsgId === clientMsgId);
+        if (existing) {
+          const state = sendStateMapRef.current.get(clientMsgId) ?? "sending";
+          if (existing.sendState === state) return prev;
+          return prev.map((m) =>
+            m.clientMsgId === clientMsgId ? { ...m, sendState: state } : m,
+          );
+        }
+        return [...prev, optimisticMsg];
+      });
       setSessionStateFor(sessionId!, "running");
       // Clear the suppress flag — a real session is now active
       suppressAutoActivateRef.current = false;
