@@ -93,7 +93,7 @@ function formatJsonText(text: string): string | null {
   }
 }
 
-function getPreviewText(text: string): string | null {
+function getPreviewLines(text: string): string[] | null {
   try {
     const obj = JSON.parse(text)
     let target: Record<string, unknown> = obj
@@ -107,13 +107,16 @@ function getPreviewText(text: string): string | null {
       }
     }
 
-    const parts: string[] = []
-    if (target.name) parts.push(`name: ${target.name}`)
-    if (target.type) parts.push(`type: ${target.type}`)
-    if (target.command) parts.push(`command: ${target.command}`)
-    else if (target.url) parts.push(`url: ${target.url}`)
-    if (target.tools) parts.push(`${Array.isArray(target.tools) ? target.tools.length : 0} tools`)
-    return parts.length > 0 ? parts.join(' | ') : null
+    const line1: string[] = []
+    const line2: string[] = []
+    if (target.name) line1.push(`name: ${target.name}`)
+    if (target.type) line1.push(`type: ${target.type}`)
+    if (target.command) line2.push(`command: ${target.command}`)
+    else if (target.url) line2.push(`url: ${target.url}`)
+    if (target.tools) line2.push(`${Array.isArray(target.tools) ? target.tools.length : 0} tools`)
+
+    const lines = [line1.join(' | '), line2.join(' | ')].filter(l => l)
+    return lines.length > 0 ? lines : null
   } catch {
     return null
   }
@@ -255,7 +258,7 @@ export default function MCPPage({ userId: _userId, authToken, onBack }: MCPPageP
     }
   }
 
-  const preview = useMemo(() => getPreviewText(modal.jsonText), [modal.jsonText])
+  const previewLines = useMemo(() => getPreviewLines(modal.jsonText), [modal.jsonText])
 
   if (loading) {
     return (
@@ -392,7 +395,7 @@ export default function MCPPage({ userId: _userId, authToken, onBack }: MCPPageP
 
               <div className="mcp-form-actions-secondary">
                 <button type="button" className="mcp-btn-format" onClick={handleFormat}>{t('common.format')}</button>
-                {preview && <span className="mcp-preview">{preview}</span>}
+                {previewLines && <div className="mcp-preview">{previewLines.map((line, i) => <div key={i}>{line}</div>)}</div>}
               </div>
 
               <div className="mcp-form-actions">

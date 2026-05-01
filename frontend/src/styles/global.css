@@ -4245,6 +4245,7 @@ body {
   font-size: 0.75rem;
   color: var(--color-text-secondary);
   font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
+  line-height: 1.4;
 }
 
 /* ── Send state indicators ─────────────────────────────────── */
