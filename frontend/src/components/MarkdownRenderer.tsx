@@ -1,4 +1,5 @@
 import { useState, useCallback } from 'react'
+import { useTranslation } from 'react-i18next'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import rehypeHighlight from 'rehype-highlight'
@@ -12,6 +13,7 @@ function copyToClipboard(text: string): Promise<void> {
 }
 
 function CodeBlock({ className, children, ...props }: React.ComponentProps<'code'>) {
+  const { t } = useTranslation()
   const [copied, setCopied] = useState(false)
   const match = /language-(\w+)/.exec(className || '')
   const language = match ? match[1] : ''
@@ -40,10 +42,10 @@ function CodeBlock({ className, children, ...props }: React.ComponentProps<'code
         <button
           className="code-block-copy"
           onClick={handleCopy}
-          aria-label="Copy code"
+          aria-label={t('markdown.copyCode')}
           type="button"
         >
-          {copied ? 'Copied!' : 'Copy'}
+          {copied ? t('markdown.copied') : t('markdown.copy')}
         </button>
       </div>
       <pre className="code-block-pre">

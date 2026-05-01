@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
+import { useTranslation } from 'react-i18next'
 
 interface FileInfo {
   filename: string
@@ -30,6 +31,7 @@ export default function SessionFilePanel({
   onFileClick,
   refreshKey,
 }: SessionFilePanelProps) {
+  const { t } = useTranslation()
   const [scope, setScope] = useState<'all' | 'session'>('session')
   const [files, setFiles] = useState<FileInfo[]>([])
   const [loading, setLoading] = useState(false)
@@ -81,7 +83,7 @@ export default function SessionFilePanel({
       }
       setFiles(data)
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load files')
+      setError(err instanceof Error ? err.message : t('filePanel.loadFailed'))
     }
     setLoading(false)
   }, [userId, activeSessionId, scope, refreshKey])
@@ -91,7 +93,7 @@ export default function SessionFilePanel({
   }, [fetchFiles])
 
   const handleDelete = async (file: FileInfo) => {
-    if (!confirm(`Delete "${file.filename}"?`)) return
+    if (!confirm(t('filePanel.confirmDelete', { filename: file.filename }))) return
     setDeleting(file.path)
     try {
       const resp = await fetch(`/api/users/${userId}/files/${encodeURIComponent(file.path)}`, {
@@ -101,7 +103,7 @@ export default function SessionFilePanel({
       if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
       await fetchFiles()
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Delete failed')
+      setError(err instanceof Error ? err.message : t('filePanel.deleteFailed'))
     }
     setDeleting(null)
   }
@@ -118,25 +120,25 @@ export default function SessionFilePanel({
           onClick={() => setScope('session')}
           type="button"
         >
-          Session
+          {t('filePanel.sessionScope')}
         </button>
         <button
           className={`sfp-scope-tab ${scope === 'all' ? 'active' : ''}`}
           onClick={() => setScope('all')}
           type="button"
         >
-          All
+          {t('filePanel.allScope')}
         </button>
       </div>
 
       {error && <div className="sfp-error">{error}</div>}
 
       {loading ? (
-        <div className="sfp-loading">Loading...</div>
+        <div className="sfp-loading">{t('common.loading')}</div>
       ) : (
         <div className="sfp-groups">
           <FileGroup
-            title="Uploads"
+            title={t('filePanel.uploadsGroup')}
             files={uploadFiles}
             userId={userId}
             onFileClick={onFileClick}
@@ -144,7 +146,7 @@ export default function SessionFilePanel({
             deleting={deleting}
           />
           <FileGroup
-            title="Generated"
+            title={t('filePanel.generatedGroup')}
             files={generatedFiles}
             userId={userId}
             onFileClick={onFileClick}
@@ -172,6 +174,7 @@ function FileGroup({
   onDelete: (file: FileInfo) => void
   deleting: string | null
 }) {
+  const { t } = useTranslation()
   const [collapsed, setCollapsed] = useState(false)
 
   return (
@@ -187,7 +190,7 @@ function FileGroup({
       {!collapsed && (
         <div className="sfp-group-items">
           {files.length === 0 ? (
-            <div className="sfp-group-empty">No {title.toLowerCase()}.</div>
+            <div className="sfp-group-empty">{title === t('filePanel.uploadsGroup') ? t('filePanel.noUploads') : t('filePanel.noGenerated')}</div>
           ) : (
             files.map(f => (
               <div key={f.path} className="sfp-item">
@@ -195,7 +198,7 @@ function FileGroup({
                   className="sfp-item-name"
                   onClick={() => onFileClick(f.filename)}
                   type="button"
-                  title={`Reference @${f.filename}`}
+                  title={t('filePanel.referenceFile', { filename: f.filename })}
                 >
                   {f.filename}
                 </button>
@@ -204,7 +207,7 @@ function FileGroup({
                   className="sfp-item-dl"
                   href={`/api/users/${userId}/download/${encodeURIComponent(f.path)}`}
                   download
-                  title="Download"
+                  title={t('common.download')}
                 >
                   &#8595;
                 </a>
@@ -213,7 +216,7 @@ function FileGroup({
                   onClick={() => onDelete(f)}
                   disabled={deleting === f.path}
                   type="button"
-                  title="Delete"
+                  title={t('common.delete')}
                 >
                   {deleting === f.path ? '...' : '\u2715'}
                 </button>

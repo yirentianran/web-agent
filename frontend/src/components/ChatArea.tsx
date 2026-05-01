@@ -1,4 +1,5 @@
 import { useEffect, useRef, useCallback, useState, useMemo } from "react";
+import { useTranslation } from "react-i18next";
 import MessageBubble, { parseTagBlocks, hasIncompleteTag } from "./MessageBubble";
 import MarkdownRenderer from "./MarkdownRenderer";
 import SkillFeedbackWidget from "./SkillFeedbackWidget";
@@ -63,6 +64,7 @@ export default function ChatArea({
   streamingText,
   sessionLoading,
 }: ChatAreaProps) {
+  const { t } = useTranslation();
   const containerRef = useRef<HTMLDivElement>(null);
   const isUserAtBottomRef = useRef(true);
   const [agentStartTime, setAgentStartTime] = useState<number | null>(null);
@@ -355,20 +357,20 @@ export default function ChatArea({
         {sessionId === null && !sessionLoading && (
           <div className="chat-welcome">
             <div className="welcome-logo">◎</div>
-            <h1 className="welcome-title">Web Agent</h1>
-            <p className="welcome-desc">Your AI-powered companion</p>
+            <h1 className="welcome-title">{t('chat.welcomeTitle')}</h1>
+            <p className="welcome-desc">{t('chat.welcomeDesc')}</p>
           </div>
         )}
         {sessionId !== null && !hasVisibleMessages && !sessionLoading && (
           <div className="chat-welcome">
             <div className="welcome-logo">◎</div>
-            <h1 className="welcome-title">Web Agent</h1>
-            <p className="welcome-desc">Your AI-powered companion</p>
+            <h1 className="welcome-title">{t('chat.welcomeTitle')}</h1>
+            <p className="welcome-desc">{t('chat.welcomeDesc')}</p>
           </div>
         )}
         {sessionId !== null && sessionLoading && (
           <div className="chat-welcome">
-            <StatusSpinner isRunning={true} label="Switching session…" />
+            <StatusSpinner isRunning={true} label={t('chat.switchingSession')} />
           </div>
         )}
 
@@ -420,7 +422,7 @@ export default function ChatArea({
               <div className="bubble">
                 {hasAnalysis && (
                   <details className="analysis-block" open={false}>
-                    <summary>Analysis</summary>
+                    <summary>{t('message.analysis')}</summary>
                     <div className="analysis-content">
                       {tagParts.filter(p => p.kind === 'analysis').map((p, i) => (
                         <div key={i} className="analysis-text">
@@ -432,7 +434,7 @@ export default function ChatArea({
                 )}
                 {hasSummary && (
                   <details className="summary-block" open={false}>
-                    <summary>Summary</summary>
+                    <summary>{t('message.summary')}</summary>
                     <div className="summary-content">
                       {tagParts.filter(p => p.kind === 'summary').map((p, i) => (
                         <div key={i} className="summary-text">
@@ -455,7 +457,7 @@ export default function ChatArea({
           <div className="message system-message">
             <StatusSpinner
               variant="agent"
-              text="Agent is working..."
+              text={t('chat.agentWorking')}
               startTime={agentStartTime ?? undefined}
             />
           </div>
@@ -464,7 +466,7 @@ export default function ChatArea({
         {/* Error state indicator */}
         {sessionId !== null && sessionState === "error" && (
           <div className="message system-message session-error-banner">
-            <p>An error occurred while processing your request. Please try again.</p>
+            <p>{t('chat.errorBanner')}</p>
           </div>
         )}
       </div>

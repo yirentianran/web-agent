@@ -93,7 +93,7 @@ describe('SkillFeedbackWidget - rating interaction', () => {
     // Expand first
     fireEvent.click(screen.getByRole('button', { name: /show feedback/i }))
 
-    const thirdStar = screen.getByRole('button', { name: '3 stars' })
+    const thirdStar = screen.getByRole('button', { name: '3 star' })
     fireEvent.click(thirdStar)
 
     const stars = screen.getAllByRole('button', { name: /star/ })
@@ -109,7 +109,7 @@ describe('SkillFeedbackWidget - rating interaction', () => {
     renderWidget({ skillNames: ['audit-pdf'], onSubmit })
 
     fireEvent.click(screen.getByRole('button', { name: /show feedback/i }))
-    fireEvent.click(screen.getByRole('button', { name: '4 stars' }))
+    fireEvent.click(screen.getByRole('button', { name: '4 star' }))
 
     const textarea = screen.getByPlaceholderText('What could be improved? (optional)')
     fireEvent.change(textarea, { target: { value: 'Good but slow' } })
@@ -129,7 +129,7 @@ describe('SkillFeedbackWidget - rating interaction', () => {
     const select = screen.getByRole('combobox', { name: /select skill/i })
     fireEvent.change(select, { target: { value: 'format-doc' } })
 
-    fireEvent.click(screen.getByRole('button', { name: '4 stars' }))
+    fireEvent.click(screen.getByRole('button', { name: '4 star' }))
     fireEvent.click(screen.getByRole('button', { name: /submit feedback/i }))
 
     expect(onSubmit).toHaveBeenCalledWith(4, '', '', 'format-doc')
@@ -155,7 +155,7 @@ describe('SkillFeedbackWidget - submitted state', () => {
     renderWidget({ onSubmit })
 
     fireEvent.click(screen.getByRole('button', { name: /show feedback/i }))
-    fireEvent.click(screen.getByRole('button', { name: '2 stars' }))
+    fireEvent.click(screen.getByRole('button', { name: '2 star' }))
     fireEvent.click(screen.getByRole('button', { name: /submit feedback/i }))
 
     // Should still show stars (not collapsed, not showing thank-you)
@@ -239,7 +239,7 @@ describe('SkillFeedbackWidget - error handling', () => {
     expect(await screen.findByText(/Failed/)).toBeInTheDocument()
 
     // Change rating should clear error
-    fireEvent.click(screen.getByRole('button', { name: '2 stars' }))
+    fireEvent.click(screen.getByRole('button', { name: '2 star' }))
     expect(screen.queryByText(/Failed/)).not.toBeInTheDocument()
   })
 })
@@ -250,7 +250,7 @@ describe('SkillFeedbackWidget - user_edits', () => {
     const { container } = renderWidget({ skillNames: ['audit-pdf'], onSubmit })
 
     fireEvent.click(screen.getByRole('button', { name: /show feedback/i }))
-    fireEvent.click(screen.getByRole('button', { name: '5 stars' }))
+    fireEvent.click(screen.getByRole('button', { name: '5 star' }))
 
     const commentArea = screen.getByPlaceholderText('What could be improved? (optional)')
     fireEvent.change(commentArea, { target: { value: 'Great!' } })

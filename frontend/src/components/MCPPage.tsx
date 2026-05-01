@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, type FormEvent, useMemo } from 'react'
+import { useTranslation } from 'react-i18next'
 import { useMCPServers } from '../hooks/useMCPServers'
 import type { McpServer, McpServerType } from '../lib/types'
 
@@ -119,6 +120,7 @@ function getPreviewText(text: string): string | null {
 }
 
 export default function MCPPage({ userId: _userId, authToken, onBack }: MCPPageProps) {
+  const { t } = useTranslation()
   const api = useMCPServers(authToken ?? null)
   const [servers, setServers] = useState<McpServer[]>([])
   const [loading, setLoading] = useState(true)
@@ -139,7 +141,7 @@ export default function MCPPage({ userId: _userId, authToken, onBack }: MCPPageP
       const data = await api.listServers()
       setServers(data)
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load servers')
+      setError(err instanceof Error ? err.message : t('mcp.loadFailed'))
     } finally {
       setLoading(false)
     }
@@ -169,13 +171,13 @@ export default function MCPPage({ userId: _userId, authToken, onBack }: MCPPageP
     try {
       parsed = jsonToServer(modal.jsonText)
     } catch {
-      setModal(prev => ({ ...prev, error: 'Invalid JSON' }))
+      setModal(prev => ({ ...prev, error: t('mcp.invalidJson') }))
       setActionLoading(null)
       return
     }
 
     if (!parsed.name) {
-      setModal(prev => ({ ...prev, error: 'Missing required field: name' }))
+      setModal(prev => ({ ...prev, error: t('mcp.missingName') }))
       setActionLoading(null)
       return
     }
@@ -188,25 +190,25 @@ export default function MCPPage({ userId: _userId, authToken, onBack }: MCPPageP
       if (resp.discover_status === 'disconnected' && resp.discover_error) {
         setSaveFeedback({ error: resp.discover_error })
       } else if (resp.discover_status === 'connected') {
-        setSaveFeedback({ status: 'Tools discovered successfully' })
+        setSaveFeedback({ status: t('mcp.toolsDiscovered') })
       }
       closeModal()
       await loadServers()
     } catch (err) {
-      setModal(prev => ({ ...prev, error: err instanceof Error ? err.message : 'Save failed' }))
+      setModal(prev => ({ ...prev, error: err instanceof Error ? err.message : t('mcp.saveFailed') }))
     } finally {
       setActionLoading(null)
     }
   }
 
   const handleDelete = async (name: string) => {
-    if (!confirm(`Delete MCP server "${name}"?`)) return
+    if (!confirm(t('mcp.confirmDelete', { name }))) return
     setActionLoading(`delete-${name}`)
     try {
       await api.deleteServer(name)
       await loadServers()
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Delete failed')
+      setError(err instanceof Error ? err.message : t('mcp.deleteFailed'))
     } finally {
       setActionLoading(null)
     }
@@ -223,7 +225,7 @@ export default function MCPPage({ userId: _userId, authToken, onBack }: MCPPageP
 
   const handleReconnect = async (name: string) => {
     setActionLoading(`reconnect-${name}`)
-    setServerStatuses(prev => ({ ...prev, [name]: { status: 'checking...', error: undefined } }))
+    setServerStatuses(prev => ({ ...prev, [name]: { status: t('mcp.checking'), error: undefined } }))
     try {
       const result = await api.reconnectServer(name)
       setServerStatuses(prev => ({ ...prev, [name]: { status: result.status, error: result.error } }))
@@ -231,7 +233,7 @@ export default function MCPPage({ userId: _userId, authToken, onBack }: MCPPageP
     } catch (err) {
       setServerStatuses(prev => ({
         ...prev,
-        [name]: { error: err instanceof Error ? err.message : 'Reconnect failed' },
+        [name]: { error: err instanceof Error ? err.message : t('mcp.reconnectFailed') },
       }))
     } finally {
       setActionLoading(null)
@@ -259,13 +261,13 @@ export default function MCPPage({ userId: _userId, authToken, onBack }: MCPPageP
     return (
       <div className="mcp-page feedback-page">
         <div className="mcp-header feedback-header">
-          <button className="mcp-back-btn feedback-back-btn" onClick={onBack} type="button">&larr; Back</button>
+          <button className="mcp-back-btn feedback-back-btn" onClick={onBack} type="button">&larr; {t('common.back')}</button>
           <div className="mcp-header-title-group">
-            <button className="mcp-add-btn" onClick={openAddModal} type="button">+ Add Server</button>
-            <h2>MCP Servers</h2>
+            <button className="mcp-add-btn" onClick={openAddModal} type="button">{t('mcp.addServer')}</button>
+            <h2>{t('mcp.title')}</h2>
           </div>
         </div>
-        <div className="mcp-loading">Loading...</div>
+        <div className="mcp-loading">{t('common.loading')}</div>
       </div>
     )
   }
@@ -273,17 +275,17 @@ export default function MCPPage({ userId: _userId, authToken, onBack }: MCPPageP
   return (
     <div className="mcp-page feedback-page">
       <div className="mcp-header feedback-header">
-        <button className="mcp-back-btn feedback-back-btn" onClick={onBack} type="button">&larr; Back</button>
+        <button className="mcp-back-btn feedback-back-btn" onClick={onBack} type="button">&larr; {t('common.back')}</button>
         <div className="mcp-header-title-group">
-          <button className="mcp-add-btn" onClick={openAddModal} type="button">+ Add Server</button>
-          <h2>MCP Servers</h2>
+          <button className="mcp-add-btn" onClick={openAddModal} type="button">{t('mcp.addServer')}</button>
+          <h2>{t('mcp.title')}</h2>
         </div>
       </div>
 
       {error && <div className="mcp-error">{error}</div>}
       {saveFeedback?.error && (
         <div className="mcp-feedback-banner mcp-feedback-banner--error">
-          Auto-discover failed: {saveFeedback.error}
+          {t('mcp.autoDiscoverFailed', { error: saveFeedback.error })}
           <button className="mcp-dismiss-btn" onClick={() => setSaveFeedback(null)} type="button">&times;</button>
         </div>
       )}
@@ -297,7 +299,7 @@ export default function MCPPage({ userId: _userId, authToken, onBack }: MCPPageP
       <div className="mcp-content">
         {servers.length === 0 ? (
           <div className="mcp-empty">
-            <p>No MCP servers configured.</p>
+            <p>{t('mcp.empty')}</p>
           </div>
         ) : (
           <div className="mcp-list">
@@ -327,11 +329,11 @@ export default function MCPPage({ userId: _userId, authToken, onBack }: MCPPageP
                       onClick={() => handleReconnect(server.name)}
                       disabled={actionLoading === `reconnect-${server.name}`}
                       type="button"
-                      title="Reconnect / Discover Tools"
+                      title={t('mcp.reconnectTitle')}
                     >
                       {actionLoading === `reconnect-${server.name}` ? '...' : '\u21bb'}
                     </button>
-                    <button className="mcp-btn-edit" onClick={() => openEditModal(server)} type="button" title="Edit">
+                    <button className="mcp-btn-edit" onClick={() => openEditModal(server)} type="button" title={t('common.edit')}>
                       &#9998;
                     </button>
                     <button
@@ -339,7 +341,7 @@ export default function MCPPage({ userId: _userId, authToken, onBack }: MCPPageP
                       onClick={() => handleDelete(server.name)}
                       disabled={actionLoading === `delete-${server.name}`}
                       type="button"
-                      title="Delete"
+                      title={t('common.delete')}
                     >
                       {actionLoading === `delete-${server.name}` ? '...' : '\u2715'}
                     </button>
@@ -347,13 +349,13 @@ export default function MCPPage({ userId: _userId, authToken, onBack }: MCPPageP
                 </div>
                 {server.description && <p className="mcp-card-desc">{server.description}</p>}
                 <div className="mcp-card-tools">
-                  <strong>{server.tools.length}</strong> tool{server.tools.length !== 1 ? 's' : ''}: {server.tools.join(', ')}
+                  <strong>{server.tools.length}</strong> {t('mcp.toolCount', { count: server.tools.length })}: {server.tools.join(', ')}
                 </div>
                 {connStatus && (
                   <div className={`mcp-conn-status mcp-conn-status--${connStatus.error ? 'error' : 'ok'}`}>
                     {connStatus.error
-                      ? `Connection failed: ${connStatus.error}`
-                      : `Connected — ${server.tools.length} tool${server.tools.length !== 1 ? 's' : ''} discovered`}
+                      ? t('mcp.connectionFailed', { error: connStatus.error })
+                      : t('mcp.connectedTools', { count: server.tools.length })}
                     <button className="mcp-dismiss-btn" onClick={() => handleDismissServerStatus(server.name)} type="button">&times;</button>
                   </div>
                 )}
@@ -369,14 +371,14 @@ export default function MCPPage({ userId: _userId, authToken, onBack }: MCPPageP
         <div className="mcp-modal-overlay" onClick={closeModal}>
           <div className="mcp-modal" onClick={(e) => e.stopPropagation()}>
             <div className="mcp-modal-header">
-              <h2>{modal.mode === 'add' ? 'Add MCP Server' : 'Edit MCP Server'}</h2>
+              <h2>{modal.mode === 'add' ? t('mcp.addModalTitle') : t('mcp.editModalTitle')}</h2>
               <button className="mcp-modal-close" onClick={closeModal} type="button">&times;</button>
             </div>
             <form className="mcp-form" onSubmit={handleSave}>
               {modal.error && <div className="mcp-form-error">{modal.error}</div>}
 
               <div className="mcp-form-field">
-                <label htmlFor="mcp-json-input">MCP Server Config (JSON) *</label>
+                <label htmlFor="mcp-json-input">{t('mcp.configLabel')}</label>
                 <textarea
                   id="mcp-json-input"
                   className="mcp-json-textarea"
@@ -389,14 +391,14 @@ export default function MCPPage({ userId: _userId, authToken, onBack }: MCPPageP
               </div>
 
               <div className="mcp-form-actions-secondary">
-                <button type="button" className="mcp-btn-format" onClick={handleFormat}>Format</button>
+                <button type="button" className="mcp-btn-format" onClick={handleFormat}>{t('common.format')}</button>
                 {preview && <span className="mcp-preview">{preview}</span>}
               </div>
 
               <div className="mcp-form-actions">
-                <button type="button" className="mcp-btn-cancel" onClick={closeModal}>Cancel</button>
+                <button type="button" className="mcp-btn-cancel" onClick={closeModal}>{t('common.cancel')}</button>
                 <button type="submit" className="mcp-btn-save" disabled={actionLoading === 'save'}>
-                  {actionLoading === 'save' ? 'Saving...' : 'Save'}
+                  {actionLoading === 'save' ? t('common.saving') : t('common.save')}
                 </button>
               </div>
             </form>

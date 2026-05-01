@@ -729,7 +729,7 @@ describe('Session timer persistence', () => {
     const elapsedText = container.querySelector('.status-spinner__elapsed')
     expect(elapsedText).toBeInTheDocument()
     // Should show ~2s (new run), NOT 17s (continuation of old run)
-    expect(elapsedText?.textContent?.includes('2秒')).toBe(true)
+    expect(elapsedText?.textContent?.includes('2s')).toBe(true)
   })
 
   it('different sessions maintain independent timers', () => {

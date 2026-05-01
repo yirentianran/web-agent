@@ -1,4 +1,5 @@
 import { useState, useEffect, type FormEvent } from 'react'
+import { useTranslation } from 'react-i18next'
 
 interface MemoryPanelProps {
   userId: string
@@ -9,6 +10,7 @@ interface MemoryPanelProps {
 type StatusMsg = { text: string; ok: boolean } | null
 
 export default function MemoryPanel({ userId, authToken, onBack }: MemoryPanelProps) {
+  const { t } = useTranslation()
   const [notes, setNotes] = useState<Array<{ filename: string; size_bytes: number; modified_at: number }>>([])
   const [selectedNote, setSelectedNote] = useState<string | null>(null)
   const [noteContent, setNoteContent] = useState('')
@@ -71,15 +73,15 @@ export default function MemoryPanel({ userId, authToken, onBack }: MemoryPanelPr
       })
       if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
       await loadNotes()
-      showStatus('Saved', true)
+      showStatus(t('memory.saved'), true)
     } catch (err) {
-      showStatus(err instanceof Error ? err.message : 'Save failed', false)
+      showStatus(err instanceof Error ? err.message : t('memory.saveFailed'), false)
     }
     setLoading(false)
   }
 
   const handleNewNote = () => {
-    const name = prompt('Note name:')
+    const name = prompt(t('memory.noteNamePrompt'))
     if (!name) return
     const filename = name.endsWith('.md') ? name : `${name}.md`
     setSelectedNote(filename)
@@ -87,7 +89,7 @@ export default function MemoryPanel({ userId, authToken, onBack }: MemoryPanelPr
   }
 
   const handleDeleteNote = async (filename: string) => {
-    if (!confirm(`Delete "${filename}"?`)) return
+    if (!confirm(t('memory.confirmDeleteNote', { filename }))) return
     try {
       const resp = await fetch(`/api/users/${userId}/memory/agent-notes/${filename}`, {
         method: 'DELETE',
@@ -99,9 +101,9 @@ export default function MemoryPanel({ userId, authToken, onBack }: MemoryPanelPr
         setNoteContent('')
       }
       await loadNotes()
-      showStatus('Deleted', true)
+      showStatus(t('memory.deleted'), true)
     } catch (err) {
-      showStatus(err instanceof Error ? err.message : 'Delete failed', false)
+      showStatus(err instanceof Error ? err.message : t('memory.deleteFailed'), false)
     }
   }
 
@@ -111,7 +113,7 @@ export default function MemoryPanel({ userId, authToken, onBack }: MemoryPanelPr
     if (prefKey.trim()) patch['preferences'] = { [prefKey.trim()]: prefVal }
     if (entityKey.trim()) patch['entity_memory'] = { [entityKey.trim()]: entityVal }
     if (Object.keys(patch).length === 0) {
-      showStatus('Nothing to save', false)
+      showStatus(t('memory.nothingToSave'), false)
       setLoading(false)
       return
     }
@@ -127,15 +129,15 @@ export default function MemoryPanel({ userId, authToken, onBack }: MemoryPanelPr
       setPrefVal('')
       setEntityKey('')
       setEntityVal('')
-      showStatus('Platform memory updated', true)
+      showStatus(t('memory.platformUpdated'), true)
     } catch (err) {
-      showStatus(err instanceof Error ? err.message : 'Save failed', false)
+      showStatus(err instanceof Error ? err.message : t('memory.saveFailed'), false)
     }
     setLoading(false)
   }
 
   const handleDeletePlatformKey = async (category: 'preferences' | 'entity_memory', key: string) => {
-    if (!confirm(`Delete "${key}"?`)) return
+    if (!confirm(t('memory.confirmDeleteKey', { key }))) return
     setLoading(true)
     try {
       const resp = await fetch(`/api/users/${userId}/memory`, {
@@ -145,9 +147,9 @@ export default function MemoryPanel({ userId, authToken, onBack }: MemoryPanelPr
       })
       if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
       await loadPlatformMemory()
-      showStatus('Deleted', true)
+      showStatus(t('memory.deleted'), true)
     } catch (err) {
-      showStatus(err instanceof Error ? err.message : 'Delete failed', false)
+      showStatus(err instanceof Error ? err.message : t('memory.deleteFailed'), false)
     }
     setLoading(false)
   }
@@ -182,8 +184,8 @@ export default function MemoryPanel({ userId, authToken, onBack }: MemoryPanelPr
   return (
     <div className="memory-page feedback-page">
       <div className="memory-header feedback-header">
-        <button className="memory-back-btn feedback-back-btn" onClick={onBack}>&larr; Back</button>
-        <h2>Memory Management</h2>
+        <button className="memory-back-btn feedback-back-btn" onClick={onBack}>&larr; {t('common.back')}</button>
+        <h2>{t('memory.title')}</h2>
       </div>
 
       {status && (
@@ -193,13 +195,13 @@ export default function MemoryPanel({ userId, authToken, onBack }: MemoryPanelPr
       )}
 
       <div className="memory-tabs">
-        {(['platform', 'agent'] as const).map(t => (
+        {(['platform', 'agent'] as const).map(tabVal => (
           <button
-            key={t}
-            className={`memory-tab ${activeTab === t ? 'active' : ''}`}
-            onClick={() => setActiveTab(t)}
+            key={tabVal}
+            className={`memory-tab ${activeTab === tabVal ? 'active' : ''}`}
+            onClick={() => setActiveTab(tabVal)}
           >
-            {t === 'platform' ? 'Platform Memory (L1)' : 'Agent Notes (L2)'}
+            {tabVal === 'platform' ? t('memory.platformTab') : t('memory.agentTab')}
           </button>
         ))}
       </div>
@@ -207,63 +209,63 @@ export default function MemoryPanel({ userId, authToken, onBack }: MemoryPanelPr
       {activeTab === 'platform' && (
         <div className="memory-view feedback-section">
           <p className="memory-hint">
-            Platform memory is automatically injected into every agent conversation. Set preferences to customize agent behavior, and entity memory for domain knowledge.
+            {t('memory.platformHint')}
           </p>
 
-          <h3 className="feedback-section-title">Preferences</h3>
+          <h3 className="feedback-section-title">{t('memory.preferencesTitle')}</h3>
           {Object.keys(preferences).length > 0 ? (
             <table className="memory-kv-table">
               <tbody>
                 {Object.entries(preferences).map(([k, v]) => (
-                  <tr key={k} className={`kv-row ${editingPref === k ? 'kv-row-editing' : ''}`} onClick={() => startEditPref(k, v)} title="Click to edit">
+                  <tr key={k} className={`kv-row ${editingPref === k ? 'kv-row-editing' : ''}`} onClick={() => startEditPref(k, v)} title={t('memory.clickToEdit')}>
                     <td className="kv-key">{k}</td>
                     <td className="kv-val">{String(v)}</td>
                     <td className="kv-actions">
-                      <button className="btn-kv-delete" onClick={(e) => { e.stopPropagation(); handleDeletePlatformKey('preferences', k) }} title="Delete">✕</button>
+                      <button className="btn-kv-delete" onClick={(e) => { e.stopPropagation(); handleDeletePlatformKey('preferences', k) }} title={t('common.delete')}>✕</button>
                     </td>
                   </tr>
                 ))}
               </tbody>
             </table>
           ) : (
-            <p className="memory-empty-hint">No preferences set.</p>
+            <p className="memory-empty-hint">{t('memory.noPreferences')}</p>
           )}
           <div className="memory-kv-input">
-            <input placeholder="Key (e.g. language)" value={prefKey} onChange={(e) => setPrefKey(e.target.value)} />
-            <input placeholder="Value (e.g. Chinese)" value={prefVal} onChange={(e) => setPrefVal(e.target.value)} />
+            <input placeholder={t('memory.keyPlaceholder')} value={prefKey} onChange={(e) => setPrefKey(e.target.value)} />
+            <input placeholder={t('memory.valuePlaceholder')} value={prefVal} onChange={(e) => setPrefVal(e.target.value)} />
             {editingPref && (
-              <button className="btn-kv-cancel" onClick={cancelEditPref} type="button">Cancel</button>
+              <button className="btn-kv-cancel" onClick={cancelEditPref} type="button">{t('common.cancel')}</button>
             )}
           </div>
 
-          <h3 className="feedback-section-title" style={{ marginTop: 20 }}>Entity Memory</h3>
+          <h3 className="feedback-section-title" style={{ marginTop: 20 }}>{t('memory.entityTitle')}</h3>
           {Object.keys(entityMemory).length > 0 ? (
             <table className="memory-kv-table">
               <tbody>
                 {Object.entries(entityMemory).map(([k, v]) => (
-                  <tr key={k} className={`kv-row ${editingEntity === k ? 'kv-row-editing' : ''}`} onClick={() => startEditEntity(k, v)} title="Click to edit">
+                  <tr key={k} className={`kv-row ${editingEntity === k ? 'kv-row-editing' : ''}`} onClick={() => startEditEntity(k, v)} title={t('memory.clickToEdit')}>
                     <td className="kv-key">{k}</td>
                     <td className="kv-val">{String(v)}</td>
                     <td className="kv-actions">
-                      <button className="btn-kv-delete" onClick={(e) => { e.stopPropagation(); handleDeletePlatformKey('entity_memory', k) }} title="Delete">✕</button>
+                      <button className="btn-kv-delete" onClick={(e) => { e.stopPropagation(); handleDeletePlatformKey('entity_memory', k) }} title={t('common.delete')}>✕</button>
                     </td>
                   </tr>
                 ))}
               </tbody>
             </table>
           ) : (
-            <p className="memory-empty-hint">No entity memory set.</p>
+            <p className="memory-empty-hint">{t('memory.noEntity')}</p>
           )}
           <div className="memory-kv-input">
-            <input placeholder="Key (e.g. company_name)" value={entityKey} onChange={(e) => setEntityKey(e.target.value)} />
-            <input placeholder="Value (e.g. Acme Corp)" value={entityVal} onChange={(e) => setEntityVal(e.target.value)} />
+            <input placeholder={t('memory.entityKeyPlaceholder')} value={entityKey} onChange={(e) => setEntityKey(e.target.value)} />
+            <input placeholder={t('memory.entityValuePlaceholder')} value={entityVal} onChange={(e) => setEntityVal(e.target.value)} />
             {editingEntity && (
-              <button className="btn-kv-cancel" onClick={cancelEditEntity} type="button">Cancel</button>
+              <button className="btn-kv-cancel" onClick={cancelEditEntity} type="button">{t('common.cancel')}</button>
             )}
           </div>
 
           <button className="btn-save-memory" onClick={handleSavePlatformMemory} disabled={loading} style={{ marginTop: 16 }}>
-            {loading ? 'Saving...' : editingPref || editingEntity ? 'Update' : 'Add'}
+            {loading ? t('common.saving') : editingPref || editingEntity ? t('memory.updateButton') : t('memory.addButton')}
           </button>
         </div>
       )}
@@ -271,10 +273,10 @@ export default function MemoryPanel({ userId, authToken, onBack }: MemoryPanelPr
       {activeTab === 'agent' && (
         <div className="agent-notes-view feedback-section">
           <p className="memory-hint">
-            Agent notes are Markdown files auto-loaded into the system prompt. Use them to give the agent persistent knowledge, instructions, or reference material.
+            {t('memory.agentHint')}
           </p>
           <div className="notes-header">
-            <button className="btn-new-note" onClick={handleNewNote}>+ New Note</button>
+            <button className="btn-new-note" onClick={handleNewNote}>{t('memory.newNote')}</button>
           </div>
           <div className="notes-layout">
             <ul className="notes-list">
@@ -286,10 +288,10 @@ export default function MemoryPanel({ userId, authToken, onBack }: MemoryPanelPr
                 >
                   <span className="note-name">{n.filename}</span>
                   <span className="note-size">{(n.size_bytes / 1024).toFixed(1)} KB</span>
-                  <button className="btn-delete-note" onClick={(e) => { e.stopPropagation(); handleDeleteNote(n.filename) }} title="Delete">✕</button>
+                  <button className="btn-delete-note" onClick={(e) => { e.stopPropagation(); handleDeleteNote(n.filename) }} title={t('common.delete')}>✕</button>
                 </li>
               ))}
-              {notes.length === 0 && <li className="note-empty">No notes yet. Click "+ New Note" to create one.</li>}
+              {notes.length === 0 && <li className="note-empty">{t('memory.noNotes', { buttonText: t('memory.newNote') })}</li>}
             </ul>
             {selectedNote && (
               <form className="note-editor" onSubmit={handleSaveNote}>
@@ -299,11 +301,11 @@ export default function MemoryPanel({ userId, authToken, onBack }: MemoryPanelPr
                 <textarea
                   value={noteContent}
                   onChange={(e) => setNoteContent(e.target.value)}
-                  placeholder="Write in Markdown..."
+                  placeholder={t('memory.writePlaceholder')}
                   className="note-textarea"
                 />
                 <button type="submit" className="btn-save-note" disabled={loading}>
-                  {loading ? 'Saving...' : 'Save'}
+                  {loading ? t('common.saving') : t('common.save')}
                 </button>
               </form>
             )}

@@ -1,3 +1,5 @@
+import { useTranslation } from 'react-i18next'
+
 interface FileCardProps {
   filename: string
   size?: number
@@ -8,6 +10,7 @@ interface FileCardProps {
 }
 
 export function FileCard({ filename, size, downloadUrl, onRemove, onFileClick, status = 'uploaded' }: FileCardProps) {
+  const { t } = useTranslation()
   // filename may be a full relative path (e.g. "outputs/reports/report.docx").
   // Extract just the basename for display and the download attribute.
   const basename = filename.includes('/') || filename.includes('\\')
@@ -27,12 +30,12 @@ export function FileCard({ filename, size, downloadUrl, onRemove, onFileClick, s
       </div>
       <div className="file-card-actions">
         {downloadUrl && (
-          <a href={downloadUrl} download={basename} className="file-card-download" aria-label={`Download ${basename}`}>
+          <a href={downloadUrl} download={basename} className="file-card-download" aria-label={t('fileCards.downloadAria', { basename })}>
             &#11015;
           </a>
         )}
         {onRemove && (
-          <button type="button" className="file-card-remove" onClick={onRemove} aria-label={`Remove ${basename}`}>
+          <button type="button" className="file-card-remove" onClick={onRemove} aria-label={t('fileCards.removeAria', { basename })}>
             &times;
           </button>
         )}

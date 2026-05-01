@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react'
+import { useTranslation } from 'react-i18next'
 import { useSkillEvolutionApi } from '../hooks/useSkillEvolutionApi'
 
 type Tab = 'candidates' | 'versions' | 'review'
@@ -23,6 +24,7 @@ interface FileEntry {
 }
 
 export default function EvolutionPanel({ userId: _userId, authToken, onBack }: EvolutionPanelProps) {
+  const { t } = useTranslation()
   const api = useSkillEvolutionApi(authToken)
   const [tab, setTab] = useState<Tab>('candidates')
   const [loading, setLoading] = useState(false)
@@ -86,7 +88,7 @@ export default function EvolutionPanel({ userId: _userId, authToken, onBack }: E
       const resp = await api.listEvolutionCandidates()
       setCandidates(resp.candidates)
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Failed to load candidates')
+      setError(err instanceof Error ? err.message : t('evolution.loadFailed'))
     } finally {
       setLoading(false)
     }
@@ -107,10 +109,10 @@ export default function EvolutionPanel({ userId: _userId, authToken, onBack }: E
         setTab('review')
         setMessage(`Agent evolution started for ${skillName} (version ${ver})`)
       } else {
-        setError(resp.message ?? 'Preview failed')
+        setError(resp.message ?? t('evolution.previewFailed'))
       }
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Preview failed')
+      setError(err instanceof Error ? err.message : t('evolution.previewFailed'))
       setEvolving(null)
     }
   }
@@ -132,10 +134,10 @@ export default function EvolutionPanel({ userId: _userId, authToken, onBack }: E
         setTab('candidates')
         loadCandidates()
       } else {
-        setError('Activation failed')
+        setError(t('evolution.activationFailed'))
       }
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Activation failed')
+      setError(err instanceof Error ? err.message : t('evolution.activationFailed'))
     }
   }
 
@@ -155,10 +157,10 @@ export default function EvolutionPanel({ userId: _userId, authToken, onBack }: E
       } else if (resp.status === 'info') {
         setMessage(resp.message ?? 'No action needed')
       } else {
-        setError(`Rollback failed: ${resp.reason ?? 'unknown reason'}`)
+        setError(`${t('common.rollback')} failed: ${resp.reason ?? 'unknown reason'}`)
       }
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Rollback failed')
+      setError(err instanceof Error ? err.message : t('evolution.rollbackFailed'))
     }
   }
 
@@ -171,7 +173,7 @@ export default function EvolutionPanel({ userId: _userId, authToken, onBack }: E
       setVersions(resp.versions)
       setTab('versions')
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Failed to load versions')
+      setError(err instanceof Error ? err.message : t('evolution.loadFailed'))
     } finally {
       setLoading(false)
     }
@@ -183,32 +185,32 @@ export default function EvolutionPanel({ userId: _userId, authToken, onBack }: E
       const content = await api.getVersionFileContent(skillName, versionNumber, filePath)
       setSelectedFileContent(typeof content === 'string' ? content : JSON.stringify(content, null, 2))
     } catch {
-      setSelectedFileContent('Failed to load file content')
+      setSelectedFileContent(t('evolution.loadFileFailed'))
     }
   }
 
   return (
     <div className="evolution-panel feedback-page">
       <div className="evolution-panel-header feedback-header">
-        <button className="evolution-back-btn feedback-back-btn" onClick={onBack}>&larr; Back</button>
-        <h2>Skill Evolution</h2>
+        <button className="evolution-back-btn feedback-back-btn" onClick={onBack}>&larr; {t('common.back')}</button>
+        <h2>{t('evolution.title')}</h2>
       </div>
 
       <div className="evolution-tabs">
-        {(['candidates', 'versions', 'review'] as Tab[]).map(t => (
+        {(['candidates', 'versions', 'review'] as Tab[]).map(tabVal => (
           <button
-            key={t}
-            className={`evolution-tab ${tab === t ? 'active' : ''}`}
+            key={tabVal}
+            className={`evolution-tab ${tab === tabVal ? 'active' : ''}`}
             onClick={() => {
               setError(null)
-              if (t === 'versions' && !selectedSkill && candidates.length > 0) {
+              if (tabVal === 'versions' && !selectedSkill && candidates.length > 0) {
                 handleLoadVersions(candidates[0].skill_name)
               } else {
-                setTab(t)
+                setTab(tabVal)
               }
             }}
           >
-            {t === 'candidates' ? 'Candidates' : t === 'versions' ? 'Versions' : 'Review'}
+            {tabVal === 'candidates' ? t('evolution.candidatesTab') : tabVal === 'versions' ? t('evolution.versionsTab') : t('evolution.reviewTab')}
           </button>
         ))}
       </div>
@@ -216,21 +218,21 @@ export default function EvolutionPanel({ userId: _userId, authToken, onBack }: E
       {error && <div className="evolution-error">{error}</div>}
       {message && <div className="evolution-message">{message}</div>}
 
-      {loading && <div className="evolution-loading">Loading...</div>}
+      {loading && <div className="evolution-loading">{t('common.loading')}</div>}
 
       {!error && tab === 'candidates' && (
         <div className="evolution-candidates">
           {candidates.length === 0 ? (
-            <p>No evolution candidates. Skills need at least 10 feedback entries with average rating below 4.5.</p>
+            <p>{t('evolution.empty')}</p>
           ) : (
             <table className="evolution-table">
               <thead>
                 <tr>
-                  <th>Skill</th>
-                  <th>Feedback Count</th>
-                  <th>Avg Rating</th>
-                  <th>High Quality</th>
-                  <th>Actions</th>
+                  <th>{t('evolution.skill')}</th>
+                  <th>{t('evolution.feedbackCount')}</th>
+                  <th>{t('evolution.avgRating')}</th>
+                  <th>{t('evolution.highQuality')}</th>
+                  <th>{t('evolution.actions')}</th>
                 </tr>
               </thead>
               <tbody>
@@ -246,13 +248,13 @@ export default function EvolutionPanel({ userId: _userId, authToken, onBack }: E
                         onClick={() => handlePreview(c.skill_name)}
                         disabled={evolving === c.skill_name}
                       >
-                        {evolving === c.skill_name ? 'Evolving...' : 'Preview'}
+                        {evolving === c.skill_name ? t('common.evolving') : t('common.preview')}
                       </button>
                       <button className="btn-versions" onClick={() => handleLoadVersions(c.skill_name)}>
                         Versions
                       </button>
                       <button className="btn-rollback" onClick={() => handleRollback(c.skill_name)}>
-                        Rollback
+                        {t('common.rollback')}
                       </button>
                     </td>
                   </tr>
@@ -266,13 +268,13 @@ export default function EvolutionPanel({ userId: _userId, authToken, onBack }: E
       {tab === 'versions' && (
         <div className="evolution-versions">
           {!selectedSkill && (
-            <p>Select a skill from the Candidates tab to view its versions.</p>
+            <p>{t('evolution.selectSkill')}</p>
           )}
           {selectedSkill && (
             <>
-              <h2>Versions of {selectedSkill}</h2>
+              <h2>{t('evolution.versionsOf', { skill: selectedSkill })}</h2>
               {versions.length === 0 ? (
-                <p>No versions found.</p>
+                <p>{t('evolution.noVersions')}</p>
               ) : (
                 <ul>
                   {versions.map(v => {
@@ -293,12 +295,12 @@ export default function EvolutionPanel({ userId: _userId, authToken, onBack }: E
                                 const contentResp = await api.getVersionContent(selectedSkill, v)
                                 setPreviewContent(typeof contentResp === 'string' ? contentResp : contentResp.content ?? JSON.stringify(contentResp))
                               } catch {
-                                setPreviewContent('Failed to load version content')
+                                setPreviewContent(t('evolution.loadVersionFailed'))
                               }
                               setTab('review')
                             }}
                           >
-                            Activate
+                            {t('common.activate')}
                           </button>
                         )}
                       </li>
@@ -318,17 +320,17 @@ export default function EvolutionPanel({ userId: _userId, authToken, onBack }: E
           )}
           {selectedSkill && (
             <>
-              <h2>Review: {selectedSkill}</h2>
+              <h2>{t('evolution.reviewOf', { skill: selectedSkill })}</h2>
               {previewVersion !== null && (
                 <p className="review-version-info">
-                  Pending version: v{previewVersion} &middot; Not yet activated
+                  {t('evolution.pendingVersion', { version: previewVersion })}
                   {evolving === selectedSkill && ' \u00b7 Evolving...'}
                 </p>
               )}
 
               {previewFiles.length > 0 && (
                 <div className="review-file-tree">
-                  <h3>Generated Files</h3>
+                  <h3>{t('evolution.generatedFiles')}</h3>
                   <ul className="file-tree-list">
                     {previewFiles.map(f => (
                       <li
@@ -354,13 +356,13 @@ export default function EvolutionPanel({ userId: _userId, authToken, onBack }: E
 
               {!selectedFileContent && previewContent && previewFiles.length === 0 && (
                 <div className="review-content-preview">
-                  <h3>Generated Content</h3>
+                  <h3>{t('evolution.generatedContent')}</h3>
                   <pre className="review-content-code">{previewContent}</pre>
                 </div>
               )}
 
               {!selectedFileContent && !previewContent && previewFiles.length === 0 && evolving !== selectedSkill && (
-                <p className="review-no-content">Content preview not available.</p>
+                <p className="review-no-content">{t('evolution.noContent')}</p>
               )}
 
               <div className="review-actions">
@@ -369,10 +371,10 @@ export default function EvolutionPanel({ userId: _userId, authToken, onBack }: E
                   onClick={() => handleActivate(selectedSkill)}
                   disabled={previewVersion === null || evolving === selectedSkill}
                 >
-                  Activate
+                  {t('common.activate')}
                 </button>
                 <button className="btn-rollback" onClick={() => handleRollback(selectedSkill)}>
-                  Rollback
+                  {t('common.rollback')}
                 </button>
                 <button className="btn-cancel" onClick={() => {
                   setSelectedSkill(null)
@@ -385,7 +387,7 @@ export default function EvolutionPanel({ userId: _userId, authToken, onBack }: E
                   setEvolvePolling(false)
                   setTab('candidates')
                 }}>
-                  Cancel
+                  {t('common.cancel')}
                 </button>
               </div>
             </>

@@ -1,16 +1,13 @@
 import { useState, useRef, useEffect, type MouseEvent } from 'react'
+import { useTranslation } from 'react-i18next'
 
 interface UserMenuProps {
   userId: string
-  onOpenSkills: () => void
-  onOpenFeedback: () => void
-  onOpenEvolution: () => void
-  onOpenMCP: () => void
-  onOpenMemory: () => void
   onLogout: () => void
 }
 
-export default function UserMenu({ userId, onOpenSkills, onOpenFeedback, onOpenEvolution, onOpenMCP, onOpenMemory, onLogout }: UserMenuProps) {
+export default function UserMenu({ userId, onLogout }: UserMenuProps) {
+  const { t } = useTranslation()
   const [open, setOpen] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
 
@@ -27,8 +24,8 @@ export default function UserMenu({ userId, onOpenSkills, onOpenFeedback, onOpenE
 
   const toggle = () => setOpen((v) => !v)
 
-  const handleAction = (action: () => void) => {
-    action()
+  const handleLogout = () => {
+    onLogout()
     setOpen(false)
   }
 
@@ -43,29 +40,9 @@ export default function UserMenu({ userId, onOpenSkills, onOpenFeedback, onOpenE
       </button>
       {open && (
         <div className="user-menu-dropdown" role="menu">
-          <button className="user-menu-item" role="menuitem" onClick={() => handleAction(onOpenSkills)} type="button">
-            <span className="user-menu-item-icon">⚙</span>
-            Skills Management
-          </button>
-          <button className="user-menu-item" role="menuitem" onClick={() => handleAction(onOpenMCP)} type="button">
-            <span className="user-menu-item-icon">⚡</span>
-            MCP Servers
-          </button>
-          <button className="user-menu-item" role="menuitem" onClick={() => handleAction(onOpenFeedback)} type="button">
-            <span className="user-menu-item-icon">💬</span>
-            Feedback Management
-          </button>
-          <button className="user-menu-item" role="menuitem" onClick={() => handleAction(onOpenEvolution)} type="button">
-            <span className="user-menu-item-icon">🧬</span>
-            Skill Evolution
-          </button>
-          <button className="user-menu-item" role="menuitem" onClick={() => handleAction(onOpenMemory)} type="button">
-            <span className="user-menu-item-icon">🧠</span>
-            Memory Management
-          </button>
-          <button className="user-menu-item user-menu-item--logout" role="menuitem" onClick={() => handleAction(onLogout)} type="button">
+          <button className="user-menu-item user-menu-item--logout" role="menuitem" onClick={handleLogout} type="button">
             <span className="user-menu-item-icon">⏻</span>
-            Logout
+            {t('header.logout')}
           </button>
         </div>
       )}

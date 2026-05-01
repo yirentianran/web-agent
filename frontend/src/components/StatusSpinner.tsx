@@ -1,17 +1,19 @@
 import { useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
+import type { TFunction } from "i18next";
 import "./StatusSpinner.css";
 
 const STALE_THRESHOLD_SEC = 30;
 
-export function formatElapsed(seconds: number): string {
+export function formatElapsed(seconds: number, t: TFunction): string {
   const h = Math.floor(seconds / 3600);
   const m = Math.floor((seconds % 3600) / 60);
   const s = seconds % 60;
 
   const parts: string[] = [];
-  if (h > 0) parts.push(`${h}时`);
-  if (m > 0) parts.push(`${m}分`);
-  if (s > 0 || parts.length === 0) parts.push(`${s}秒`);
+  if (h > 0) parts.push(t('spinner.timeHours', { count: h }));
+  if (m > 0) parts.push(t('spinner.timeMinutes', { count: m }));
+  if (s > 0 || parts.length === 0) parts.push(t('spinner.timeSeconds', { count: s }));
   return parts.join("");
 }
 
@@ -20,6 +22,8 @@ interface StatusSpinnerProps {
   detail?: string;
   variant?: "default" | "hook" | "agent";
   startTime?: number;
+  label?: string;
+  isRunning?: boolean;
 }
 
 export default function StatusSpinner({
@@ -27,8 +31,10 @@ export default function StatusSpinner({
   detail,
   variant = "default",
   startTime,
+  label,
 }: StatusSpinnerProps) {
-  const displayText = text || "Working...";
+  const { t } = useTranslation();
+  const displayText = text || t('chat.workingDefault');
   const [elapsed, setElapsed] = useState(() =>
     startTime ? Date.now() - startTime : 0,
   );
@@ -55,7 +61,7 @@ export default function StatusSpinner({
         <span />
       </div>
       <span className="status-spinner__text">
-        {displayText}
+        {label || displayText}
         {detail && <strong className="status-spinner__detail">{detail}</strong>}
         {startTime !== undefined && (
           <span
@@ -63,7 +69,7 @@ export default function StatusSpinner({
             data-testid="elapsed"
             data-stale={isStale}
           >
-            {formatElapsed(elapsedSec)}
+            {formatElapsed(elapsedSec, t)}
           </span>
         )}
       </span>

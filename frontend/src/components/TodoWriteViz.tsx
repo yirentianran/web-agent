@@ -1,4 +1,5 @@
 import { useMemo } from 'react'
+import { useTranslation } from 'react-i18next'
 import type { TodoWriteTodo } from '../lib/types'
 import './TodoWriteViz.css'
 
@@ -21,6 +22,7 @@ const STATUS_COLORS: Record<TodoWriteTodo['status'], string> = {
 }
 
 export default function TodoWriteViz({ todos }: TodoWriteVizProps) {
+  const { t } = useTranslation()
   const stats = useMemo(() => {
     const completed = todos.filter(t => t.status === 'completed').length
     const total = todos.length
@@ -33,7 +35,7 @@ export default function TodoWriteViz({ todos }: TodoWriteVizProps) {
   return (
     <div className="todoviz">
       <div className="todoviz-header">
-        <span className="todoviz-title">Tasks</span>
+        <span className="todoviz-title">{t('todo.title')}</span>
         <span className="todoviz-count">{stats.completed}/{stats.total}</span>
       </div>
       <div className="todoviz-progress-track" role="progressbar" aria-valuenow={stats.percentage} aria-valuemin={0} aria-valuemax={100}>

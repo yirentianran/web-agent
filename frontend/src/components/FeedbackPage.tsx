@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react'
+import { useTranslation } from 'react-i18next'
 
 interface FeedbackItem {
   id: number
@@ -35,9 +36,9 @@ function renderStars(rating: number): string {
   return '\u2605'.repeat(filled) + '\u2606'.repeat(5 - filled)
 }
 
-function formatDate(ts: number): string {
+function formatDate(ts: number, lng: string): string {
   const d = new Date(ts * 1000)
-  return d.toLocaleDateString('zh-CN', {
+  return d.toLocaleDateString(lng === 'zh' ? 'zh-CN' : 'en-US', {
     year: 'numeric',
     month: '2-digit',
     day: '2-digit',
@@ -47,6 +48,7 @@ function formatDate(ts: number): string {
 }
 
 export default function FeedbackPage({ userId: _userId, authToken, onBack }: FeedbackPageProps) {
+  const { t, i18n } = useTranslation()
   const [data, setData] = useState<FeedbackData | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
@@ -62,7 +64,7 @@ export default function FeedbackPage({ userId: _userId, authToken, onBack }: Fee
       })
       .then(setData)
       .catch(err => {
-        setError(err instanceof Error ? err.message : 'Failed to load feedback')
+        setError(err instanceof Error ? err.message : t('feedback.errorSubmit'))
       })
       .finally(() => setLoading(false))
   }, [authToken])
@@ -72,11 +74,11 @@ export default function FeedbackPage({ userId: _userId, authToken, onBack }: Fee
       <div className="feedback-page">
         <div className="feedback-header">
           <button className="feedback-back-btn" onClick={onBack} type="button">
-            &larr; Back
+            &larr; {t('common.back')}
           </button>
-          <h2>Feedback Management</h2>
+          <h2>{t('feedback.title')}</h2>
         </div>
-        <div className="feedback-loading">Loading...</div>
+        <div className="feedback-loading">{t('common.loading')}</div>
       </div>
     )
   }
@@ -86,9 +88,9 @@ export default function FeedbackPage({ userId: _userId, authToken, onBack }: Fee
       <div className="feedback-page">
         <div className="feedback-header">
           <button className="feedback-back-btn" onClick={onBack} type="button">
-            &larr; Back
+            &larr; {t('common.back')}
           </button>
-          <h2>Feedback Management</h2>
+          <h2>{t('feedback.title')}</h2>
         </div>
         <div className="feedback-error">{error}</div>
       </div>
@@ -100,11 +102,11 @@ export default function FeedbackPage({ userId: _userId, authToken, onBack }: Fee
       <div className="feedback-page">
         <div className="feedback-header">
           <button className="feedback-back-btn" onClick={onBack} type="button">
-            &larr; Back
+            &larr; {t('common.back')}
           </button>
-          <h2>Feedback Management</h2>
+          <h2>{t('feedback.title')}</h2>
         </div>
-        <div className="feedback-empty">No feedback submitted yet.</div>
+        <div className="feedback-empty">{t('feedback.empty')}</div>
       </div>
     )
   }
@@ -113,22 +115,22 @@ export default function FeedbackPage({ userId: _userId, authToken, onBack }: Fee
     <div className="feedback-page">
       <div className="feedback-header">
         <button className="feedback-back-btn" onClick={onBack} type="button">
-          &larr; Back
+          &larr; {t('common.back')}
         </button>
-        <h2>Feedback Management</h2>
+        <h2>{t('feedback.title')}</h2>
       </div>
 
       {/* Stats Section */}
       <div className="feedback-section">
-        <h3 className="feedback-section-title">Feedback Stats</h3>
-        <p className="feedback-total">{data.total_count} feedback(s) submitted</p>
+        <h3 className="feedback-section-title">{t('feedback.statsTitle')}</h3>
+        <p className="feedback-total">{t('feedback.totalCount', { count: data.total_count })}</p>
         <table className="feedback-stats-table">
           <thead>
             <tr>
-              <th>Skill</th>
-              <th>Avg Rating</th>
-              <th>Count</th>
-              <th>Distribution</th>
+              <th>{t('feedback.skill')}</th>
+              <th>{t('feedback.avgRating')}</th>
+              <th>{t('feedback.count')}</th>
+              <th>{t('feedback.distribution')}</th>
             </tr>
           </thead>
           <tbody>
@@ -153,21 +155,21 @@ export default function FeedbackPage({ userId: _userId, authToken, onBack }: Fee
 
       {/* Details Section */}
       <div className="feedback-section">
-        <h3 className="feedback-section-title">Feedback Details</h3>
+        <h3 className="feedback-section-title">{t('feedback.detailsTitle')}</h3>
         <div className="feedback-items">
           {data.items.map(item => (
             <div key={item.id} className="feedback-item">
               <div className="feedback-item-header">
                 <span className="feedback-item-skill">[{item.skill_name}]</span>
                 <span className="feedback-item-rating">{renderStars(item.rating)}</span>
-                <span className="feedback-item-date">{formatDate(item.timestamp)}</span>
+                <span className="feedback-item-date">{formatDate(item.timestamp, i18n.language)}</span>
               </div>
               {item.comment && (
                 <p className="feedback-item-comment">&ldquo;{item.comment}&rdquo;</p>
               )}
               {item.session_id && (
                 <p className="feedback-item-session">
-                  Session: {item.session_id.slice(0, 30)}...
+                  {t('feedback.session', { id: item.session_id.slice(0, 30) })}...
                 </p>
               )}
             </div>

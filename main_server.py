@@ -1968,7 +1968,7 @@ async def handle_ws(websocket: WebSocket) -> None:
             client_msg_id = data.get("client_msg_id")  # Frontend UUID for dedup
 
             if not session_id:
-                session_id = f"session_{user_id}_{time.time()}_{uuid.uuid4().hex[:8]}"
+                session_id = f"sess_{uuid.uuid4().hex[:12]}"
 
             # If we're subscribed to a different session, unsubscribe first
             if current_session_id and current_session_id != session_id:
@@ -2392,9 +2392,7 @@ async def create_session(
 ) -> dict[str, str]:
     """Create a new session for the user."""
     verify_path_user(user_id, current_user)
-    session_id = f"session_{user_id}_{time.time()}_{uuid.uuid4().hex[:8]}"
-
-    # Initialize in MessageBuffer so history/status work immediately
+    session_id = f"sess_{uuid.uuid4().hex[:12]}"
     buffer._ensure_buf(session_id)
 
     # Persist to DB
@@ -2602,7 +2600,7 @@ async def fork_session(
 ) -> dict[str, str]:
     """Fork a session — duplicate state with a shared history prefix."""
     verify_path_user(user_id, current_user)
-    new_session_id = f"session_{user_id}_{time.time()}_{uuid.uuid4().hex[:8]}"
+    new_session_id = f"sess_{uuid.uuid4().hex[:12]}"
 
     # Copy history from original session to new session buffer
     history = buffer.get_history(session_id)

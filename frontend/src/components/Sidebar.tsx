@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect } from 'react'
+import { useTranslation } from 'react-i18next'
 import type { SessionItem } from '../lib/types'
 
 interface SidebarProps {
@@ -11,6 +12,7 @@ interface SidebarProps {
 }
 
 export default function Sidebar({ sessions, activeSession, onSelect, onNew, onDelete, onRename }: SidebarProps) {
+  const { t } = useTranslation()
   const [editingId, setEditingId] = useState<string | null>(null)
   const editRef = useRef<HTMLInputElement>(null)
 
@@ -39,11 +41,11 @@ export default function Sidebar({ sessions, activeSession, onSelect, onNew, onDe
     <aside className="sidebar">
       <div className="sidebar-inner">
         <button className="btn-new-session" onClick={onNew}>
-          + New Session
+          {t('sidebar.newSession')}
         </button>
         <div className="sidebar-list">
           {sessions.length === 0 && (
-            <p className="sidebar-empty">No sessions yet</p>
+            <p className="sidebar-empty">{t('sidebar.emptyState')}</p>
           )}
           {sessions.map((session) => (
             <div
@@ -68,7 +70,7 @@ export default function Sidebar({ sessions, activeSession, onSelect, onNew, onDe
                 <span
                   className="session-title"
                   onDoubleClick={() => handleDoubleClick(session)}
-                  title="Double-click to rename"
+                  title={t('sidebar.renameTooltip')}
                 >
                   {session.title || session.session_id.slice(0, 20)}
                 </span>
@@ -77,7 +79,7 @@ export default function Sidebar({ sessions, activeSession, onSelect, onNew, onDe
                 <button
                   className="btn-delete-session"
                   onClick={(e) => { e.stopPropagation(); onDelete(session.session_id) }}
-                  aria-label="Delete"
+                  aria-label={t('common.delete')}
                 >
                   ✕
                 </button>

@@ -6,6 +6,7 @@ import {
   type FormEvent,
 } from "react";
 import { Routes, Route, useNavigate, useMatch } from "react-router-dom";
+import { useTranslation } from "react-i18next";
 import { generateUUID } from "./lib/uuid";
 import Sidebar from "./components/Sidebar";
 import Header from "./components/Header";
@@ -65,6 +66,7 @@ interface LoginScreenProps {
 }
 
 function LoginScreen({ onLogin }: LoginScreenProps) {
+  const { t } = useTranslation();
   const [userId, setUserId] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
@@ -93,7 +95,7 @@ function LoginScreen({ onLogin }: LoginScreenProps) {
       localStorage.setItem("userId", data.user_id);
       onLogin(trimmed);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Login failed");
+      setError(err instanceof Error ? err.message : t('login.error'));
     } finally {
       setLoading(false);
     }
@@ -102,13 +104,13 @@ function LoginScreen({ onLogin }: LoginScreenProps) {
   return (
     <div className="login-screen">
       <form className="login-form" onSubmit={handleSubmit}>
-        <h2>Web Agent</h2>
+        <h2>{t('login.title')}</h2>
         <input
           className="login-input"
           type="text"
           value={userId}
           onChange={(e) => setUserId(e.target.value)}
-          placeholder="Enter your user ID"
+          placeholder={t('login.placeholder')}
           autoFocus
           disabled={loading}
         />
@@ -118,7 +120,7 @@ function LoginScreen({ onLogin }: LoginScreenProps) {
           type="submit"
           disabled={loading || !userId.trim()}
         >
-          {loading ? "Logging in..." : "Login"}
+          {loading ? t('login.submittingButton') : t('login.submitButton')}
         </button>
       </form>
     </div>
@@ -140,7 +142,7 @@ interface MainLayoutProps {
   onRenameSession: (id: string, title: string) => Promise<void>;
   messages: Message[];
   activeSessionState: string;
-  sendAnswer: (requestId: number, answer: string) => void;
+  sendAnswer: (sessionId: string, answers: Record<string, string>) => void;
   handleFileClick: (filename: string) => void;
   authToken: string | null;
   streamingText: string;
@@ -185,19 +187,20 @@ function MainLayout({
   navigate,
   sessionLoading,
 }: MainLayoutProps) {
+  const { t } = useTranslation();
   return (
     <div className="app">
       {/* Reconnection failure banner */}
       {status === "failed" && (
         <div className="connection-banner connection-banner--failed">
-          <span>Connection lost after multiple attempts.</span>
-          <button onClick={() => window.location.reload()}>Refresh Page</button>
+          <span>{t('connection.lostBanner')}</span>
+          <button onClick={() => window.location.reload()}>{t('connection.refreshPage')}</button>
         </div>
       )}
       {/* Reconnecting indicator */}
       {status === "reconnecting" && (
         <div className="connection-banner connection-banner--reconnecting">
-          <span>Reconnecting...</span>
+          <span>{t('connection.reconnectingBanner')}</span>
         </div>
       )}
       {/* Header */}
@@ -218,7 +221,7 @@ function MainLayout({
           <button
             className="sidebar-toggle"
             onClick={() => setSidebarOpen(v => !v)}
-            title={sidebarOpen ? 'Collapse sidebar' : 'Expand sidebar'}
+            title={sidebarOpen ? t('sidebar.collapseSidebar') : t('sidebar.expandSidebar')}
             type="button"
           >
             <span className="sidebar-toggle-icon">{sidebarOpen ? '\u25C2' : '\u25B8'}</span>
@@ -244,8 +247,7 @@ function MainLayout({
                 borderBottom: "1px solid #ffc107",
               }}
             >
-              Connection is slow — some messages may be queued. Waiting for
-              reconnection…
+              {t('connection.slowBanner')}
             </div>
           )}
           <ChatArea
@@ -278,7 +280,7 @@ function MainLayout({
                 return !v;
               });
             }}
-            title={filePanelOpen ? 'Collapse files' : 'Expand files'}
+            title={filePanelOpen ? t('filePanel.collapseFiles') : t('filePanel.expandFiles')}
             type="button"
           >
             <span className="file-panel-toggle-icon">{filePanelOpen ? '\u25B8' : '\u25C2'}</span>
@@ -297,6 +299,7 @@ function MainLayout({
 }
 
 function MainApp() {
+  const { t } = useTranslation();
   const [userId, setUserId] = useState<string>(() => {
     return localStorage.getItem("userId") || "default";
   });
@@ -1215,7 +1218,7 @@ function MainApp() {
 
   const handleDeleteSession = useCallback(
     async (id: string) => {
-      if (!confirm("Delete this session?")) return;
+      if (!confirm(t('sidebar.deleteSession'))) return;
       try {
         const headers: Record<string, string> = {};
         if (authToken) headers["Authorization"] = `Bearer ${authToken}`;
@@ -1254,7 +1257,7 @@ function MainApp() {
         alert(err instanceof Error ? err.message : "Failed to delete session");
       }
     },
-    [userId, authToken, activeSession, navigate],
+    [userId, authToken, activeSession, navigate, t],
   );
 
   const handleRenameSession = useCallback(

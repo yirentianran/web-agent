@@ -25,7 +25,7 @@ from src.database import Database
 
 _RETRY_DELAYS = [0.1, 0.25, 0.5, 1.0, 2.0]  # exponential backoff steps
 
-_SESSION_ID_RE = re.compile(r"^session_[a-zA-Z0-9_.-]+_\d+\.\d+_[a-f0-9]+$")
+_SESSION_ID_RE = re.compile(r"^sess_[a-f0-9]{12}$")
 
 
 def validate_session_id(session_id: str) -> str:

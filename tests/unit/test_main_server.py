@@ -91,7 +91,8 @@ class TestCreateSession:
         assert resp.status_code == 200
         data = resp.json()
         assert "session_id" in data
-        assert data["session_id"].startswith("session_alice_")
+        assert data["session_id"].startswith("sess_")
+        assert len(data["session_id"]) == 17
 
     def test_create_session_initialises_buffer(self, client: TestClient) -> None:
         resp = client.post("/api/users/bob/sessions")

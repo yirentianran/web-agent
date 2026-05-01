@@ -87,7 +87,8 @@ class TestCreateSession:
         assert resp.status_code == 200
         data = resp.json()
         assert "session_id" in data
-        assert data["session_id"].startswith("session_alice_")
+        assert data["session_id"].startswith("sess_")
+        assert len(data["session_id"]) == 17
 ```
 
 ### JWT Authentication

@@ -1,4 +1,5 @@
 import { useState, useCallback, useEffect, useRef } from 'react'
+import { useTranslation } from 'react-i18next'
 import type { Skill } from '../lib/types'
 import { useSkillsApi } from '../hooks/useSkillsApi'
 
@@ -11,6 +12,7 @@ interface SkillsPageProps {
 type Tab = 'shared' | 'personal'
 
 export default function SkillsPage({ authToken, userId, onBack }: SkillsPageProps) {
+  const { t } = useTranslation()
   const api = useSkillsApi(authToken, userId)
   const [tab, setTab] = useState<Tab>('personal')
   const [sharedSkills, setSharedSkills] = useState<Skill[]>([])
@@ -30,7 +32,7 @@ export default function SkillsPage({ authToken, userId, onBack }: SkillsPageProp
       setSharedSkills(shared)
       setPersonalSkills(personal)
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to load skills')
+      setError(e instanceof Error ? e.message : t('skills.loadFailed'))
     } finally {
       setLoading(false)
     }
@@ -51,14 +53,14 @@ export default function SkillsPage({ authToken, userId, onBack }: SkillsPageProp
       }
       await fetchSkills()
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to upload skill')
+      setError(e instanceof Error ? e.message : t('skills.uploadFailed'))
     } finally {
       setUploading(false)
     }
   }, [api, fetchSkills, tab])
 
   const handleDelete = useCallback(async (name: string) => {
-    if (!confirm(`Delete skill "${name}"? This cannot be undone.`)) return
+    if (!confirm(t('skills.confirmDelete', { name }))) return
     try {
       if (tab === 'shared') {
         await api.deleteShared(name)
@@ -68,18 +70,18 @@ export default function SkillsPage({ authToken, userId, onBack }: SkillsPageProp
       await fetchSkills()
       setViewingSkill(null)
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to delete skill')
+      setError(e instanceof Error ? e.message : t('skills.deleteFailed'))
     }
   }, [api, fetchSkills, tab])
 
   const handlePromote = useCallback(async (name: string) => {
-    if (!confirm(`Promote "${name}" to shared? This makes it available to all users.`)) return
+    if (!confirm(t('skills.confirmPromote', { name }))) return
     setPromoting(name)
     try {
       await api.promote(name)
       await fetchSkills()
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to promote skill')
+      setError(e instanceof Error ? e.message : t('skills.promoteFailed'))
     } finally {
       setPromoting(null)
     }
@@ -98,7 +100,7 @@ export default function SkillsPage({ authToken, userId, onBack }: SkillsPageProp
     return (
       <div className="skills-page feedback-page">
         <div className="skills-header feedback-header">
-          <button className="skills-back-btn feedback-back-btn" onClick={() => setViewingSkill(null)} type="button">&larr; Back</button>
+          <button className="skills-back-btn feedback-back-btn" onClick={() => setViewingSkill(null)} type="button">&larr; {t('common.back')}</button>
           <div className="skills-header-title-group">
             <h2>{viewingSkill.name}</h2>
             <span className={`skill-badge ${viewingSkill.source}`}>{viewingSkill.source}</span>
@@ -107,7 +109,7 @@ export default function SkillsPage({ authToken, userId, onBack }: SkillsPageProp
         {viewingSkill.description && (
           <p className="skill-description">{viewingSkill.description}</p>
         )}
-        <div className="skill-meta-line">Path: {viewingSkill.path}</div>
+        <div className="skill-meta-line">{t('skills.path', { path: viewingSkill.path })}</div>
         <div className="skill-content">{viewingSkill.content}</div>
       </div>
     )
@@ -116,28 +118,28 @@ export default function SkillsPage({ authToken, userId, onBack }: SkillsPageProp
   return (
     <div className="skills-page feedback-page">
       <div className="skills-header feedback-header">
-        <button className="skills-back-btn feedback-back-btn" onClick={onBack} type="button">&larr; Back</button>
+        <button className="skills-back-btn feedback-back-btn" onClick={onBack} type="button">&larr; {t('common.back')}</button>
         <div className="skills-header-title-group">
           <label className="skills-upload-btn">
-            {uploading ? 'Uploading...' : '+ Upload Skill'}
+            {uploading ? t('skills.uploadingSkill') : t('skills.uploadSkill')}
             <input ref={zipInputRef} type="file" accept=".zip" style={{ display: 'none' }} onChange={handleFileSelect} disabled={uploading} />
           </label>
-          <h2>Skills Management</h2>
+          <h2>{t('skills.title')}</h2>
         </div>
       </div>
 
       <div className="skills-tabs">
-        <button className={`skills-tab ${tab === 'personal' ? 'active' : ''}`} onClick={() => setTab('personal')} type="button">Personal</button>
-        <button className={`skills-tab ${tab === 'shared' ? 'active' : ''}`} onClick={() => setTab('shared')} type="button">Shared</button>
+        <button className={`skills-tab ${tab === 'personal' ? 'active' : ''}`} onClick={() => setTab('personal')} type="button">{t('skills.personalTab')}</button>
+        <button className={`skills-tab ${tab === 'shared' ? 'active' : ''}`} onClick={() => setTab('shared')} type="button">{t('skills.sharedTab')}</button>
       </div>
 
       {error && <div className="skills-error">{error}</div>}
 
       {loading ? (
-        <div className="skills-loading">Loading skills...</div>
+        <div className="skills-loading">{t('skills.loading')}</div>
       ) : skills.length === 0 ? (
         <div className="skills-empty">
-          {isPersonal ? 'No personal skills yet.' : 'No shared skills available.'}
+          {isPersonal ? t('skills.noPersonal') : t('skills.noShared')}
         </div>
       ) : (
         <div className="skill-list">
@@ -147,19 +149,19 @@ export default function SkillsPage({ authToken, userId, onBack }: SkillsPageProp
                 <span className="skill-icon">{skill.valid ? '\ud83d\udce6' : '\u26a0\ufe0f'}</span>
                 <span className="skill-name">{skill.name}</span>
                 <span className={`skill-badge ${skill.source}`}>{skill.source}</span>
-                {!skill.valid && <span className="skill-badge invalid">invalid</span>}
+                {!skill.valid && <span className="skill-badge invalid">{t('skills.invalid')}</span>}
               </div>
               <div className="skill-meta">{skill.description}</div>
               <div className="skill-actions">
                 {skill.valid && (
-                  <button className="skill-view-btn" onClick={() => setViewingSkill(skill)} type="button">View</button>
+                  <button className="skill-view-btn" onClick={() => setViewingSkill(skill)} type="button">{t('common.view')}</button>
                 )}
                 {isPersonal && skill.valid && (
                   <button className="skill-promote-btn" onClick={() => handlePromote(skill.name)} type="button" disabled={promoting === skill.name}>
-                    {promoting === skill.name ? 'Promoting...' : 'Promote'}
+                    {promoting === skill.name ? t('common.promoting') : t('common.promote')}
                   </button>
                 )}
-                <button className="skill-delete-btn" onClick={() => handleDelete(skill.name)} type="button">Delete</button>
+                <button className="skill-delete-btn" onClick={() => handleDelete(skill.name)} type="button">{t('common.delete')}</button>
               </div>
             </div>
           ))}

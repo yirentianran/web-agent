@@ -1,4 +1,5 @@
 import { useState, useRef } from 'react'
+import { useTranslation } from 'react-i18next'
 import type { AskUserQuestionInput } from '../lib/types'
 
 interface AskUserQuestionCardProps {
@@ -16,6 +17,7 @@ function isAskUserInput(input: unknown): input is AskUserQuestionInput {
 const OTHER_OPTION = '__other__'
 
 export default function AskUserQuestionCard({ input, sessionId, onAnswer }: AskUserQuestionCardProps) {
+  const { t } = useTranslation()
   const [selected, setSelected] = useState<Record<number, string>>({})
   const [customInputs, setCustomInputs] = useState<Record<number, string>>({})
   const [submitted, setSubmitted] = useState(false)
@@ -26,7 +28,7 @@ export default function AskUserQuestionCard({ input, sessionId, onAnswer }: AskU
   if (!isAskUserInput(input)) {
     return (
       <div className="question-card question-error">
-        <p>Unable to parse question payload.</p>
+        <p>{t('question.parseError')}</p>
         <pre>{JSON.stringify(input, null, 2)}</pre>
       </div>
     )
@@ -64,7 +66,7 @@ export default function AskUserQuestionCard({ input, sessionId, onAnswer }: AskU
     } catch (e) {
       // If onAnswer throws synchronously, allow retry
       submittedRef.current = false
-      setSubmitError(e instanceof Error ? e.message : 'Failed to submit answer')
+      setSubmitError(e instanceof Error ? e.message : t('question.submitError'))
     }
   }
 
@@ -72,7 +74,7 @@ export default function AskUserQuestionCard({ input, sessionId, onAnswer }: AskU
     return (
       <div className="question-card question-submitted">
         <div className="question-submitted-icon">&#10003;</div>
-        <p className="question-submitted-text">Answer submitted</p>
+        <p className="question-submitted-text">{t('question.submitted')}</p>
       </div>
     )
   }
@@ -116,14 +118,14 @@ export default function AskUserQuestionCard({ input, sessionId, onAnswer }: AskU
                 }}
                 type="button"
               >
-                <span className="option-label">Other / Custom...</span>
-                <span className="option-desc">None of the above — specify your own</span>
+                <span className="option-label">{t('question.otherOption')}</span>
+                <span className="option-desc">{t('question.otherDesc')}</span>
               </button>
             </div>
             {isOtherSelected && (
               <textarea
                 className="custom-answer-input"
-                placeholder="Describe your answer..."
+                placeholder={t('question.customPlaceholder')}
                 value={customInputs[i] || ''}
                 onChange={(e) => {
                   setCustomInputs((prev) => ({ ...prev, [i]: e.target.value }))
@@ -144,7 +146,7 @@ export default function AskUserQuestionCard({ input, sessionId, onAnswer }: AskU
         onClick={handleSubmit}
         type="button"
       >
-        {canSubmit ? 'Submit' : `Select all ${totalQuestions} options (${answeredCount}/${totalQuestions})`}
+        {canSubmit ? t('question.submitButton') : t('question.selectAll', { total: totalQuestions, answered: answeredCount })}
       </button>
     </div>
   )

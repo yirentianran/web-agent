@@ -1,3 +1,4 @@
+import { useTranslation } from 'react-i18next'
 import type { Message } from '../lib/types'
 import MarkdownRenderer from './MarkdownRenderer'
 import { FileCardList } from './FileCards'
@@ -185,6 +186,7 @@ interface MessageBubbleProps {
 }
 
 export default function MessageBubble({ message, sessionId, onAnswer, onFileClick, lastTodoWriteIndex, lastUserMsgIndex }: MessageBubbleProps) {
+  const { t } = useTranslation()
   if (message.type === 'user') {
     const files = (message.data as Array<{ filename: string; size?: number }> | undefined) || []
     if ((!message.content || !message.content.trim()) && files.length === 0) return null
@@ -194,13 +196,13 @@ export default function MessageBubble({ message, sessionId, onAnswer, onFileClic
 
     // Send state indicator
     const sendStateIcon = message.sendState === 'sending'
-      ? <span className="send-state send-state--sending" title="Sending..." aria-label="Sending">◌</span>
+      ? <span className="send-state send-state--sending" title={t('message.sending')} aria-label={t('message.sending')}>◌</span>
       : message.sendState === 'sent'
-      ? <span className="send-state send-state--sent" title="Sent" aria-label="Sent">✓</span>
+      ? <span className="send-state send-state--sent" title={t('message.sent')} aria-label={t('message.sent')}>✓</span>
       : message.sendState === 'failed'
-      ? <span className="send-state send-state--failed" title="Send failed" aria-label="Send failed">✗</span>
+      ? <span className="send-state send-state--failed" title={t('message.sendFailed')} aria-label={t('message.sendFailed')}>✗</span>
       : message.sendState === 'timeout'
-      ? <span className="send-state send-state--timeout" title="Send timed out" aria-label="Send timed out">⏱</span>
+      ? <span className="send-state send-state--timeout" title={t('message.sendTimedOut')} aria-label={t('message.sendTimedOut')}>⏱</span>
       : null
 
     return (
@@ -335,12 +337,12 @@ export default function MessageBubble({ message, sessionId, onAnswer, onFileClic
           {filePath && <div className="tool-description">{filePath}</div>}
           <div className="tool-edit-content">
             <div className="tool-edit-old">
-              <span className="tool-edit-label">Removed:</span>
-              <pre><code>{oldContent || '(none)'}</code></pre>
+              <span className="tool-edit-label">{t('message.removed')}</span>
+              <pre><code>{oldContent || t('message.none')}</code></pre>
             </div>
             <div className="tool-edit-new">
-              <span className="tool-edit-label">Added:</span>
-              <pre><code>{newContent || '(none)'}</code></pre>
+              <span className="tool-edit-label">{t('message.added')}</span>
+              <pre><code>{newContent || t('message.none')}</code></pre>
             </div>
           </div>
         </details>
@@ -363,7 +365,7 @@ export default function MessageBubble({ message, sessionId, onAnswer, onFileClic
     const rawContent = message.content || ''
     // Hide empty tool results (e.g., TaskOutput with no content) unless it's an error
     if (!rawContent && !message.is_error) return null
-    const displayContent = rawContent || (message.is_error ? '(Tool returned an error with no output)' : '')
+    const displayContent = rawContent || (message.is_error ? t('message.toolErrorNoOutput') : '')
     const isJson = /^\s*[{[]/.test(rawContent)
     const isResolved = message.is_error && lastUserMsgIndex !== undefined && lastUserMsgIndex > message.index
     return (
@@ -371,7 +373,7 @@ export default function MessageBubble({ message, sessionId, onAnswer, onFileClic
         className={`message tool-result${message.is_error ? ' tool-result--error' : ''}${isResolved ? ' tool-result--resolved' : ''}`}
         open={message.is_error ? true : undefined}
       >
-        <summary>Result: {message.name || 'unknown'}{isResolved ? ' (past)' : ''}</summary>
+        <summary>{t('message.result')} {message.name || 'unknown'}{isResolved ? ` ${t('message.pastLabel')}` : ''}</summary>
         {isJson ? (
           <pre className="tool-output tool-output-json"><code>{displayContent}</code></pre>
         ) : (
@@ -384,12 +386,12 @@ export default function MessageBubble({ message, sessionId, onAnswer, onFileClic
   }
 
   if (message.type === 'error') {
-    const errorText = message.content || message.message || 'An error occurred'
+    const errorText = message.content || message.message || t('message.errorOccurred')
     const isResolved = lastUserMsgIndex !== undefined && lastUserMsgIndex > message.index
     return (
       <div className={`message error-message${isResolved ? ' error-message--resolved' : ''}`}>
         <div className="bubble error">
-          {isResolved && <span className="error-resolved-badge">past</span>}
+          {isResolved && <span className="error-resolved-badge">{t('message.past')}</span>}
           <MarkdownRenderer>{errorText}</MarkdownRenderer>
         </div>
       </div>
@@ -509,7 +511,7 @@ export default function MessageBubble({ message, sessionId, onAnswer, onFileClic
       <div className="bubble">
         {hasThinking && (
           <details className="thinking-block" open={false}>
-            <summary>Thinking</summary>
+            <summary>{t('message.thinking')}</summary>
             <div className="thinking-content">
               {tagParts.filter(p => p.kind === 'thinking').map((p, i) => (
                 <div key={i} className="thinking-text">{p.content}</div>
@@ -519,7 +521,7 @@ export default function MessageBubble({ message, sessionId, onAnswer, onFileClic
         )}
         {hasAnalysis && (
           <details className="analysis-block" open={false}>
-            <summary>Analysis</summary>
+            <summary>{t('message.analysis')}</summary>
             <div className="analysis-content">
               {tagParts.filter(p => p.kind === 'analysis').map((p, i) => (
                 <div key={i} className="analysis-text">
@@ -531,7 +533,7 @@ export default function MessageBubble({ message, sessionId, onAnswer, onFileClic
         )}
         {hasSummary && (
           <details className="summary-block" open={false}>
-            <summary>Summary</summary>
+            <summary>{t('message.summary')}</summary>
             <div className="summary-content">
               {tagParts.filter(p => p.kind === 'summary').map((p, i) => (
                 <div key={i} className="summary-text">

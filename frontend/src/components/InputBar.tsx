@@ -1,4 +1,5 @@
 import { useState, useRef, useImperativeHandle, forwardRef, useEffect, type FormEvent } from 'react'
+import { useTranslation } from 'react-i18next'
 
 type UploadStatus = 'pending' | 'uploading' | 'uploaded' | 'failed'
 
@@ -24,6 +25,7 @@ let fileCounter = 0
 
 const InputBar = forwardRef<InputBarHandle, InputBarProps>(
   function InputBar({ onSend, onStop, disabled, isRunning, userId }: InputBarProps, ref) {
+    const { t } = useTranslation()
     const [input, setInput] = useState('')
     const [attachedFiles, setAttachedFiles] = useState<AttachedFile[]>([])
     const fileInputRef = useRef<HTMLInputElement>(null)
@@ -208,7 +210,7 @@ const InputBar = forwardRef<InputBarHandle, InputBarProps>(
           className="btn-attach"
           onClick={() => fileInputRef.current?.click()}
           disabled={disabled || isUploading}
-          aria-label="Attach file"
+          aria-label={t('input.attachFile')}
         >
           &#128206;
         </button>
@@ -237,7 +239,7 @@ const InputBar = forwardRef<InputBarHandle, InputBarProps>(
                         type="button"
                         className="file-chip-btn file-chip-btn--retry"
                         onClick={() => retryFile(i)}
-                        aria-label={`Retry upload for ${f.file.name}`}
+                        aria-label={t('input.retryUpload', { filename: f.file.name })}
                       >
                         &#8635;
                       </button>
@@ -245,7 +247,7 @@ const InputBar = forwardRef<InputBarHandle, InputBarProps>(
                         type="button"
                         className="file-chip-btn file-chip-btn--remove"
                         onClick={() => removeFile(i)}
-                        aria-label={`Remove ${f.file.name}`}
+                        aria-label={t('input.removeFile', { filename: f.file.name })}
                       >
                         &times;
                       </button>
@@ -256,7 +258,7 @@ const InputBar = forwardRef<InputBarHandle, InputBarProps>(
                       type="button"
                       className="file-chip-btn file-chip-btn--remove"
                       onClick={() => removeFile(i)}
-                      aria-label={`Remove ${f.file.name}`}
+                      aria-label={t('input.removeFile', { filename: f.file.name })}
                     >
                       &times;
                     </button>
@@ -266,19 +268,19 @@ const InputBar = forwardRef<InputBarHandle, InputBarProps>(
                       type="button"
                       className="file-chip-btn file-chip-btn--remove"
                       onClick={() => removeFile(i)}
-                      aria-label={`Remove ${f.file.name}`}
+                      aria-label={t('input.removeFile', { filename: f.file.name })}
                     >
                       &times;
                     </button>
                   )}
                   {f.status === 'uploading' && (
                     <span className="file-chip-actions">
-                      <span className="file-chip-spinner-label">Uploading...</span>
+                      <span className="file-chip-spinner-label">{t('input.uploading')}</span>
                     </span>
                   )}
                 </span>
               ))}
-              {isUploading && <span className="input-upload-status">Uploading files...</span>}
+              {isUploading && <span className="input-upload-status">{t('input.uploadingFiles')}</span>}
             </div>
           )}
           {/* Input Field */}
@@ -288,7 +290,7 @@ const InputBar = forwardRef<InputBarHandle, InputBarProps>(
             value={input}
             onChange={(e) => { setInput(e.target.value); autoResize() }}
             onKeyDown={handleKeyDown}
-            placeholder="Enter instruction... (Shift+Enter for newline)"
+            placeholder={t('input.placeholder')}
             disabled={disabled}
             rows={3}
           />
@@ -300,7 +302,7 @@ const InputBar = forwardRef<InputBarHandle, InputBarProps>(
             type="button"
             className="btn-stop"
             onClick={onStop}
-            aria-label="Stop session"
+            aria-label={t('input.stop')}
           >
             <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
               <rect x="6" y="6" width="12" height="12" rx="2" />
@@ -310,9 +312,9 @@ const InputBar = forwardRef<InputBarHandle, InputBarProps>(
           <button
             type="submit"
             className="btn-send"
-            aria-label="Send message"
+            aria-label={t('input.send')}
             disabled={disabled || (!input.trim() && attachedFiles.length === 0) || blockedByUpload}
-            title={hasFailed ? 'Upload failed — retry or remove files' : isUploading ? 'Uploading files...' : undefined}
+            title={hasFailed ? t('input.uploadFailedTooltip') : isUploading ? t('input.uploadingTooltip') : undefined}
           >
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
               <path d="M5 12h14M12 5l7 7-7 7" />

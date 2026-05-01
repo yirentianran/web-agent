@@ -136,6 +136,7 @@ body {
   flex-direction: column;
   height: 100%;
   min-height: 0;
+  min-width: 0;
   padding: 12px;
   border-right: 1px solid var(--color-border);
 }
@@ -154,6 +155,7 @@ body {
   align-items: center;
   justify-content: center;
   gap: 6px;
+  line-height: 1;
   transition: all 0.15s ease;
   box-shadow: 0 2px 8px rgba(59, 130, 246, 0.3);
   margin-bottom: 12px;
@@ -168,6 +170,7 @@ body {
 .sidebar-list {
   flex: 1;
   min-height: 0;
+  min-width: 0;
   overflow-y: auto;
   padding-top: 12px;
 }
@@ -182,6 +185,7 @@ body {
   transition: all 0.15s ease;
   margin-bottom: 4px;
   font-size: 13px;
+  min-width: 0;
 }
 
 .sidebar-item:hover {
@@ -2485,7 +2489,7 @@ body {
   position: absolute;
   top: calc(100% + 6px);
   right: 0;
-  min-width: 240px;
+  min-width: 160px;
   background: var(--color-surface);
   border: 1px solid #e5e5e5;
   border-radius: 10px;
@@ -2529,6 +2533,93 @@ body {
 
 .user-menu-item--logout:hover {
   background: #fef2f2;
+}
+
+/* ── Settings Menu ────────────────────────────────────────────────── */
+
+.settings-menu {
+  position: relative;
+}
+
+.settings-menu-trigger {
+  display: flex;
+  align-items: center;
+  padding: 6px 8px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.settings-menu-trigger:hover {
+  background: var(--color-surface-hover);
+  color: var(--color-text);
+}
+
+.settings-menu-dropdown {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  min-width: 240px;
+  background: var(--color-surface);
+  border: 1px solid #e5e5e5;
+  border-radius: 10px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.08);
+  padding: 6px;
+  z-index: 100;
+  display: flex;
+  flex-direction: column;
+}
+
+.settings-menu-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 8px 12px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--color-text);
+  font-size: 13px;
+  cursor: pointer;
+  transition: background 0.1s ease;
+  text-align: left;
+  width: 100%;
+  line-height: 1.3;
+}
+
+.settings-menu-item:hover {
+  background: var(--color-surface-hover);
+}
+
+.settings-menu-item-icon {
+  font-size: 14px;
+  width: 18px;
+  text-align: center;
+}
+
+/* ── Language Switcher ────────────────────────────────────────────── */
+
+.language-switcher {
+  padding: 4px 10px;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  min-width: 36px;
+  text-align: center;
+}
+
+.language-switcher:hover {
+  background: var(--color-surface-hover);
+  color: var(--color-text);
+  border-color: var(--color-text-secondary);
 }
 
 /* ── App Layout ───────────────────────────────────────────────────── */

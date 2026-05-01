@@ -1,33 +1,46 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, act } from "@testing-library/react";
 import "@testing-library/jest-dom/vitest";
+import i18n from "../i18n/config";
 import StatusSpinner, { formatElapsed } from "./StatusSpinner";
 
+// Get the t function from i18n for use with formatElapsed
+const t = i18n.t;
+
 describe("formatElapsed", () => {
+  // Default language in test env is English (fallbackLng)
   it("shows seconds only for small values", () => {
-    expect(formatElapsed(0)).toBe("0秒");
-    expect(formatElapsed(5)).toBe("5秒");
-    expect(formatElapsed(59)).toBe("59秒");
+    expect(formatElapsed(0, t)).toBe("0s");
+    expect(formatElapsed(5, t)).toBe("5s");
+    expect(formatElapsed(59, t)).toBe("59s");
   });
 
   it("shows minutes and seconds for values over 60s", () => {
-    expect(formatElapsed(65)).toBe("1分5秒");
-    expect(formatElapsed(90)).toBe("1分30秒");
-    expect(formatElapsed(120)).toBe("2分");
-    expect(formatElapsed(3599)).toBe("59分59秒");
+    expect(formatElapsed(65, t)).toBe("1m5s");
+    expect(formatElapsed(90, t)).toBe("1m30s");
+    expect(formatElapsed(120, t)).toBe("2m");
+    expect(formatElapsed(3599, t)).toBe("59m59s");
   });
 
   it("shows hours, minutes and seconds for values over 3600s", () => {
-    expect(formatElapsed(3600)).toBe("1时");
-    expect(formatElapsed(3661)).toBe("1时1分1秒");
-    expect(formatElapsed(7200)).toBe("2时");
-    expect(formatElapsed(3665)).toBe("1时1分5秒");
+    expect(formatElapsed(3600, t)).toBe("1h");
+    expect(formatElapsed(3661, t)).toBe("1h1m1s");
+    expect(formatElapsed(7200, t)).toBe("2h");
+    expect(formatElapsed(3665, t)).toBe("1h1m5s");
   });
 
   it("omits zero-value units", () => {
-    expect(formatElapsed(3600)).toBe("1时");
-    expect(formatElapsed(60)).toBe("1分");
-    expect(formatElapsed(0)).toBe("0秒");
+    expect(formatElapsed(3600, t)).toBe("1h");
+    expect(formatElapsed(60, t)).toBe("1m");
+    expect(formatElapsed(0, t)).toBe("0s");
+  });
+
+  it("shows Chinese format when language is zh", async () => {
+    await i18n.changeLanguage("zh");
+    expect(formatElapsed(5, i18n.t)).toBe("5秒");
+    expect(formatElapsed(65, i18n.t)).toBe("1分5秒");
+    expect(formatElapsed(3661, i18n.t)).toBe("1时1分1秒");
+    await i18n.changeLanguage("en"); // reset
   });
 });
 
@@ -44,62 +57,54 @@ describe("StatusSpinner component", () => {
   });
 
   it("shows correct elapsed time immediately on render", () => {
-    // Agent started 5 seconds ago
     const startTime = fakeNow - 5000;
 
     render(<StatusSpinner text="Agent is working" startTime={startTime} />);
 
     const elapsedEl = screen.getByTestId("elapsed");
-
-    // Should show ~5 seconds immediately, NOT "0秒"
-    expect(elapsedEl).toHaveTextContent("5秒");
+    expect(elapsedEl).toHaveTextContent("5s");
   });
 
   it("updates elapsed time as time passes", () => {
-    const startTime = fakeNow - 10000; // 10 seconds ago
+    const startTime = fakeNow - 10000;
 
     render(<StatusSpinner text="Agent is working" startTime={startTime} />);
 
-    // Initially 10 seconds
     const elapsedEl = screen.getByTestId("elapsed");
-    expect(elapsedEl).toHaveTextContent("10秒");
+    expect(elapsedEl).toHaveTextContent("10s");
 
-    // Advance 5 seconds
     act(() => {
       vi.advanceTimersByTime(5000);
     });
-    expect(elapsedEl).toHaveTextContent("15秒");
+    expect(elapsedEl).toHaveTextContent("15s");
   });
 
   it("resets elapsed time correctly when startTime changes", () => {
-    const startTime1 = fakeNow - 10000; // 10 seconds ago
+    const startTime1 = fakeNow - 10000;
 
     const { rerender } = render(
       <StatusSpinner text="Agent is working" startTime={startTime1} />,
     );
 
     const elapsedEl = screen.getByTestId("elapsed");
-    expect(elapsedEl).toHaveTextContent("10秒");
+    expect(elapsedEl).toHaveTextContent("10s");
 
-    // Advance 5 seconds, now 15 seconds elapsed
     act(() => {
       vi.advanceTimersByTime(5000);
     });
-    expect(elapsedEl).toHaveTextContent("15秒");
+    expect(elapsedEl).toHaveTextContent("15s");
 
-    // New startTime — agent restarted 3 seconds ago (relative to current time)
     const startTime2 = fakeNow + 5000 - 3000;
     act(() => {
-      vi.advanceTimersByTime(1); // Small tick to flush state
+      vi.advanceTimersByTime(1);
     });
     rerender(<StatusSpinner text="Agent is working" startTime={startTime2} />);
 
-    // Should show 3 seconds immediately, not 0
-    expect(elapsedEl).toHaveTextContent("3秒");
+    expect(elapsedEl).toHaveTextContent("3s");
   });
 
   it("shows stale styling after 30 seconds", () => {
-    const startTime = fakeNow - 35000; // 35 seconds ago
+    const startTime = fakeNow - 35000;
 
     render(<StatusSpinner text="Agent is working" startTime={startTime} />);
 
@@ -108,7 +113,7 @@ describe("StatusSpinner component", () => {
   });
 
   it("does not show stale styling for fresh sessions", () => {
-    const startTime = fakeNow - 10000; // 10 seconds ago
+    const startTime = fakeNow - 10000;
 
     render(<StatusSpinner text="Agent is working" startTime={startTime} />);
 

@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { useTranslation } from 'react-i18next'
 
 interface SkillFeedbackWidgetProps {
   skillNames?: string[]
@@ -6,6 +7,7 @@ interface SkillFeedbackWidgetProps {
 }
 
 export default function SkillFeedbackWidget({ skillNames, onSubmit }: SkillFeedbackWidgetProps) {
+  const { t } = useTranslation()
   const [rating, setRating] = useState(0)
   const [comment, setComment] = useState('')
   const [userEdits, setUserEdits] = useState('')
@@ -39,7 +41,7 @@ export default function SkillFeedbackWidget({ skillNames, onSubmit }: SkillFeedb
       await onSubmit(rating, comment, userEdits, skillName)
       setSubmitted(true)
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to submit feedback. Please try again.')
+      setError(err instanceof Error ? err.message : t('feedback.errorSubmit'))
     } finally {
       setLoading(false)
     }
@@ -54,7 +56,7 @@ export default function SkillFeedbackWidget({ skillNames, onSubmit }: SkillFeedb
   if (submitted) {
     return (
       <div className="feedback-widget feedback-submitted">
-        <p>Thank you for your feedback!</p>
+        <p>{t('feedback.thankYou')}</p>
       </div>
     )
   }
@@ -66,24 +68,24 @@ export default function SkillFeedbackWidget({ skillNames, onSubmit }: SkillFeedb
           className="feedback-trigger"
           onClick={() => setCollapsed(false)}
           type="button"
-          aria-label="Show feedback widget"
+          aria-label={t('feedback.showWidget')}
         >
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
           </svg>
-          Feedback
+          {t('feedback.triggerLabel')}
         </button>
       ) : (
         <>
           <div className="feedback-header">
             <span className="feedback-label">
-              {displaySkillName ? `Rate ${displaySkillName}` : 'Rate this result'}
+              {displaySkillName ? t('feedback.rateSkill', { skill: displaySkillName }) : t('feedback.rateResult')}
             </span>
             <button
               className="feedback-close"
               onClick={() => setCollapsed(true)}
               type="button"
-              aria-label="Hide feedback widget"
+              aria-label={t('feedback.hideWidget')}
             >
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M18 6 6 18M6 6l12 12" /></svg>
             </button>
@@ -93,7 +95,7 @@ export default function SkillFeedbackWidget({ skillNames, onSubmit }: SkillFeedb
               className="feedback-skill-select"
               value={selectedSkill}
               onChange={(e) => setSelectedSkill(e.target.value)}
-              aria-label="Select skill to rate"
+              aria-label={t('feedback.selectSkill')}
             >
               {effectiveSkillNames.map((name) => (
                 <option key={name} value={name}>{name}</option>
@@ -107,7 +109,7 @@ export default function SkillFeedbackWidget({ skillNames, onSubmit }: SkillFeedb
                 className={`star ${star <= rating ? 'filled' : ''}`}
                 onClick={() => handleRatingChange(star)}
                 type="button"
-                aria-label={`${star} star${star > 1 ? 's' : ''}`}
+                aria-label={t('feedback.starLabel', { count: star })}
               >
                 {star <= rating ? '\u2605' : '\u2606'}
               </button>
@@ -115,18 +117,18 @@ export default function SkillFeedbackWidget({ skillNames, onSubmit }: SkillFeedb
           </div>
           <textarea
             className="feedback-comment"
-            placeholder="What could be improved? (optional)"
+            placeholder={t('feedback.commentPlaceholder')}
             value={comment}
             onChange={(e) => { setComment(e.target.value); if (error) setError(null) }}
             rows={2}
           />
           <details className="feedback-edits-toggle">
             <summary onClick={(e) => { e.preventDefault(); setShowEdits(!showEdits) }}>
-              What did you change? (optional)
+              {t('feedback.editsToggle')}
             </summary>
             <textarea
               className="feedback-comment"
-              placeholder="Describe any edits you made..."
+              placeholder={t('feedback.editsPlaceholder')}
               value={userEdits}
               onChange={(e) => setUserEdits(e.target.value)}
               rows={2}
@@ -136,7 +138,7 @@ export default function SkillFeedbackWidget({ skillNames, onSubmit }: SkillFeedb
             <div className="feedback-error">
               <span>{error}</span>
               <button onClick={handleSubmit} type="button" disabled={loading}>
-                {loading ? 'Retrying...' : 'Retry'}
+                {loading ? t('common.retrying') : t('common.retry')}
               </button>
             </div>
           )}
@@ -146,7 +148,7 @@ export default function SkillFeedbackWidget({ skillNames, onSubmit }: SkillFeedb
             onClick={handleSubmit}
             type="button"
           >
-            {loading ? 'Submitting...' : 'Submit Feedback'}
+            {loading ? t('common.submitting') : t('feedback.submitButton')}
           </button>
         </>
       )}
