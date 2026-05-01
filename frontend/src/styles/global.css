@@ -2490,7 +2490,7 @@ body {
   position: absolute;
   top: calc(100% + 6px);
   right: 0;
-  min-width: 160px;
+  min-width: max-content;
   background: var(--color-surface);
   border: 1px solid #e5e5e5;
   border-radius: 10px;
@@ -2563,7 +2563,7 @@ body {
   position: absolute;
   top: calc(100% + 6px);
   right: 0;
-  min-width: 240px;
+  min-width: max-content;
   background: var(--color-surface);
   border: 1px solid #e5e5e5;
   border-radius: 10px;
