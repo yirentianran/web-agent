@@ -157,10 +157,15 @@ def _save_cli_session_map() -> None:
 
 
 def _store_cli_session(our_session_id: str, cli_uuid: str) -> None:
-    """Store mapping so subsequent turns can resume via the CLI's native session."""
+    """Store mapping so future turns can identify the CLI session.
+
+    Only stores if no mapping exists yet — subsequent turns create new CLI
+    UUIDs, and overwriting would lose the original reference.
+    """
     if our_session_id and cli_uuid and our_session_id != cli_uuid:
-        _cli_session_map[our_session_id] = cli_uuid
-        _save_cli_session_map()
+        if our_session_id not in _cli_session_map:
+            _cli_session_map[our_session_id] = cli_uuid
+            _save_cli_session_map()
 
 
 def _get_cli_session_uuid(our_session_id: str) -> str | None:
@@ -180,7 +185,7 @@ async def _emit_synthetic_state_change_if_missing(
     state but the buffer contains no such message. Returns (updated last_seen, success)."""
     buf_state = buffer.get_session_state(session_id)
     if buf_state["state"] in ("completed", "error", "cancelled"):
-        all_buffer_msgs = buffer.get_history(session_id)
+        all_buffer_msgs = await buffer.get_history(session_id)
         has_state_change = any(
             m.get("type") == "system"
             and m.get("subtype") == "session_state_changed"
@@ -809,7 +814,8 @@ def build_allowed_tools(mcp_config: dict[str, Any]) -> list[str]:
 
     Only includes tools from servers where enabled is True (default True).
     """
-    tools = ["Read", "Edit", "Write", "Glob", "Grep", "Bash", "WebFetch", "WebSearch", "Agent", "Skill"]
+    # WebFetch/WebSearch excluded: MCP fetch servers provide web content retrieval
+    tools = ["Read", "Edit", "Write", "Glob", "Grep", "Bash", "Agent", "Skill"]
     for server_name, cfg in mcp_config.get("mcpServers", {}).items():
         if not cfg.get("enabled", True):
             continue
@@ -1067,8 +1073,13 @@ def build_sdk_options(
     options = ClaudeAgentOptions(
         model=model,
         cwd=str(user_dir / "workspace"),
-        system_prompt=build_system_prompt(user_id, skills, workspace),
+        system_prompt={
+            "type": "preset",
+            "preset": "claude_code",
+            "append": build_system_prompt(user_id, skills, workspace),
+        },
         allowed_tools=build_allowed_tools(mcp_config),
+        disallowed_tools=["WebSearch", "WebFetch"],
         max_turns=max_turns,
         permission_mode="acceptEdits",
         mcp_servers=mcp_servers if mcp_servers else None,
@@ -1265,44 +1276,63 @@ async def _can_use_tool_for_session(
     return PermissionResultAllow(behavior="allow")
 
 
-MAX_CONTINUATION_WINDOW = int(os.getenv("MAX_CONTINUATION_WINDOW", "20"))
-# Doubled from 10→20 to provide richer context for multi-turn debugging
-# and tool-use chains without agent losing track of earlier steps.
-MAX_PROMPT_LENGTH = int(os.getenv("MAX_PROMPT_LENGTH", "8000"))
+MAX_CONTINUATION_WINDOW = int(os.getenv("MAX_CONTINUATION_WINDOW", "50"))
+MAX_PROMPT_LENGTH = int(os.getenv("MAX_PROMPT_LENGTH", "32000"))
+_TOOL_RESULT_MAX_CHARS = int(os.getenv("TOOL_RESULT_MAX_CHARS", "500"))
 
 
 def _build_history_prompt(history: list[dict[str, Any]], user_message: str) -> str:
     """Build a multi-turn conversation prompt from history + new message.
 
     Controls:
-    - Window: only the last N messages are included (configurable, default 20)
-    - Truncation: tool_result content capped at 200 chars; tool_use records name only
+    - Window: only the last N messages are included (configurable, default 50)
+    - Truncation: tool_result content capped at TOOL_RESULT_MAX_CHARS; tool_use
+      records name + brief input; assistant text included
     - Length: total prompt capped at MAX_PROMPT_LENGTH chars; oldest messages dropped first
     - System messages and empty content are skipped
     - The final user message is always preserved
-    - Assistant messages are not explicitly excluded — they pass through as part of
-      history so the model can reference its own prior responses (important for
-      multi-turn context with Echo agents).
     """
     parts: list[str] = []
 
-    # Step 1: format user messages and tool records
     for msg in history:
         msg_type = msg.get("type")
         content = msg.get("content", "")
-        if msg_type == "user" and (not content or not content.strip()):
+        subtype = msg.get("subtype")
+
+        # Skip system/stream messages that add no conversational value
+        if msg_type == "system" and subtype != "session_state_changed":
             continue
-        if msg_type == "tool_use":
-            # Record tool name only, not input — saves tokens and avoids leaking secrets
-            parts.append(f"[Tool: {msg.get('name', '?')}]")
+        if msg_type in ("stream_event", "hook_started", "hook_response"):
+            continue
+
+        if msg_type == "assistant":
+            if not content or not content.strip():
+                continue
+            # Include assistant text responses (skip thinking blocks)
+            if content.startswith("[thinking]") and content.endswith("[/thinking]"):
+                continue
+            parts.append(f"Assistant: {content}")
+        elif msg_type == "user" and (not content or not content.strip()):
+            continue
+        elif msg_type == "tool_use":
+            name = msg.get("name", "?")
+            input_data = msg.get("input")
+            if input_data and isinstance(input_data, dict):
+                brief = ", ".join(
+                    f"{k}={str(v)[:50]}" for k, v in list(input_data.items())[:3]
+                )
+                parts.append(f"[Tool Use: {name}({brief})]")
+            else:
+                parts.append(f"[Tool Use: {name}]")
         elif msg_type == "tool_result":
             if not content or not content.strip():
                 continue
-            # Truncate long tool results
-            parts.append(f"[Tool Result] {content[:200]}")
+            truncated = content[:_TOOL_RESULT_MAX_CHARS]
+            if len(content) > _TOOL_RESULT_MAX_CHARS:
+                truncated += "..."
+            parts.append(f"[Tool Result] {truncated}")
         elif msg_type == "user":
             line = f"User: {content}"
-            # Mention attached files with their relative path so the agent can locate them
             attached = msg.get("data")
             if attached and isinstance(attached, list):
                 paths = [f"uploads/{f.get('filename', '?')}" for f in attached if isinstance(f, dict)]
@@ -1310,18 +1340,23 @@ def _build_history_prompt(history: list[dict[str, Any]], user_message: str) -> s
                     line += f"\n(Attached files: {', '.join(paths)})"
             parts.append(line)
 
-    # Step 2: sliding window — keep only the last N parts
+    # Sliding window — keep only the last N parts
     if len(parts) > MAX_CONTINUATION_WINDOW:
         parts = parts[-MAX_CONTINUATION_WINDOW:]
 
-    # Step 3: add the new user message (always preserved)
+    # Add preamble explaining this is a continuation, then the new message
+    preamble = (
+        "The following is a transcript of our prior conversation in this session. "
+        "Please reference this history when responding to the new message below.\n"
+        "---\n"
+    )
     parts.append(f"User: {user_message}")
     parts.append("Assistant:")
 
-    # Step 4: enforce total length limit by dropping from the start
-    prompt = "\n\n".join(parts)
+    # Enforce total length limit by dropping from the start
+    prompt = preamble + "\n\n".join(parts)
     while len(prompt) > MAX_PROMPT_LENGTH and len(parts) > 2:
-        parts = parts[1:]  # drop oldest part
+        parts = parts[1:]
         prompt = "\n\n".join(parts)
 
     return prompt
@@ -1367,6 +1402,12 @@ async def run_agent_task(
         tool_input: dict[str, Any],
         ctx: ToolPermissionContext,
     ) -> PermissionResult:
+        # Block WebSearch and WebFetch — MCP fetch servers handle web content
+        if tool_name in ("WebSearch", "WebFetch"):
+            return PermissionResultDeny(
+                message="WebSearch/WebFetch are disabled. Use MCP fetch tools instead.",
+            )
+
         # Block file writes outside user directory (workspace + memory)
         if tool_name == "Write":
             file_path = str(tool_input.get("file_path", ""))
@@ -1404,12 +1445,15 @@ async def run_agent_task(
             if f.is_file():
                 workspace_snapshot[f.relative_to(workspace).as_posix()] = f.stat().st_mtime
 
-    # Look up CLI-generated session UUID for native SDK resume on continuation turns
-    cli_uuid = _get_cli_session_uuid(session_id) if is_continuation else None
+    # Continuation turns always use history prompt from our own message
+    # store. --resume is NOT used because it only loads ONE CLI session's
+    # JSONL, but multi-turn conversations span multiple CLI sessions (each
+    # turn creates a new subprocess with a new UUID). The stored UUID gets
+    # overwritten each turn, so resume would load incomplete context.
     options = build_sdk_options(
         user_id,
         can_use_tool_callback=can_use_tool_cb,
-        resume_session_id=cli_uuid,
+        resume_session_id=None,  # never use --resume for continuation
     )
 
     # Each turn creates a fresh client — CLI subprocess terminates after
@@ -1418,60 +1462,34 @@ async def run_agent_task(
 
     try:
         if is_continuation:
-            if cli_uuid:
-                # Native SDK resume — CLI loads full session history automatically.
-                # No manual _build_history_prompt needed; the CLI maintains context.
-                try:
-                    logger.info(
-                        "[AGENT_TASK] Continuation %s: using native resume (CLI UUID=%s)",
-                        session_id,
-                        cli_uuid,
-                    )
-                    await client.connect()
-                    await client.query(user_message)
-                    logger.info("[AGENT_TASK] Resume connected, starting receive_response")
-                except Exception as resume_err:
-                    logger.warning(
-                        "[AGENT_TASK] Native resume failed for %s: %s — falling back to manual history",
-                        session_id,
-                        resume_err,
-                    )
-                    # Disconnect the failed client before replacing it
-                    try:
-                        await client.disconnect()
-                    except Exception:
-                        pass
-                    # Create a fresh client without resume
-                    fallback_options = build_sdk_options(
-                        user_id,
-                        can_use_tool_callback=can_use_tool_cb,
-                        resume_session_id=None,
-                    )
-                    client = ClaudeSDKClient(fallback_options)
-                    cli_uuid = None  # trigger fallback path below
-            if not cli_uuid:
-                # Fallback: no CLI UUID yet (or resume failed) — reconstruct
-                # conversation as a multi-turn prompt.
-                # can_use_tool requires streaming mode — wrap prompt as AsyncIterable.
-                history = buffer.get_history(session_id, after_index=0)
-                full_prompt = _build_history_prompt(history, user_message)
+            # Reconstruct full conversation from SQLite. We use session_store
+            # directly (not buffer.get_history) because after a server restart
+            # the in-memory buffer may only contain the just-buffered user
+            # message, causing buffer.get_history to return incomplete data
+            # without falling back to SQLite.
+            if session_store is not None:
+                history = await session_store.get_session_history(user_id, session_id, after_index=0)
+            else:
+                history = await buffer.get_history(session_id, after_index=0, user_id=user_id)
+            full_prompt = _build_history_prompt(history, user_message)
 
-                async def prompt_stream():
-                    yield {
-                        "type": "user",
-                        "message": {"role": "user", "content": full_prompt},
-                        "parent_tool_use_id": None,
-                        "session_id": "default",
-                    }
+            async def prompt_stream():
+                yield {
+                    "type": "user",
+                    "message": {"role": "user", "content": full_prompt},
+                    "parent_tool_use_id": None,
+                    "session_id": "default",
+                }
 
-                logger.info(
-                    "[AGENT_TASK] Continuation %s (fallback): prompt length=%d chars, window=%d",
-                    session_id,
-                    len(full_prompt),
-                    len(history),
-                )
-                await client.connect(prompt=prompt_stream())
-                logger.info("[AGENT_TASK] Client connected (continuation fallback), starting receive_response")
+            logger.info(
+                "[AGENT_TASK] Continuation %s: prompt length=%d chars, history=%d msgs",
+                session_id,
+                len(full_prompt),
+                len(history),
+            )
+            logger.info("[AGENT_TASK] Prompt preview: %s", full_prompt[:500])
+            await client.connect(prompt=prompt_stream())
+            logger.info("[AGENT_TASK] Client connected (continuation), starting receive_response")
         else:
             # First message — connect normally, then query
             logger.info("[AGENT_TASK] Connecting client (first message)")
@@ -1711,7 +1729,7 @@ async def run_agent_task(
                 sessions = await session_store.list_sessions(user_id)
                 session_info = next((s for s in sessions if s["session_id"] == session_id), None)
                 if session_info and not session_info.get("title"):
-                    history = buffer.get_history(session_id)
+                    history = await buffer.get_history(session_id)
                     first_user = next((m for m in history if m.get("type") == "user"), None)
                     if first_user:
                         title = (first_user.get("content") or "")[:50].strip()
@@ -1975,7 +1993,7 @@ async def handle_ws(websocket: WebSocket) -> None:
                 current_session_id = None
 
             # Send historical messages (reconnection recovery)
-            history = buffer.get_history(session_id, after_index=last_index)
+            history = await buffer.get_history(session_id, after_index=last_index)
             for i, h in enumerate(history):
                 if not await _safe_ws_send(websocket, {
                     **h,
@@ -2035,7 +2053,7 @@ async def handle_ws(websocket: WebSocket) -> None:
                             pass
 
                         # Pull new messages
-                        new_messages = buffer.get_history(session_id, after_index=last_seen)
+                        new_messages = await buffer.get_history(session_id, after_index=last_seen)
                         sent_count = 0
                         for i, h in enumerate(new_messages):
                             idx = last_seen + i
@@ -2051,7 +2069,7 @@ async def handle_ws(websocket: WebSocket) -> None:
 
                         # If session is done, final pull and exit
                         if buffer.is_done(session_id):
-                            final_messages = buffer.get_history(session_id, after_index=last_seen)
+                            final_messages = await buffer.get_history(session_id, after_index=last_seen)
                             final_sent = 0
                             for i, h in enumerate(final_messages):
                                 idx = last_seen + i
@@ -2106,8 +2124,15 @@ async def handle_ws(websocket: WebSocket) -> None:
                 if task_is_new:
                     # Check if this is a continuation (has prior history)
                     buf_state = buffer.sessions.get(session_id)
-                    has_history = buf_state and len(buf_state.get("messages", [])) > 0
-                    is_continuation = has_history
+                    has_history_in_memory = buf_state and len(buf_state.get("messages", [])) > 0
+                    if has_history_in_memory:
+                        is_continuation = True
+                    elif session_store is not None:
+                        is_continuation = await session_store.has_session_history(user_id, session_id)
+                    else:
+                        is_continuation = False
+                    logger.info("[CONTINUATION] session=%s is_continuation=%s in_memory=%s",
+                                session_id, is_continuation, has_history_in_memory)
 
                     if buf_state:
                         buf_state["done"] = False
@@ -2228,7 +2253,7 @@ async def handle_ws(websocket: WebSocket) -> None:
                     except asyncio.QueueEmpty:
                         pass
 
-                    new_messages = buffer.get_history(session_id, after_index=last_seen)
+                    new_messages = await buffer.get_history(session_id, after_index=last_seen)
                     sent_count = 0
                     for i, h in enumerate(new_messages):
                         idx = last_seen + i
@@ -2255,7 +2280,7 @@ async def handle_ws(websocket: WebSocket) -> None:
                     # session_state_changed: completed is not missed
                     # (it may have been added after the get_history snapshot).
                     if buffer.is_done(session_id):
-                        final_messages = buffer.get_history(session_id, after_index=last_seen)
+                        final_messages = await buffer.get_history(session_id, after_index=last_seen)
                         final_sent = 0
                         for i, h in enumerate(final_messages):
                             idx = last_seen + i
@@ -2479,7 +2504,7 @@ async def get_session_files(
 
     # Fallback: scan message history for file_result events (backward compat)
     if not files:
-        messages = buffer.get_history(session_id, after_index=0)
+        messages = await buffer.get_history(session_id, after_index=0)
         for msg in messages:
             if msg.get("type") == "file_result":
                 data = msg.get("data") or []
@@ -2603,7 +2628,7 @@ async def fork_session(
     new_session_id = f"sess_{uuid.uuid4().hex[:12]}"
 
     # Copy history from original session to new session buffer
-    history = buffer.get_history(session_id)
+    history = await buffer.get_history(session_id)
     for msg in history:
         buffer.add_message(new_session_id, msg)
 
@@ -3584,8 +3609,8 @@ async def run_evolution_agent(
 
     Unlike the old preview_evolution (which calls `claude --print` for a
     single text rewrite), this starts a full Agent session with access to
-    all tools (Read, Write, Edit, Bash, Glob, Grep, WebFetch, WebSearch,
-    Agent, Skill) and all available skills (including skill-creator).
+    all tools (Read, Write, Edit, Bash, Glob, Grep, Agent, Skill)
+    and MCP fetch servers) and all available skills (including skill-creator).
 
     The LLM autonomously decides HOW to improve the skill — whether to
     rewrite SKILL.md, add scripts/references/assets, use skill-creator,
@@ -3721,6 +3746,7 @@ def _build_evolution_sdk_options(
         cwd=str(version_dir),
         system_prompt=system_prompt,
         allowed_tools=build_allowed_tools(load_mcp_config()),
+        disallowed_tools=["WebSearch", "WebFetch"],
         max_turns=max_turns,
         permission_mode="acceptEdits",
         max_buffer_size=int(os.getenv("MAX_BUFFER_SIZE", str(10 * 1024 * 1024))),
@@ -3809,7 +3835,7 @@ async def get_evolution_status(
         return {"status": "running", "task_id": task_id}
 
     # Check the message buffer for completion
-    history = buffer.get_history(task_id, after_index=0)
+    history = await buffer.get_history(task_id, after_index=0)
     is_error = any(m.get("type") == "error" for m in history)
     is_done = any(m.get("type") == "result" or "EVOLUTION_COMPLETE" in str(m.get("content", "")) for m in history)
 
@@ -4620,6 +4646,7 @@ async def startup() -> None:
         await _db.init()
         await _db.migrate_v2()
         buffer.db = _db  # Wire DB into message buffer
+        buffer.start_drain()  # Start async write drain loop
         session_store = SessionStore(db=_db)
 
         from src.audit_logger import AuditLogger
@@ -4663,7 +4690,7 @@ async def _cleanup_loop() -> None:
         await asyncio.sleep(300)
         buffer.cleanup_expired()
         # Retry unpersisted messages (after transient DB failures)
-        flushed = buffer.flush_unpersisted()
+        flushed = await buffer.flush_unpersisted()
         if flushed:
             logger.info("MessageBuffer: flushed %d unpersisted messages to SQLite", flushed)
         # Log retention cleanup

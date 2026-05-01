@@ -109,7 +109,7 @@ def get_user_env(user_id: str, mcp_config: dict | None = None) -> dict[str, str]
     # Write settings.json into the container's .claude directory
     settings_json = json.dumps({
         "allowedTools": _build_allowed_tools(mcp_config),
-        "disallowedTools": [],
+        "disallowedTools": ["WebSearch", "WebFetch"],
         "permissionMode": "bypassPermissions",
         "hooks": {
             "PreToolUse": [
@@ -132,12 +132,13 @@ def get_user_env(user_id: str, mcp_config: dict | None = None) -> dict[str, str]
 
 def _build_allowed_tools(mcp_config: dict | None) -> list[str]:
     """Expand all MCP tool names to their fully-qualified form."""
+    # WebFetch/WebSearch excluded: MCP fetch servers provide web content retrieval
     tools = ["Read", "Edit", "Write", "Glob", "Grep", "Bash",
-             "WebFetch", "WebSearch", "Agent", "Skill"]
+             "Agent", "Skill"]
     if mcp_config:
         for server_name in mcp_config.get("mcpServers", {}):
             cfg = mcp_config["mcpServers"][server_name]
-            for tool_name in cfg.get("enabled_tools", []):
+            for tool_name in cfg.get("tools", []):
                 tools.append(f"mcp__{server_name}__{tool_name}")
     return tools
 

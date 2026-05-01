@@ -165,6 +165,20 @@ class SessionStore:
             result.append(msg)
         return result
 
+    async def has_session_history(
+        self, user_id: str, session_id: str
+    ) -> bool:
+        """Check whether a session has any persisted messages (lightweight count check)."""
+        async with self.db.connection() as conn:
+            cursor = await conn.execute(
+                """SELECT COUNT(1) FROM messages m
+                   JOIN sessions s ON m.session_id = s.session_id
+                   WHERE m.session_id = ? AND s.user_id = ?""",
+                (session_id, user_id),
+            )
+            count = await cursor.fetchone()
+        return count[0] > 0
+
     async def delete_session(self, user_id: str, session_id: str) -> None:
         """Delete a session and all its messages. Verifies ownership."""
         async with self.db.connection() as conn:

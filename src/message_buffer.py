@@ -2,19 +2,24 @@
 
 Memory layer for real-time push, SQLite for disconnect recovery
 and container restart resilience.
+
+All DB writes go through the async Database connection to avoid
+concurrent write-lock contention with the main aiosqlite connection.
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
-import sqlite3
+import logging
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from src.database import Database
+
+logger = logging.getLogger(__name__)
 
 MAX_HISTORY = 500  # max messages kept in memory per session
 BUFFER_TIMEOUT = 3600  # seconds before in-memory cache is evicted
@@ -38,7 +43,12 @@ def make_heartbeat(agent_alive: bool = True) -> dict[str, Any]:
 
 
 class MessageBuffer:
-    """Per-session message cache with SQLite persistence."""
+    """Per-session message cache with SQLite persistence.
+
+    All DB writes are enqueued and processed by a single async drain
+    task that uses the Database's aiosqlite connection. This avoids
+    concurrent write-lock contention between sync and async connections.
+    """
 
     def __init__(
         self,
@@ -49,120 +59,70 @@ class MessageBuffer:
         self.sessions: dict[str, dict[str, Any]] = {}
         # Track per-session sequence numbers for DB writes
         self._seq: dict[str, int] = {}
-        # Single cached sync connection — avoids per-message open/close overhead
-        self._sync_conn: sqlite3.Connection | None = None
+        # Async write queue: (session_id, message, future)
+        self._write_queue: asyncio.Queue[tuple[str, dict, asyncio.Future[bool]]] | None = None
+        self._drain_task: asyncio.Task | None = None
 
-    # ── internal helpers ─────────────────────────────────────────
+    # ── async write infrastructure ──────────────────────────────────
 
-    def _ensure_buf(self, session_id: str, user_id: str | None = None) -> dict[str, Any]:
-        """Lazy-initialise a session buffer, restoring terminal state from DB.
+    def start_drain(self) -> None:
+        """Start the background drain task for async DB writes.
 
-        On first access, stores user_id for ownership verification.
-        On subsequent accesses, verifies user_id matches the stored owner.
+        Called once after the event loop is running and db is attached.
         """
-        if session_id not in self.sessions:
-            buf: dict[str, Any] = {
-                "messages": [],
-                "base_index": 0,
-                "consumers": set(),
-                "done": False,
-                "state": "idle",
-                "last_active": time.time(),
-                "cost_usd": 0.0,
-                "user_id": user_id,
-            }
-
-            # On first access (e.g. after server restart), check if the
-            # session had a terminal state in the database. This prevents
-            # the recover loop from spinning forever on a completed session.
-            if self.db is not None:
-                if self._sync_conn is None:
-                    try:
-                        self._sync_conn = sqlite3.connect(str(self.db.db_path))
-                        self._sync_conn.execute("PRAGMA busy_timeout=30000")
-                    except Exception:
-                        pass
-                if self._sync_conn is not None:
-                    try:
-                        cursor = self._sync_conn.execute(
-                            "SELECT type FROM messages WHERE session_id = ? "
-                            "ORDER BY seq DESC LIMIT 1",
-                            (session_id,),
-                        )
-                        row = cursor.fetchone()
-                        if row and row[0] == "result":
-                            buf["done"] = True
-                            buf["state"] = "completed"
-                        elif row and row[0] == "system":
-                            # Last message is a system message — check for
-                            # session_state_changed with a terminal state.
-                            # Covers crash scenarios where result wasn't written.
-                            cursor2 = self._sync_conn.execute(
-                                "SELECT payload FROM messages WHERE session_id = ? "
-                                "AND type = 'system' AND subtype = 'session_state_changed' "
-                                "ORDER BY seq DESC LIMIT 1",
-                                (session_id,),
-                            )
-                            row2 = cursor2.fetchone()
-                            if row2:
-                                payload = json.loads(row2[0])
-                                terminal_state = payload.get("state")
-                                if terminal_state in ("completed", "error", "cancelled"):
-                                    buf["done"] = True
-                                    buf["state"] = terminal_state
-                    except Exception:
-                        pass  # DB unavailable — keep defaults
-
-            self.sessions[session_id] = buf
-        else:
-            # Ownership verification on existing buffer
-            stored_user = self.sessions[session_id].get("user_id")
-            if user_id is not None and stored_user is not None and user_id != stored_user:
-                raise ValueError(
-                    f"Session {session_id} is owned by {stored_user}, "
-                    f"cannot access as {user_id}"
-                )
-            # Update user_id if it was previously None
-            if stored_user is None and user_id is not None:
-                self.sessions[session_id]["user_id"] = user_id
-        return self.sessions[session_id]
-
-    def _write_db_sync(self, session_id: str, message: dict) -> None:
-        """Synchronously append one message to the SQLite database.
-
-        Uses a single cached sync connection to avoid per-message open/close
-        overhead and file-locking issues. Retries up to 3 times on transient
-        failures. If all retries fail, marks the session as unpersisted so
-        that the next flush can retry.
-        """
-        if self.db is None:
+        if self._write_queue is not None:
             return
+        self._write_queue = asyncio.Queue()
+        self._drain_task = asyncio.create_task(self._drain_loop())
 
-        # Lazily create a single sync connection
-        if self._sync_conn is None:
+    async def _drain_loop(self) -> None:
+        """Background task that drains the write queue using the async DB."""
+        while True:
+            session_id, message, future = await self._write_queue.get()
             try:
-                self._sync_conn = sqlite3.connect(str(self.db.db_path))
-                self._sync_conn.execute("PRAGMA busy_timeout=30000")
-            except Exception:
-                self.sessions[session_id]["db_failed"] = True
-                import logging
-                logging.getLogger(__name__).warning(
-                    "MessageBuffer: failed to open SQLite for session %s — messages in memory only",
-                    session_id,
+                if session_id == "__delete__":
+                    # Handle delete operations
+                    success = await self._delete_db_async(
+                        message["session_id"], message["msg_type"]
+                    )
+                    future.set_result(success)
+                else:
+                    success = await self._write_db_async(session_id, message)
+                    future.set_result(success)
+            except Exception as exc:
+                future.set_result(False)
+                logger.error("MessageBuffer: async drain error: %s", exc)
+
+    async def _delete_db_async(self, session_id: str, msg_type: str) -> bool:
+        """Delete messages of a given type from SQLite via async connection."""
+        if self.db is None:
+            return False
+        try:
+            async with self.db.connection() as conn:
+                await conn.execute(
+                    "DELETE FROM messages WHERE session_id = ? AND type = ?",
+                    (session_id, msg_type),
                 )
-                return
+                await conn.commit()
+            return True
+        except Exception as exc:
+            logger.warning("MessageBuffer: async delete failed for session %s: %s", session_id, exc)
+            return False
 
-        conn = self._sync_conn
-        max_retries = 3
-        for attempt in range(max_retries):
-            try:
-                # Determine next seq: check DB for existing messages (e.g. after
-                # migration) and use the higher of in-memory counter vs DB max.
-                cursor = conn.execute(
+    async def _write_db_async(self, session_id: str, message: dict) -> bool:
+        """Write one message to SQLite via the async Database connection."""
+        if self.db is None:
+            return False
+
+        try:
+            async with self.db.connection() as conn:
+                # Determine next seq
+                cursor = await conn.execute(
                     "SELECT COALESCE(MAX(seq), -1) FROM messages WHERE session_id = ?",
                     (session_id,),
                 )
-                db_max_seq = cursor.fetchone()[0]
+                row = await cursor.fetchone()
+                db_max_seq = row[0] if row else -1
 
                 next_seq = max(self._seq.get(session_id, 0), db_max_seq + 1)
                 self._seq[session_id] = next_seq + 1
@@ -171,7 +131,7 @@ class MessageBuffer:
                 if message.get("usage"):
                     usage_json = json.dumps(message["usage"], ensure_ascii=False)
 
-                conn.execute(
+                await conn.execute(
                     """INSERT INTO messages
                        (session_id, seq, type, subtype, name, content, payload, usage, created_at)
                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
@@ -187,81 +147,75 @@ class MessageBuffer:
                         time.time(),
                     ),
                 )
-                conn.commit()
-                # Success — clear any previous failure flag
-                self.sessions[session_id].pop("db_failed", None)
-                return
-            except sqlite3.IntegrityError:
-                # Duplicate seq — another writer or retry used the same seq.
-                # Reset in-memory counter from DB so the next attempt picks
-                # a fresh seq number instead of retrying with the same one.
-                conn.rollback()
-                import logging as _log
-                _log.getLogger(__name__).warning(
-                    "MessageBuffer: seq conflict for session %s — recalculating from DB",
-                    session_id,
-                )
-                # Force re-read from DB on next attempt by resetting in-memory seq
-                self._seq.pop(session_id, None)
-                if attempt < max_retries - 1:
-                    import time as _time
-                    _time.sleep(0.05)
-                    continue
-                # All retries exhausted
-                buf = self.sessions.get(session_id)
-                if buf:
-                    buf["db_failed"] = True
-                    buf.setdefault("unpersisted_messages", []).append(message)
-                _log.getLogger(__name__).error(
-                    "MessageBuffer: seq conflict unresolved after %d retries for session %s",
-                    max_retries,
-                    session_id,
-                )
-            except Exception:
-                conn.rollback()
-                if attempt < max_retries - 1:
-                    import time as _time
-                    _time.sleep(0.1 * (attempt + 1))  # brief backoff
-                    # Try to reconnect in case connection was lost
-                    try:
-                        self._sync_conn = sqlite3.connect(str(self.db.db_path))
-                        self._sync_conn.execute("PRAGMA busy_timeout=30000")
-                        conn = self._sync_conn
-                    except Exception:
-                        pass
-                else:
-                    # All retries exhausted — mark as unpersisted
-                    buf = self.sessions.get(session_id)
-                    if buf:
-                        buf["db_failed"] = True
-                        buf.setdefault("unpersisted_messages", []).append(message)
-                    import logging
-                    logging.getLogger(__name__).error(
-                        "MessageBuffer: SQLite write failed after %d retries for session %s — "
-                        "message kept in memory only",
-                        max_retries,
-                        session_id,
-                    )
+                await conn.commit()
 
-    def _read_db_sync(self, session_id: str, after_index: int = 0) -> list[dict]:
-        """Read messages from SQLite starting at *after_index*.
+            # Success — clear any previous failure flag
+            buf = self.sessions.get(session_id)
+            if buf:
+                buf.pop("db_failed", None)
+            return True
 
-        Reconstructs messages from the DB schema, mirroring the field-mapping
-        logic in SessionStore.get_session_history().
+        except Exception as exc:
+            logger.warning("MessageBuffer: async write failed for session %s: %s", session_id, exc)
+            buf = self.sessions.get(session_id)
+            if buf:
+                buf["db_failed"] = True
+                buf.setdefault("unpersisted_messages", []).append(message)
+            return False
+
+    # ── internal helpers ─────────────────────────────────────────
+
+    def _ensure_buf(self, session_id: str, user_id: str | None = None) -> dict[str, Any]:
+        """Lazy-initialise a session buffer, restoring terminal state from DB.
+
+        On first access, stores user_id for ownership verification.
+        On subsequent accesses, verifies user_id matches the stored owner.
+
+        Note: terminal-state recovery now happens via the async drain path
+        (flush_unpersisted) rather than a sync sqlite3 connection.
         """
-        if self.db is None or self._sync_conn is None:
-            try:
-                self._sync_conn = sqlite3.connect(str(self.db.db_path))
-                self._sync_conn.execute("PRAGMA busy_timeout=30000")
-            except Exception:
-                return []
+        if session_id not in self.sessions:
+            buf: dict[str, Any] = {
+                "messages": [],
+                "base_index": 0,
+                "consumers": set(),
+                "done": False,
+                "state": "idle",
+                "last_active": time.time(),
+                "cost_usd": 0.0,
+                "user_id": user_id,
+            }
+            self.sessions[session_id] = buf
+        else:
+            # Ownership verification on existing buffer
+            stored_user = self.sessions[session_id].get("user_id")
+            if user_id is not None and stored_user is not None and user_id != stored_user:
+                raise ValueError(
+                    f"Session {session_id} is owned by {stored_user}, "
+                    f"cannot access as {user_id}"
+                )
+            # Update user_id if it was previously None
+            if stored_user is None and user_id is not None:
+                self.sessions[session_id]["user_id"] = user_id
+        return self.sessions[session_id]
 
-        cursor = self._sync_conn.execute(
-            "SELECT type, subtype, name, content, payload, usage "
-            "FROM messages WHERE session_id = ? AND seq >= ? ORDER BY seq",
-            (session_id, after_index),
-        )
-        rows = cursor.fetchall()
+    async def _read_db_async(self, session_id: str, after_index: int = 0) -> list[dict]:
+        """Read messages from SQLite via the async Database connection."""
+        if self.db is None:
+            return []
+
+        try:
+            async with self.db.connection() as conn:
+                cursor = await conn.execute(
+                    "SELECT type, subtype, name, content, payload, usage "
+                    "FROM messages WHERE session_id = ? AND seq >= ? ORDER BY seq",
+                    (session_id, after_index),
+                )
+                rows = await cursor.fetchall()
+        except Exception:
+            logger.warning("MessageBuffer: async read failed for session %s", session_id)
+            return []
+
         result: list[dict] = []
         for row in rows:
             msg: dict[str, Any] = {"type": row[0]}
@@ -315,19 +269,18 @@ class MessageBuffer:
         # entries down by N, so we add N to base_index to compensate.
         buf["base_index"] += len(removed)
 
-        # Delete from SQLite as well
-        if self._sync_conn is not None:
-            try:
-                self._sync_conn.execute(
-                    "DELETE FROM messages WHERE session_id = ? AND type = ?",
-                    (session_id, msg_type),
-                )
-                self._sync_conn.commit()
-            except Exception:
-                pass
+        # Enqueue async DB delete
+        if self.db is not None and self._write_queue is not None:
+            self._enqueue_db_delete(session_id, msg_type)
+
+    def _enqueue_db_delete(self, session_id: str, msg_type: str) -> None:
+        """Enqueue a DB delete operation to be processed by the drain loop."""
+        loop = asyncio.get_running_loop()
+        future = loop.create_future()
+        self._write_queue.put_nowait(("__delete__", {"session_id": session_id, "msg_type": msg_type}, future))
 
     def add_message(self, session_id: str, message: dict, user_id: str | None = None) -> None:
-        """SDK produces a message → write to memory + SQLite (if DB attached)."""
+        """SDK produces a message → write to memory + enqueue async DB write."""
         buf = self._ensure_buf(session_id, user_id)
         buf["messages"].append(message)
         self._evict_old(session_id)
@@ -342,8 +295,11 @@ class MessageBuffer:
         else:
             buf["done"] = False
 
-        # Dual-write to SQLite if database is attached
-        self._write_db_sync(session_id, message)
+        # Enqueue async DB write via the drain loop
+        if self.db is not None and self._write_queue is not None:
+            loop = asyncio.get_running_loop()
+            future = loop.create_future()
+            self._write_queue.put_nowait((session_id, message, future))
 
         # Update session state based on message type
         msg_type = message.get("type", "")
@@ -387,7 +343,7 @@ class MessageBuffer:
         buf["base_index"] += to_drop
         buf["messages"] = msgs[to_drop:]
 
-    def get_history(self, session_id: str, after_index: int = 0, user_id: str | None = None) -> list[dict]:
+    async def get_history(self, session_id: str, after_index: int = 0, user_id: str | None = None) -> list[dict]:
         """Get messages for replay / reconnection.
 
         Falls back to SQLite when the in-memory list doesn't have enough history.
@@ -407,7 +363,7 @@ class MessageBuffer:
 
         # Need to read from SQLite
         if self.db is not None:
-            return self._read_db_sync(session_id, after_index)
+            return await self._read_db_async(session_id, after_index)
 
         return []
 
@@ -494,8 +450,8 @@ class MessageBuffer:
         for sid in expired:
             del self.sessions[sid]
 
-    def flush_unpersisted(self) -> int:
-        """Retry writing unpersisted messages to SQLite.
+    async def flush_unpersisted(self) -> int:
+        """Retry writing unpersisted messages to SQLite via async connection.
 
         Called periodically or after a connection recovery. Returns the
         number of messages successfully flushed.
@@ -509,16 +465,17 @@ class MessageBuffer:
             to_retry = list(pending)
             buf["unpersisted_messages"] = []
             for msg in to_retry:
-                try:
-                    self._write_db_sync(sid, msg)
+                success = await self._write_db_async(sid, msg)
+                if success:
                     flushed += 1
-                except Exception:
+                else:
                     # Still failing — put back in queue
                     buf["unpersisted_messages"].append(msg)
         return flushed
 
     def close(self) -> None:
-        """Close the cached sync database connection."""
-        if self._sync_conn is not None:
-            self._sync_conn.close()
-            self._sync_conn = None
+        """Stop the drain task and clean up."""
+        if self._drain_task is not None:
+            self._drain_task.cancel()
+            self._drain_task = None
+        self._write_queue = None
