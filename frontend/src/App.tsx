@@ -34,6 +34,9 @@ import {
   saveLastKnownIndex,
   loadLastKnownIndex,
   clearLastKnownIndex,
+  savePendingMessage,
+  loadPendingMessage,
+  clearPendingMessage,
 } from "./lib/session-state";
 
 const logger = {
@@ -371,6 +374,10 @@ function MainApp() {
   // Tracks whether replay has started for the current turn.
   // If replay sends messages, we don't clear (replay already handles ordering).
   const replayStartedRef = useRef(false);
+  // Tracks whether REST history fetch has completed.
+  // Used to coordinate auto-recover: we wait for REST before sending
+  // recover so setMessages(msgs) doesn't wipe WebSocket-added messages.
+  const restLoadedRef = useRef(false);
   // When true, block the auto-activate in handleIncomingMessage (line 767).
   // Set by handleNewSession, cleared by handleSend when a real session starts.
   const suppressAutoActivateRef = useRef(false);
@@ -422,7 +429,8 @@ function MainApp() {
     if (activeSession) {
       // Load historical messages from backend
       const headers: Record<string, string> = {};
-      if (authToken) headers["Authorization"] = `Bearer ${authToken}`;
+      const token = authTokenRef.current;
+      if (token) headers["Authorization"] = `Bearer ${token}`;
       fetch(`/api/users/${userId}/sessions/${activeSession}/history`, {
         headers,
       })
@@ -441,7 +449,21 @@ function MainApp() {
             // Defensive: always ensure session_id for correct filtering
             session_id: activeSession,
           }));
-          setMessages(msgs);
+          setMessages((prev) => {
+            // If WebSocket replay has already populated messages, merge
+            // instead of replacing — avoids losing agent messages that
+            // arrived via WS between REST DB query and this setState.
+            if (prev.length === 0) return msgs;
+            const prevIndices = new Set(prev.map((m) => m.index));
+            const newMsgs = msgs.filter(
+              (m: Message) => !prevIndices.has(m.index),
+            );
+            if (newMsgs.length === 0) return prev;
+            return [...prev, ...newMsgs].sort(
+              (a, b) => (a.index ?? 0) - (b.index ?? 0),
+            );
+          });
+          restLoadedRef.current = true;
           // Derive sessionState from history, but never overwrite
           // a live "running" state — the agent task may already be in
           // progress while history fetch returns stale/empty data.
@@ -499,11 +521,12 @@ function MainApp() {
             .catch(() => {});
         })
         .catch(() => {
+          restLoadedRef.current = true; // Allow recovery to proceed
           setMessages([]);
           setSessionStateFor(activeSession, "idle");
         });
     }
-  }, [userId, authToken]);
+  }, [userId]);  // authToken read via ref — avoids re-fetch on token change
 
   const loadSessions = async () => {
     try {
@@ -721,6 +744,12 @@ function MainApp() {
         return;
       }
 
+      // Any non-heartbeat message for the active session confirms
+      // the recover channel is working — clear the recover timeout.
+      if (msg.session_id) {
+        confirmRecoverRef.current(msg.session_id);
+      }
+
       // Use a functional update so we always work with the latest `prev`.
       // This avoids stale-closure bugs and ensures dedup runs on every message.
       setMessages((prev) => {
@@ -792,6 +821,15 @@ function MainApp() {
           }
           return m;
         });
+
+        // Update maxMsgIndexRef synchronously so handleSend always
+        // reads the latest value, avoiding stale last_index on send.
+        let maxIdx = maxMsgIndexRef.current;
+        for (const m of withStates) {
+          if (m.index != null && m.index > maxIdx) maxIdx = m.index;
+        }
+        maxMsgIndexRef.current = maxIdx;
+
         return sendStateChanged ? withStates : next;
       });
 
@@ -836,7 +874,11 @@ function MainApp() {
   // Refs to break circular dependency between handleIncomingMessage and useWebSocket
   const confirmSendRef = useRef<(clientMsgId: string) => void>(() => {});
   const sendRecoverRef = useRef<(sessionId: string, afterIndex: number) => void>(() => {});
+  const confirmRecoverRef = useRef<(sessionId: string) => void>(() => {});
   const sendStateMapRef = useRef<Map<string, MessageSendState>>(new Map());
+  // Ref for authToken so session-loading effect doesn't re-fire on token changes
+  const authTokenRef = useRef(authToken);
+  authTokenRef.current = authToken;
   // Mirror of sessionStates for use in handleIncomingMessage — avoids
   // stale closure bugs when WebSocket messages arrive between React
   // scheduling a state update and applying it (the "spinner disappears
@@ -883,11 +925,19 @@ function MainApp() {
     confirmSend,
     sendAnswer,
     sendRecover,
+    confirmRecover,
   } = useWebSocket({
     userId,
     onMessage: handleIncomingMessage,
     onDisconnect: handleDisconnect,
     onSendFailed: handleSendFailed,
+    onRecoverTimeout: (sessionId: string) => {
+      // Recover failed to yield data within the timeout window.
+      // Reset to idle so the spinner doesn't show forever.
+      if (sessionId === activeSessionRef.current) {
+        setSessionStateFor(sessionId, "idle");
+      }
+    },
     onQueueFull: () => {
       // Queue overflow — show a non-blocking warning to the user
       // eslint-disable-next-line no-console
@@ -908,24 +958,55 @@ function MainApp() {
     sendRecoverRef.current = sendRecover;
   }, [sendRecover]);
 
-  // Auto-recover message history when WebSocket reconnects
-  // Skip recovery on initial page load if REST already populated messages
-  // Use persisted last_known_index for incremental recovery
+  // Sync confirmRecover to ref (so handleIncomingMessage can clear recover timers)
+  useEffect(() => {
+    confirmRecoverRef.current = confirmRecover;
+  }, [confirmRecover]);
+
+  // Auto-recover message history when WebSocket reconnects.
+  // Waits for REST history fetch to complete before sending recover
+  // so setMessages(msgs) doesn't wipe WebSocket-added messages.
+  // Falls back to a 3s safety timeout in case REST fails silently.
   const didRecoverRef = useRef(false);
+  const recoverTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
     if (connected && activeSessionRef.current && !didRecoverRef.current) {
-      didRecoverRef.current = true;
-      const lastIndex = loadLastKnownIndex(activeSessionRef.current, userId);
-      // If we have cached messages, recover from last known index;
-      // otherwise recover from 0 (first load)
-      sendRecover(
-        activeSessionRef.current,
-        messages.length > 0 ? lastIndex : 0,
-      );
+      const doRecover = () => {
+        if (didRecoverRef.current) return;
+        didRecoverRef.current = true;
+        const lastIndex = loadLastKnownIndex(activeSessionRef.current!, userId);
+        sendRecover(
+          activeSessionRef.current!,
+          messages.length > 0 ? lastIndex : 0,
+        );
+      };
+      if (restLoadedRef.current) {
+        doRecover();
+      } else {
+        // REST hasn't completed yet — poll until it does, with a safety timeout
+        recoverTimeoutRef.current = setInterval(() => {
+          if (restLoadedRef.current) {
+            clearInterval(recoverTimeoutRef.current!);
+            recoverTimeoutRef.current = null;
+            doRecover();
+          }
+        }, 100);
+        // Safety timeout: if REST never completes, recover anyway after 3s
+        setTimeout(() => {
+          if (recoverTimeoutRef.current) {
+            clearInterval(recoverTimeoutRef.current);
+            recoverTimeoutRef.current = null;
+            doRecover();
+          }
+        }, 3000);
+      }
     }
-    // Reset recovery flag on disconnect so next reconnect can recover again
     if (!connected) {
       didRecoverRef.current = false;
+      if (recoverTimeoutRef.current) {
+        clearInterval(recoverTimeoutRef.current);
+        recoverTimeoutRef.current = null;
+      }
     }
   }, [connected, sendRecover]);
 
@@ -940,6 +1021,10 @@ function MainApp() {
       const sid = activeSessionRef.current;
       if (!sid) return;
 
+      // Only trigger recovery when actually connected — sending
+      // recover while disconnected is a no-op and resets the timer.
+      if (!connected) return;
+
       const gap = Date.now() - lastHeartbeatRef.current;
       if (gap > 60_000) {
         // Subscribe loop exited silently — trigger recovery
@@ -949,7 +1034,7 @@ function MainApp() {
     }, 10_000); // Check every 10s
 
     return () => clearInterval(checkInterval);
-  }, [activeSessionState, messages, sendRecover]);
+  }, [activeSessionState, messages, sendRecover, connected]);
 
   const handleResend = useCallback(
     (failedMessage: Message) => {
@@ -1046,6 +1131,13 @@ function MainApp() {
       // the WebSocket message yet.
       if (sessionId) {
         pendingUserMsgsRef.current.set(sessionId, optimisticMsg);
+        // Persist to localStorage so the pending message survives page refresh
+        savePendingMessage(sessionId, userId, {
+          content: message,
+          clientMsgId,
+          files: fileMetadata,
+          timestamp: Date.now(),
+        });
       }
       setMessages((prev) => {
         // If WebSocket echo already added this message (race: echo beat
@@ -1059,7 +1151,12 @@ function MainApp() {
             m.clientMsgId === clientMsgId ? { ...m, sendState: state } : m,
           );
         }
-        return [...prev, optimisticMsg];
+        const updated = [...prev, optimisticMsg];
+        // Update maxMsgIndexRef synchronously so follow-up sends use the correct anchor.
+        if (optimisticMsg.index != null && optimisticMsg.index > maxMsgIndexRef.current) {
+          maxMsgIndexRef.current = optimisticMsg.index;
+        }
+        return updated;
       });
       setSessionStateFor(sessionId!, "running");
       // Clear the suppress flag — a real session is now active
@@ -1084,11 +1181,6 @@ function MainApp() {
   const [newSessionKey, setNewSessionKey] = useState(0);
 
   const handleNewSession = useCallback(() => {
-    // Clean up old session's pending messages and last_known_index
-    const oldSessionId = activeSessionRef.current;
-    if (oldSessionId) {
-      pendingUserMsgsRef.current.delete(oldSessionId);
-    }
     // Reset tracking refs — no active session means input should be enabled
     clearThresholdRef.current = Number.MAX_SAFE_INTEGER;
     replayStartedRef.current = false;
@@ -1109,6 +1201,11 @@ function MainApp() {
       // Guard: if already on this session, skip
       if (activeSessionRef.current === id) return;
 
+      // Block auto-recover effect from sending a duplicate recover
+      // during the async history/status load below. handleSelectSession
+      // handles its own recovery at the end.
+      didRecoverRef.current = true;
+
       setSessionLoading(true);
       const oldSessionId = activeSessionRef.current;
       if (oldSessionId) {
@@ -1116,8 +1213,6 @@ function MainApp() {
         if (oldMaxIndex >= 0) {
           saveLastKnownIndex(oldSessionId, oldMaxIndex, userId);
         }
-        // Clean up pending messages for old session
-        pendingUserMsgsRef.current.delete(oldSessionId);
       }
 
       setActiveSession(id);
@@ -1134,7 +1229,20 @@ function MainApp() {
       // Restore pending message for this session so the user sees their
       // message immediately, even if the backend hasn't received the
       // WebSocket message yet (rapid session switch scenario).
-      const pending = pendingUserMsgsRef.current.get(id);
+      // Also check localStorage — pending messages survive page refresh.
+      const storedPending = loadPendingMessage(id, userId);
+      const pending = pendingUserMsgsRef.current.get(id)
+        || (storedPending ? {
+            type: "user" as const,
+            content: storedPending.content,
+            index: -1,
+            data: storedPending.files,
+            clientMsgId: storedPending.clientMsgId,
+            sendState: "sending" as MessageSendState,
+          } as Message : null);
+      if (storedPending) {
+        console.log("[App] handleSelectSession: restored pending from localStorage, clientMsgId=", storedPending.clientMsgId);
+      }
       if (pending) {
         setMessages([pending]);
       } else {
@@ -1170,11 +1278,55 @@ function MainApp() {
                 m.type === "user" && m.content === pending.content,
             )
           ) {
-            setMessages([pending, ...msgs]);
+            setMessages((prev) => {
+              // Merge: keep WebSocket-added messages, add pending + REST msgs
+              const combined = [pending, ...msgs];
+              const seen = new Set(prev.map((m) => m.index));
+              const newItems = combined.filter(
+                (m: Message) => !seen.has(m.index),
+              );
+              return [...prev, ...newItems].sort(
+                (a, b) => (a.index ?? 0) - (b.index ?? 0),
+              );
+            });
+            // Pending message was restored from localStorage but NOT found in
+            // REST history — the backend never received it. Re-send after a
+            // short delay (allows recover to complete first).
+            if (storedPending && !msgs.some(
+              (m: Message) => m.type === "user" && m.content === storedPending.content,
+            )) {
+              const pendingToResend = storedPending;
+              setTimeout(() => {
+                if (activeSessionRef.current !== id) return;
+                const currentState = sessionStatesRef.current.get(id);
+                // Only re-send if the session isn't already running (agent task
+                // from the original message would make it "running")
+                if (currentState !== "running") {
+                  sendMessage({
+                    message: pendingToResend.content,
+                    session_id: id,
+                    last_index: computeRecoverIndex(msgs),
+                    files: pendingToResend.files?.map(f => f.filename),
+                    client_msg_id: pendingToResend.clientMsgId,
+                  });
+                }
+              }, 2000);
+            }
           } else {
-            setMessages(msgs);
-            // Backend confirmed — clear pending
+            setMessages((prev) => {
+              if (prev.length === 0) return msgs;
+              const prevIndices = new Set(prev.map((m) => m.index));
+              const newMsgs = msgs.filter(
+                (m: Message) => !prevIndices.has(m.index),
+              );
+              if (newMsgs.length === 0) return prev;
+              return [...prev, ...newMsgs].sort(
+                (a, b) => (a.index ?? 0) - (b.index ?? 0),
+              );
+            });
+            // Backend confirmed — clear pending from both ref and localStorage
             pendingUserMsgsRef.current.delete(id);
+            clearPendingMessage(id, userId);
           }
           setSessionLoading(false);
 
@@ -1235,7 +1387,6 @@ function MainApp() {
                 ? computeRecoverIndex(msgs as unknown as Message[])
                 : 0,
             );
-            didRecoverRef.current = true;
             // Trust DB-derived state, not the stale "running"
             setSessionStateFor(id, derivedState);
           } else {
@@ -1247,7 +1398,6 @@ function MainApp() {
           // from an active agent session. Use the max message index so
           // we don't miss or duplicate messages.
           sendRecover(id, computeRecoverIndex(msgs));
-          didRecoverRef.current = true; // Prevent auto-recovery from sending duplicate recover
 
           // Update last_known_index from loaded history
           if (msgs.length > 0) {

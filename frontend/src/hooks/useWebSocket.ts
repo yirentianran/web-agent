@@ -29,6 +29,7 @@ interface PendingSend {
 const PENDING_QUEUE_MAX = 100;
 const PRIORITY_QUEUE_MAX = 10; // Separate queue for answers (high priority)
 const SEND_TIMEOUT_MS = 30_000;
+const RECOVER_TIMEOUT_MS = 15_000;
 
 interface UseWebSocketOptions {
   userId: string;
@@ -37,6 +38,7 @@ interface UseWebSocketOptions {
   onDisconnect?: () => void;
   onQueueFull?: () => void; // Called when the pending queue overflows
   onSendFailed?: (clientMsgId: string) => void; // Called when a send times out or connection fails
+  onRecoverTimeout?: (sessionId: string) => void; // Called when a recover fails to yield data
   token?: string;
 }
 
@@ -47,6 +49,7 @@ export function useWebSocket({
   onDisconnect,
   onQueueFull,
   onSendFailed,
+  onRecoverTimeout,
   token,
 }: UseWebSocketOptions) {
   const wsRef = useRef<WebSocket | null>(null);
@@ -62,9 +65,13 @@ export function useWebSocket({
   const onDisconnectRef = useRef(onDisconnect);
   const onQueueFullRef = useRef(onQueueFull);
   const onSendFailedRef = useRef(onSendFailed);
+  const onRecoverTimeoutRef = useRef(onRecoverTimeout);
   const tokenRef = useRef(token);
   const userIdRef = useRef(userId);
   const flushPendingRef = useRef<() => void>(() => {});
+
+  // Track active recover calls — keyed by sessionId, value is the timeout timer
+  const recoverTimers = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
 
   // Keep refs in sync on every render
   useEffect(() => {
@@ -73,6 +80,7 @@ export function useWebSocket({
     onDisconnectRef.current = onDisconnect;
     onQueueFullRef.current = onQueueFull;
     onSendFailedRef.current = onSendFailed;
+    onRecoverTimeoutRef.current = onRecoverTimeout;
     tokenRef.current = token;
     userIdRef.current = userId;
   });
@@ -81,6 +89,8 @@ export function useWebSocket({
   const pendingQueue = useRef<WSOutgoingMessage[]>([]);
   // Priority queue for answers (AskUserQuestion) — bypasses PENDING_QUEUE_MAX
   const priorityQueue = useRef<WSOutgoingMessage[]>([]);
+  // Pending recover — stored when WebSocket is not yet OPEN, flushed on connect
+  const pendingRecoverRef = useRef<{ sessionId: string; lastIndex: number } | null>(null);
   // Track in-flight sends for timeout / error handling
   const pendingSends = useRef<Map<string, PendingSend>>(new Map());
 
@@ -88,6 +98,25 @@ export function useWebSocket({
     const ws = wsRef.current;
     console.log("[WebSocket] flushPending: wsRef=", ws?.readyState, "pendingQueue=", pendingQueue.current.length, "priorityQueue=", priorityQueue.current.length);
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    const recover = pendingRecoverRef.current;
+    if (recover) {
+      pendingRecoverRef.current = null;
+      const payload = JSON.stringify({
+        type: "recover",
+        session_id: recover.sessionId,
+        last_index: recover.lastIndex,
+        user_id: userIdRef.current,
+      });
+      console.log("[WebSocket] flushPending: sending queued recover:", payload.slice(0, 120));
+      ws.send(payload);
+      const existing = recoverTimers.current.get(recover.sessionId);
+      if (existing) clearTimeout(existing);
+      const timer = setTimeout(() => {
+        recoverTimers.current.delete(recover.sessionId);
+        onRecoverTimeoutRef.current?.(recover.sessionId);
+      }, RECOVER_TIMEOUT_MS);
+      recoverTimers.current.set(recover.sessionId, timer);
+    }
     while (priorityQueue.current.length > 0) {
       const msg = priorityQueue.current.shift()!;
       const payload = JSON.stringify({ type: "answer", ...msg, user_id: userIdRef.current });
@@ -127,7 +156,8 @@ export function useWebSocket({
     const wsPath = tokenRef.current
       ? `/ws?token=${encodeURIComponent(tokenRef.current)}`
       : "/ws";
-    const ws = new WebSocket(`ws://${window.location.host}${wsPath}`);
+    const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+    const ws = new WebSocket(`${protocol}//${window.location.host}${wsPath}`);
     wsRef.current = ws;
 
     // Per-WebSocket intentional close flag — each WS has its own closure flag.
@@ -165,6 +195,12 @@ export function useWebSocket({
           ps.reject("connection_failed");
         }
         pendingSends.current.clear();
+        // Clear all recover timers — connection is gone
+        for (const [, t] of recoverTimers.current) clearTimeout(t);
+        recoverTimers.current.clear();
+        // Clear any queued recover — the auto-recover effect will
+        // send a fresh one on reconnect with correct last_index
+        pendingRecoverRef.current = null;
         return;
       }
       const delay = Math.min(1000 * 2 ** reconnectAttempts.current, 10000);
@@ -289,19 +325,41 @@ export function useWebSocket({
   const sendRecover = useCallback(
     (sessionId: string, lastIndex: number) => {
       const ws = wsRef.current;
+      console.log("[WebSocket] sendRecover: ws=", ws?.readyState, "sessionId=", sessionId, "lastIndex=", lastIndex);
       if (ws?.readyState === WebSocket.OPEN) {
-        ws.send(
-          JSON.stringify({
-            type: "recover",
-            session_id: sessionId,
-            last_index: lastIndex,
-            user_id: userIdRef.current,
-          }),
-        );
+        const payload = JSON.stringify({
+          type: "recover",
+          session_id: sessionId,
+          last_index: lastIndex,
+          user_id: userIdRef.current,
+        });
+        console.log("[WebSocket] sendRecover: sending directly:", payload.slice(0, 120));
+        ws.send(payload);
+        // Start a timeout — if no messages arrive for this session
+        // within RECOVER_TIMEOUT_MS, the recover likely failed.
+        const existing = recoverTimers.current.get(sessionId);
+        if (existing) clearTimeout(existing);
+        const timer = setTimeout(() => {
+          recoverTimers.current.delete(sessionId);
+          onRecoverTimeoutRef.current?.(sessionId);
+        }, RECOVER_TIMEOUT_MS);
+        recoverTimers.current.set(sessionId, timer);
+      } else {
+        // WebSocket not yet open — queue for flushPending to send on connect
+        pendingRecoverRef.current = { sessionId, lastIndex };
       }
     },
     [],
   );
+
+  /** Clear a pending recover timeout — called when messages arrive for a session. */
+  const confirmRecover = useCallback((sessionId: string) => {
+    const timer = recoverTimers.current.get(sessionId);
+    if (timer) {
+      clearTimeout(timer);
+      recoverTimers.current.delete(sessionId);
+    }
+  }, []);
 
   return {
     status,
@@ -312,6 +370,7 @@ export function useWebSocket({
     failPendingSends,
     sendAnswer,
     sendRecover,
+    confirmRecover,
     reconnect: connect,
     reconnectAttempts: reconnectAttempts.current,
     pendingQueueSize: pendingQueue.current.length,

@@ -159,3 +159,63 @@ export function clearLastKnownIndex(sessionId: string, userId: string): void {
     // ignore
   }
 }
+
+// ── pending message persistence (localStorage) ──────────────────
+
+const PENDING_MSG_KEY_PREFIX = 'web-agent-pending-msg:'
+
+interface StoredPendingMessage {
+  content: string
+  clientMsgId: string
+  files?: Array<{ filename: string; size: number }>
+  timestamp: number
+}
+
+function makePendingMsgKey(sessionId: string, userId: string): string {
+  return `${PENDING_MSG_KEY_PREFIX}${userId}:${sessionId}`
+}
+
+export function savePendingMessage(
+  sessionId: string,
+  userId: string,
+  msg: StoredPendingMessage,
+): void {
+  try {
+    localStorage.setItem(
+      makePendingMsgKey(sessionId, userId),
+      JSON.stringify(msg),
+    )
+  } catch {
+    // localStorage full or unavailable
+  }
+}
+
+export function loadPendingMessage(
+  sessionId: string,
+  userId: string,
+): StoredPendingMessage | null {
+  try {
+    const raw = localStorage.getItem(makePendingMsgKey(sessionId, userId))
+    if (!raw) return null
+    const parsed = JSON.parse(raw) as StoredPendingMessage
+    // Discard pending messages older than 5 minutes
+    if (Date.now() - parsed.timestamp > 300_000) {
+      localStorage.removeItem(makePendingMsgKey(sessionId, userId))
+      return null
+    }
+    return parsed
+  } catch {
+    return null
+  }
+}
+
+export function clearPendingMessage(
+  sessionId: string,
+  userId: string,
+): void {
+  try {
+    localStorage.removeItem(makePendingMsgKey(sessionId, userId))
+  } catch {
+    // ignore
+  }
+}

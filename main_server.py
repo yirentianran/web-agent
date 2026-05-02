@@ -1835,13 +1835,12 @@ async def _safe_ws_send(websocket: WebSocket, data: dict) -> bool:
         await websocket.send_text(json.dumps(data))
         return True
     except RuntimeError:
-        # WebSocket was already closed — connection lost.
-        # Caller should exit the subscribe loop gracefully.
+        logger.debug("[WS] _safe_ws_send failed: WebSocket closed (RuntimeError)")
         return False
     except asyncio.CancelledError:
-        raise  # Allow task cancellation to propagate
-    except Exception:
-        # Catch any other send errors (e.g., ConnectionClosed from websockets lib)
+        raise
+    except Exception as e:
+        logger.debug("[WS] _safe_ws_send failed: %s", e)
         return False
 
 
@@ -1994,6 +1993,10 @@ async def handle_ws(websocket: WebSocket) -> None:
 
             # Send historical messages (reconnection recovery)
             history = await buffer.get_history(session_id, after_index=last_index)
+            logger.info(
+                "[WS] Recover: get_history session=%s after_index=%s returned %d messages",
+                session_id, last_index, len(history),
+            )
             for i, h in enumerate(history):
                 if not await _safe_ws_send(websocket, {
                     **h,
@@ -2088,17 +2091,22 @@ async def handle_ws(websocket: WebSocket) -> None:
                         )
                         if not ok:
                             break
-                        break
 
                     ws_msg = await _wait_for_ws_or_buffer(event, pending_ws_msgs, HEARTBEAT_INTERVAL)
                     if ws_msg:
                         continue  # new WS message — re-check at top
                     # Timeout → send heartbeat
                     task_key = f"task_{session_id}"
-                    agent_alive = (
-                        (task_key in active_tasks and not active_tasks[task_key].done())
-                        or buffer.get_state(session_id) == "running"
-                    )
+                    buf_state = buffer.get_state(session_id)
+                    if buf_state in ("completed", "error", "cancelled"):
+                        # Terminal — heartbeat is just keep-alive; don't
+                        # trigger frontend recovery by reporting dead agent.
+                        agent_alive = True
+                    else:
+                        agent_alive = (
+                            (task_key in active_tasks and not active_tasks[task_key].done())
+                            or buf_state == "running"
+                        )
                     hb = make_heartbeat(agent_alive=agent_alive)
                     if not await _safe_ws_send(websocket, {
                         **hb,
@@ -2236,11 +2244,12 @@ async def handle_ws(websocket: WebSocket) -> None:
                         elif item.get("type") == "recover":
                             continue  # ignore duplicate recover for SAME session
                         else:
-                            # Message for same session — process it
+                            # Chat message for same session while agent is running.
+                            # Cancel the current task, re-queue the message, and break
+                            # so the outer loop creates a fresh task for the new input.
                             user_message = item.get("message", "")
                             if user_message:
-                                logger.info("WS: new message for active session %s", session_id)
-                                # Add the new user message and let the running task handle it
+                                logger.info("WS: new message for active session %s, cancelling current task", session_id)
                                 buffer.add_message(
                                     session_id,
                                     {
@@ -2250,6 +2259,13 @@ async def handle_ws(websocket: WebSocket) -> None:
                                         "client_msg_id": item.get("client_msg_id"),
                                     },
                                 )
+                            # Cancel the running agent task so the outer loop
+                            # creates a fresh one for the new message.
+                            tk = f"task_{session_id}"
+                            if tk in active_tasks and not active_tasks[tk].done():
+                                active_tasks[tk].cancel()
+                            pending_ws_msgs.put_nowait(item)
+                            break
                     except asyncio.QueueEmpty:
                         pass
 
@@ -2338,31 +2354,28 @@ async def handle_ws(websocket: WebSocket) -> None:
             await reader_task
         except asyncio.CancelledError:
             pass
-        # Clean up orphaned agent task — if the WS closed while the agent
-        # was still running, cancel it to prevent resource leaks.
+        # Do NOT cancel the agent task on WebSocket disconnect.
+        # The agent is an independent asyncio task that writes results
+        # to the buffer. When the frontend reconnects (page refresh,
+        # network flap), the recover mechanism will deliver the output.
+        # The agent task has its own timeout (AGENT_TASK_TIMEOUT, 300s)
+        # to prevent runaway resource leaks.
+        #
+        # Previously, cancelling the task here destroyed in-progress
+        # agent work on every page refresh, causing lost responses and
+        # spurious "error" sessions.
+
+        # Clean up stale task reference — the task itself keeps running,
+        # but we remove our tracking so the next WS connection can create
+        # a fresh reference.
         task_key = f"task_{current_session_id}" if current_session_id else None
         if task_key and task_key in active_tasks:
             task = active_tasks[task_key]
-            if not task.done():
-                logger.info(
-                    "WS: cancelling orphaned agent task for session %s",
-                    current_session_id,
-                )
-                task.cancel()
-                try:
-                    await task
-                except (asyncio.CancelledError, Exception):
-                    pass
-                # Set error state so the frontend knows the session ended
-                buffer.add_message(
-                    current_session_id,
-                    {
-                        "type": "system",
-                        "subtype": "session_state_changed",
-                        "state": "error",
-                    },
-                )
-                buffer.mark_done(current_session_id)
+            if task.done():
+                # Task already finished — safe to remove tracking
+                del active_tasks[task_key]
+            # If still running, leave it in active_tasks so the next
+            # subscribe loop can monitor it via task.done().
 
 
 # ── Helper ───────────────────────────────────────────────────────
