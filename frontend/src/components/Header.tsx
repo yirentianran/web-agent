@@ -2,6 +2,7 @@ import { useTranslation } from 'react-i18next'
 import UserMenu from './UserMenu'
 import SettingsMenu from './SettingsMenu'
 import LanguageSwitcher from '../i18n/LanguageSwitcher'
+import ThemeToggle from './ThemeToggle'
 import type { ConnectionStatus } from '../lib/types'
 
 interface HeaderProps {
@@ -37,6 +38,7 @@ export default function Header({ connectionStatus, userId, onOpenSkills, onOpenF
           <span className="app-status-text">{t(statusKey[connectionStatus])}</span>
         </div>
         <LanguageSwitcher />
+        <ThemeToggle />
         <SettingsMenu
           onOpenSkills={onOpenSkills}
           onOpenFeedback={onOpenFeedback}

@@ -52,6 +52,10 @@
     "memoryManagement": "记忆管理",
     "logout": "退出登录"
   },
+  "theme": {
+    "switchToDark": "切换到深色模式",
+    "switchToLight": "切换到浅色模式"
+  },
   "sidebar": {
     "newSession": "+ 新会话",
     "emptyState": "暂无会话",

@@ -52,6 +52,10 @@
     "memoryManagement": "Memory Management",
     "logout": "Logout"
   },
+  "theme": {
+    "switchToDark": "Switch to dark mode",
+    "switchToLight": "Switch to light mode"
+  },
   "sidebar": {
     "newSession": "+ New Session",
     "emptyState": "No sessions yet",
