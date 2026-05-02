@@ -1078,6 +1078,7 @@ function MainApp() {
 
       // Auto-create session if none exists
       if (!sessionId) {
+        maxMsgIndexRef.current = -1;
         try {
           const headers: Record<string, string> = {};
           if (authToken) headers["Authorization"] = `Bearer ${authToken}`;
@@ -1185,6 +1186,7 @@ function MainApp() {
     clearThresholdRef.current = Number.MAX_SAFE_INTEGER;
     replayStartedRef.current = false;
     highestUserMsgIndexRef.current = -1;
+    maxMsgIndexRef.current = -1;
     setStreamingTextState(useStreamingText.createInitialState());
     setSessionLoading(false);
     setMessages([]);
