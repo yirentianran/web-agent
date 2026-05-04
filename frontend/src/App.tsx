@@ -639,6 +639,7 @@ function MainApp() {
           !msg.clientMsgId && pending && pending.content === msg.content;
         if (matchedByUuid || matchedByContent) {
           pendingUserMsgsRef.current.delete(msg.session_id);
+            clearPendingMessage(msg.session_id, userId);
           if (pending?.clientMsgId) {
             updateSendState(pending.clientMsgId, "sent");
             confirmSendRef.current(pending.clientMsgId);
