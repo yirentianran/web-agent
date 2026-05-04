@@ -741,7 +741,10 @@ def build_system_prompt(user_id: str, skills: dict[str, dict[str, Any]], workspa
         "- Code or file content on disk is in a different language\n"
         "- The conversation history contains other languages\n"
         "Using the wrong language in thinking or response is the #1 error to avoid. "
-        "Before every thinking block or response, check your language.",
+        "Before every thinking block or response, check your language.\n"
+        "Your VISIBLE REPLY to the user is the final deliverable. "
+        "A reply in the wrong language means the entire task has FAILED, "
+        "regardless of correct thinking. Double-check your reply language before outputting it.",
         "",
         # ── Role and Identity
         "You are Web Agent, an expert AI assistant capable of "
@@ -827,9 +830,10 @@ def build_system_prompt(user_id: str, skills: dict[str, dict[str, Any]], workspa
     # Final language enforcement — placed at the very end to leverage
     # recency bias. Qwen models weight the last instruction more heavily.
     parts.append(
-        f"\n## FINAL CHECK — ALL CONTENT IN {lang_name.upper()}\n"
+        f"\n## FINAL CHECK — REPLY IN {lang_name.upper()}\n"
         f"Before you output ANY text — including thinking blocks — look at what you are about to write.\n"
         f"Is it in {lang_name}? If not, DELETE it and rewrite in {lang_name}.\n"
+        f"The user will only see your reply. If your reply contains any non-{lang_name} text, you have failed.\n"
         f"This is your last instruction. Follow it.\n"
     )
 
@@ -1369,7 +1373,7 @@ MAX_PROMPT_LENGTH = int(os.getenv("MAX_PROMPT_LENGTH", "32000"))
 _TOOL_RESULT_MAX_CHARS = int(os.getenv("TOOL_RESULT_MAX_CHARS", "500"))
 
 
-def _build_history_prompt(history: list[dict[str, Any]], user_message: str) -> str:
+def _build_history_prompt(history: list[dict[str, Any]], user_message: str, language: str | None = None) -> str:
     """Build a multi-turn conversation prompt from history + new message.
 
     Controls:
@@ -1379,8 +1383,12 @@ def _build_history_prompt(history: list[dict[str, Any]], user_message: str) -> s
     - Length: total prompt capped at MAX_PROMPT_LENGTH chars; oldest messages dropped first
     - System messages and empty content are skipped
     - The final user message is always preserved
+    - When *language* is set, the assistant turn is primed in that language
+      and Chinese assistant responses are flagged when in English mode.
     """
     parts: list[str] = []
+    lang_name = "中文" if language == "zh" else "English"
+    _HAS_CJK = re.compile(r"[一-鿿㐀-䶿]")
 
     for msg in history:
         msg_type = msg.get("type")
@@ -1399,7 +1407,20 @@ def _build_history_prompt(history: list[dict[str, Any]], user_message: str) -> s
             # Include assistant text responses (skip thinking blocks)
             if content.startswith("[thinking]") and content.endswith("[/thinking]"):
                 continue
-            parts.append(f"Assistant: {content}")
+            # When in English mode, flag Chinese assistant responses so the
+            # model knows to ignore them instead of copying the pattern.
+            if language == "en" and _HAS_CJK.search(content):
+                parts.append(
+                    f"Assistant (previous response was in Chinese — "
+                    f"IGNORE this language, you must respond in English): {content}"
+                )
+            elif language == "zh" and not _HAS_CJK.search(content):
+                parts.append(
+                    f"Assistant (previous response was in English — "
+                    f"IGNORE this language, you must respond in Chinese): {content}"
+                )
+            else:
+                parts.append(f"Assistant: {content}")
         elif msg_type == "user" and (not content or not content.strip()):
             continue
         elif msg_type == "tool_use":
@@ -1436,10 +1457,21 @@ def _build_history_prompt(history: list[dict[str, Any]], user_message: str) -> s
     preamble = (
         "The following is a transcript of our prior conversation in this session. "
         "Please reference this history when responding to the new message below.\n"
-        "---\n"
     )
+    if language:
+        preamble += (
+            f"CRITICAL: You MUST respond in {lang_name}. "
+            f"Do not copy the language of any previous assistant responses "
+            f"if they are in the wrong language.\n"
+        )
+    preamble += "---\n"
     parts.append(f"User: {user_message}")
-    parts.append("Assistant:")
+    # Prime the assistant turn in the target language so the model starts
+    # generating in the correct language from the first token.
+    if language:
+        parts.append(f"Assistant (respond in {lang_name} only):")
+    else:
+        parts.append("Assistant:")
 
     # Enforce total length limit by dropping from the start
     prompt = preamble + "\n\n".join(parts)
@@ -1462,7 +1494,14 @@ def _format_first_message_prompt(
     another language. This is critical for Chinese-native models like Qwen.
     """
     lang_name = "中文" if language == "zh" else "English"
-    prefix = f"[IMPORTANT: All content including thinking must be in {lang_name}.]\n\n" if language else ""
+    # Natural language priming activates the target language's generation
+    # pathway more effectively than a bracketed metadata tag.
+    if language == "zh":
+        prefix = f"请用中文回复。\n\n"
+    elif language == "en":
+        prefix = f"Please respond in English.\n\n"
+    else:
+        prefix = ""
 
     if not attached_files:
         return prefix + user_message
@@ -1573,12 +1612,12 @@ async def run_agent_task(
                 history = await session_store.get_session_history(user_id, session_id, after_index=0)
             else:
                 history = await buffer.get_history(session_id, after_index=0, user_id=user_id)
-            full_prompt = _build_history_prompt(history, user_message)
+            full_prompt = _build_history_prompt(history, user_message, language=language)
             if language:
                 lang_name = "中文" if language == "zh" else "English"
                 full_prompt = (
-                    f"[REMINDER: You must respond in {lang_name}. "
-                    f"Do NOT switch languages even if the history contains other languages.]\n\n"
+                    f"IMPORTANT: Your reply below must be in {lang_name}. "
+                    f"Do not use {'英文' if language == 'zh' else 'Chinese'}.\n\n"
                     + full_prompt
                 )
 

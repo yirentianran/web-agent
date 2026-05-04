@@ -115,3 +115,60 @@ class TestBuildHistoryPromptMaxLength:
         assert len(prompt) <= 8000
         # The final user message must always be present
         assert "User: Hi" in prompt
+
+
+class TestBuildHistoryPromptLanguage:
+    def test_english_mode_primes_assistant_turn(self) -> None:
+        """When language=en, the assistant turn must be primed in English."""
+        history = [{"type": "user", "content": "Hello"}]
+        prompt = _build_history_prompt(history, "Tell me more", language="en")
+        assert "Assistant (respond in English only):" in prompt
+
+    def test_chinese_mode_primes_assistant_turn(self) -> None:
+        """When language=zh, the assistant turn must be primed in Chinese."""
+        history = [{"type": "user", "content": "你好"}]
+        prompt = _build_history_prompt(history, "继续说", language="zh")
+        assert "Assistant (respond in 中文 only):" in prompt
+
+    def test_english_mode_flags_chinese_assistant_history(self) -> None:
+        """When language=en, Chinese assistant responses must be flagged."""
+        history = [
+            {"type": "user", "content": "你好"},
+            {"type": "assistant", "content": "你好！有什么可以帮助你的吗？"},
+        ]
+        prompt = _build_history_prompt(history, "Continue", language="en")
+        assert "previous response was in Chinese" in prompt
+        assert "IGNORE this language" in prompt
+
+    def test_english_mode_does_not_flag_english_assistant_history(self) -> None:
+        """When language=en, English assistant responses must NOT be flagged."""
+        history = [
+            {"type": "user", "content": "Hello"},
+            {"type": "assistant", "content": "Hi there! How can I help?"},
+        ]
+        prompt = _build_history_prompt(history, "Continue", language="en")
+        assert "previous response was in Chinese" not in prompt
+        assert "Assistant: Hi there!" in prompt
+
+    def test_chinese_mode_flags_english_assistant_history(self) -> None:
+        """When language=zh, English assistant responses must be flagged."""
+        history = [
+            {"type": "user", "content": "Hello"},
+            {"type": "assistant", "content": "Hello! How can I help you?"},
+        ]
+        prompt = _build_history_prompt(history, "继续", language="zh")
+        assert "previous response was in English" in prompt
+
+    def test_preamble_includes_language_directive(self) -> None:
+        """Preamble must include language directive when language is set."""
+        history: list[dict] = []
+        prompt = _build_history_prompt(history, "Hello", language="en")
+        assert "CRITICAL: You MUST respond in English" in prompt
+        assert "Do not copy the language" in prompt
+
+    def test_no_language_uses_neutral_assistant_prefix(self) -> None:
+        """When language is not set, must use neutral 'Assistant:' prefix."""
+        history = [{"type": "user", "content": "Hello"}]
+        prompt = _build_history_prompt(history, "World")
+        assert "Assistant:" in prompt
+        assert "respond in" not in prompt

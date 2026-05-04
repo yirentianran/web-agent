@@ -154,3 +154,22 @@ class TestBuildSystemPromptLanguage:
             prompt = build_system_prompt("test_user", {}, ws, language="zh")
             # Find the Final Check section
             assert "including thinking blocks" in prompt
+
+    def test_english_mode_reply_specific_warning(self):
+        """Response Language section must warn that wrong-language reply = task failed."""
+        with tempfile.TemporaryDirectory() as td:
+            ws = _make_workspace(Path(td))
+            prompt = build_system_prompt("test_user", {}, ws, language="en")
+            assert "VISIBLE REPLY" in prompt
+            assert "FAILED" in prompt
+            assert "regardless of correct thinking" in prompt
+
+    def test_final_check_mentions_reply_specifically(self):
+        """Final Check must explicitly mention the reply (not just all content)."""
+        with tempfile.TemporaryDirectory() as td:
+            ws = _make_workspace(Path(td))
+            prompt = build_system_prompt("test_user", {}, ws, language="en")
+            final_check_start = prompt.index("## FINAL CHECK")
+            final_check = prompt[final_check_start:]
+            assert "reply" in final_check.lower()
+            assert "REPLY IN ENGLISH" in final_check

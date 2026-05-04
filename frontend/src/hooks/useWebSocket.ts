@@ -333,6 +333,7 @@ export function useWebSocket({
           session_id: sessionId,
           last_index: lastIndex,
           user_id: userIdRef.current,
+          language: localStorage.getItem('i18nextLng') || 'zh',
         });
         console.log("[WebSocket] sendRecover: sending directly:", payload.slice(0, 120));
         ws.send(payload);
