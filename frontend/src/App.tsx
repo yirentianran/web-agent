@@ -212,6 +212,7 @@ function MainLayout({
       <Header
         connectionStatus={status as ConnectionStatus}
         userId={userId}
+        authToken={authToken}
         onOpenSkills={() => navigate("/skills")}
         onOpenFeedback={() => navigate("/feedback")}
         onOpenEvolution={() => navigate("/evolution")}
@@ -1066,6 +1067,7 @@ function MainApp() {
         last_index: maxMsgIndexRef.current + 1,
         files: files.map((f) => f.filename),
         client_msg_id: newClientMsgId,
+        language: localStorage.getItem('i18nextLng') || 'zh',
       });
     },
     [sendMessage, setSessionStateFor],
@@ -1164,12 +1166,14 @@ function MainApp() {
       suppressAutoActivateRef.current = false;
 
       // Send via WebSocket with send state tracking
+      const currentLanguage = localStorage.getItem('i18nextLng') || 'zh';
       sendMessage({
         message,
         session_id: sessionId ?? undefined,
         last_index: lastBackendIndex + 1,
         files: files?.map((f) => f.name),
         client_msg_id: clientMsgId,
+        language: currentLanguage,
       });
 
       // Monitor send outcome (timeout / disconnect)
@@ -1310,6 +1314,7 @@ function MainApp() {
                     last_index: computeRecoverIndex(msgs),
                     files: pendingToResend.files?.map(f => f.filename),
                     client_msg_id: pendingToResend.clientMsgId,
+                    language: localStorage.getItem('i18nextLng') || 'zh',
                   });
                 }
               }, 2000);

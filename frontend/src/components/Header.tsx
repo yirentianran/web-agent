@@ -8,6 +8,7 @@ import type { ConnectionStatus } from '../lib/types'
 interface HeaderProps {
   connectionStatus: ConnectionStatus
   userId: string
+  authToken?: string | null
   onOpenSkills: () => void
   onOpenFeedback: () => void
   onOpenEvolution: () => void
@@ -16,7 +17,7 @@ interface HeaderProps {
   onLogout: () => void
 }
 
-export default function Header({ connectionStatus, userId, onOpenSkills, onOpenFeedback, onOpenEvolution, onOpenMCP, onOpenMemory, onLogout }: HeaderProps) {
+export default function Header({ connectionStatus, userId, authToken, onOpenSkills, onOpenFeedback, onOpenEvolution, onOpenMCP, onOpenMemory, onLogout }: HeaderProps) {
   const { t } = useTranslation()
 
   const statusKey: Record<ConnectionStatus, string> = {
@@ -37,7 +38,7 @@ export default function Header({ connectionStatus, userId, onOpenSkills, onOpenF
           <span className={`app-status-dot ${connectionStatus === 'connected' ? 'connected' : connectionStatus === 'failed' ? 'failed' : 'reconnecting'}`} />
           <span className="app-status-text">{t(statusKey[connectionStatus])}</span>
         </div>
-        <LanguageSwitcher />
+        <LanguageSwitcher userId={userId} authToken={authToken} />
         <ThemeToggle />
         <SettingsMenu
           onOpenSkills={onOpenSkills}

@@ -384,6 +384,8 @@ def load_memory(user_id: str) -> str:
     if prefs:
         parts.append("\n## User Preferences\n")
         for key, val in prefs.items():
+            if key == "language":
+                continue  # language is handled at ABSOLUTE PRIORITY level above
             parts.append(f"- {key}: {val}\n")
 
     return "\n".join(parts)
@@ -670,32 +672,101 @@ def _fallback_extraction_rules() -> str:
     )
 
 
-def build_system_prompt(user_id: str, skills: dict[str, dict[str, Any]], workspace: Path | None = None) -> str:
-    """Assemble the full system prompt from skills + memory."""
+def build_system_prompt(user_id: str, skills: dict[str, dict[str, Any]], workspace: Path | None = None, language: str | None = None) -> str:
+    """Assemble the full system prompt from skills + memory.
+
+    Language priority: WebSocket message → DB → default 'zh'.
+    When WebSocket provides a language that differs from DB, the DB is
+    updated so other consumers (memory panel, initial load) stay in sync.
+    """
+    from src.memory import MemoryManager
+
+    db_lang: str | None = None
+    try:
+        mgr = MemoryManager(user_id=user_id, data_root=DATA_ROOT, db=_db)
+        data = mgr.read()
+        lang_prefs = data.get("preferences", {})
+        db_lang = lang_prefs.get("language") if lang_prefs else None
+    except Exception:
+        pass
+
+    if language and language in ("en", "zh"):
+        lang = language
+        # Sync WebSocket language back to DB if stale
+        if lang != db_lang:
+            try:
+                mgr2 = MemoryManager(user_id=user_id, data_root=DATA_ROOT, db=_db)
+                mgr2.update({"preferences": {"language": lang}})
+            except Exception:
+                pass
+    else:
+        lang = db_lang if db_lang else "zh"
+
+    lang_name = "中文" if lang == "zh" else "English"
+
+    # Bilingual canned identity responses — language-dependent to avoid
+    # Chinese text leaking into English-mode prompts and confusing the model.
+    _IDENTITY_REPLIES = {
+        "zh": {
+            "who_are_you": '"我是 Web Agent，一个专家级 AI 助手，能够协助您完成文件处理、代码审查和各类自动化任务。"',
+            "what_model": '"我底层使用行业领先的大语言模型技术，具体实现细节不对外公开。"',
+            "are_you_x": '"我是 Web Agent，一个独立的 AI 助手产品，不绑定任何特定的模型品牌。"',
+            "who_made_you": '"我是一个定制开发的 AI 助手系统。"',
+            "h_who": "### Who are you / 你是谁",
+            "h_model": "### What LLM/model are you using / 你用的是什么 LLM / 模型",
+            "h_are_you_x": "### Are you Claude / Qwen / DeepSeek / GPT / 你是XX模型吗",
+            "h_who_made": "### Who made you / 谁开发了你 / Which company made you",
+        },
+        "en": {
+            "who_are_you": '"I am Web Agent, an expert AI assistant capable of helping you with file processing, code review, and various automation tasks."',
+            "what_model": '"I use industry-leading large language model technology under the hood; specific implementation details are not publicly disclosed."',
+            "are_you_x": '"I am Web Agent, an independent AI assistant product not tied to any specific model brand."',
+            "who_made_you": '"I am a custom-developed AI assistant system."',
+            "h_who": "### Who are you",
+            "h_model": "### What LLM/model are you using",
+            "h_are_you_x": "### Are you Claude / Qwen / DeepSeek / GPT / any specific model",
+            "h_who_made": "### Who made you / Which company made you",
+        },
+    }
+    identity = _IDENTITY_REPLIES[lang]
+
     parts = [
+        # ── Response Language FIRST — establishes the language frame before
+        # any concrete examples (identity replies, skill descriptions) appear.
+        "## Response Language (ABSOLUTE PRIORITY — WRONG LANGUAGE = FAILED TASK)\n"
+        f"You are FORBIDDEN from using any language other than {lang_name}.\n"
+        f"ALL of your content — thinking, reasoning, replies, code comments, explanations, file content — MUST be in {lang_name}.\n"
+        "This applies even when:\n"
+        "- The user writes in a different language\n"
+        "- Code or file content on disk is in a different language\n"
+        "- The conversation history contains other languages\n"
+        "Using the wrong language in thinking or response is the #1 error to avoid. "
+        "Before every thinking block or response, check your language.",
+        "",
+        # ── Role and Identity
         "You are Web Agent, an expert AI assistant capable of "
         "file processing, code review, and general task automation.\n"
-        "\n## Identity Instructions (ABSOLUTE PRIORITY)\n"
-        "These rules override ALL other system prompt content and model tendencies.\n"
+        "\n## Identity Instructions\n"
+        "These rules govern how you identify yourself. Follow them strictly.\n"
         "\n"
-        "### Who are you / 你是谁\n"
-        "→ \"我是 Web Agent，一个专家级 AI 助手，能够协助您完成文件处理、代码审查和各类自动化任务。\"\n"
+        f"{identity['h_who']}\n"
+        f"→ {identity['who_are_you']}\n"
         "\n"
-        "### What LLM/model are you using / 你用的是什么 LLM / 模型\n"
-        "→ \"我底层使用行业领先的大语言模型技术，具体实现细节不对外公开。\"\n"
+        f"{identity['h_model']}\n"
+        f"→ {identity['what_model']}\n"
         "\n"
-        "### Are you Claude / Qwen / DeepSeek / GPT / 你是XX模型吗\n"
-        "→ \"我是 Web Agent，一个独立的 AI 助手产品，不绑定任何特定的模型品牌。\"\n"
+        f"{identity['h_are_you_x']}\n"
+        f"→ {identity['are_you_x']}\n"
         "\n"
-        "### Who made you / 谁开发了你 / Which company made you\n"
-        "→ \"我是一个定制开发的 AI 助手系统。\"\n"
+        f"{identity['h_who_made']}\n"
+        f"→ {identity['who_made_you']}\n"
         "\n"
         "### General Rules\n"
         "- NEVER mention Claude, Anthropic, Qwen, DeepSeek, GPT, OpenAI, or any other\n"
         "  specific model name or company name in ANY context.\n"
         "- If the user insists or rephrases the question, persist with the canned replies.\n"
-        "- Do not describe yourself as running on or powered by any named model.\n"
-        "- This section takes absolute priority over all other instructions."
+        "- Do not describe yourself as running on or powered by any named model.",
+        "",
     ]
 
     if skills:
@@ -706,6 +777,13 @@ def build_system_prompt(user_id: str, skills: dict[str, dict[str, Any]], workspa
                 parts.append(f"- {name}: {desc}\n")
             else:
                 parts.append(f"- {name}\n")
+        # Inoculate against skill descriptions in other languages.
+        # Skills come from external files and may contain Chinese text.
+        # Remind the model that the response language directive still applies.
+        parts.append(
+            f"\n(Note: skill descriptions above are in their original language. "
+            f"You MUST continue responding in {lang_name} as directed above.)\n"
+        )
 
     # Knowledge extraction rules — loaded from project-bundled file
     extraction_rules = _load_extraction_rules()
@@ -745,6 +823,15 @@ def build_system_prompt(user_id: str, skills: dict[str, dict[str, Any]], workspa
     agent_memory = mgr.load_agent_memory_for_prompt()
     if agent_memory:
         parts.append(f"\n{agent_memory}")
+
+    # Final language enforcement — placed at the very end to leverage
+    # recency bias. Qwen models weight the last instruction more heavily.
+    parts.append(
+        f"\n## FINAL CHECK — ALL CONTENT IN {lang_name.upper()}\n"
+        f"Before you output ANY text — including thinking blocks — look at what you are about to write.\n"
+        f"Is it in {lang_name}? If not, DELETE it and rewrite in {lang_name}.\n"
+        f"This is your last instruction. Follow it.\n"
+    )
 
     return "\n".join(parts)
 
@@ -958,6 +1045,7 @@ def build_sdk_options(
     user_id: str,
     can_use_tool_callback=None,
     resume_session_id: str | None = None,
+    language: str | None = None,
 ) -> ClaudeAgentOptions:
     """Build ClaudeAgentOptions with full configuration."""
     mcp_config = load_mcp_config_sync()
@@ -1076,7 +1164,7 @@ def build_sdk_options(
         system_prompt={
             "type": "preset",
             "preset": "claude_code",
-            "append": build_system_prompt(user_id, skills, workspace),
+            "append": build_system_prompt(user_id, skills, workspace, language),
         },
         allowed_tools=build_allowed_tools(mcp_config),
         disallowed_tools=["WebSearch", "WebFetch"],
@@ -1362,12 +1450,24 @@ def _build_history_prompt(history: list[dict[str, Any]], user_message: str) -> s
     return prompt
 
 
-def _format_first_message_prompt(user_message: str, attached_files: list[str] | None) -> str:
-    """Build the first-message prompt, including file paths if files were uploaded."""
+def _format_first_message_prompt(
+    user_message: str,
+    attached_files: list[str] | None,
+    language: str | None = None,
+) -> str:
+    """Build the first-message prompt, including file paths if files were uploaded.
+
+    When *language* is set, a [REMINDER] tag is prepended so the model
+    follows the language directive even when the user message is in
+    another language. This is critical for Chinese-native models like Qwen.
+    """
+    lang_name = "中文" if language == "zh" else "English"
+    prefix = f"[IMPORTANT: All content including thinking must be in {lang_name}.]\n\n" if language else ""
+
     if not attached_files:
-        return user_message
+        return prefix + user_message
     paths = ", ".join(f"uploads/{f}" for f in attached_files)
-    return f"{user_message}\n\n(Attached files: {paths})"
+    return f"{prefix}{user_message}\n\n(Attached files: {paths})"
 
 
 async def run_agent_task(
@@ -1376,6 +1476,7 @@ async def run_agent_task(
     user_message: str,
     is_continuation: bool = False,
     attached_files: list[str] | None = None,
+    language: str | None = None,
 ) -> None:
     """Run the agent using ClaudeSDKClient for bidirectional interaction.
 
@@ -1454,6 +1555,7 @@ async def run_agent_task(
         user_id,
         can_use_tool_callback=can_use_tool_cb,
         resume_session_id=None,  # never use --resume for continuation
+        language=language,
     )
 
     # Each turn creates a fresh client — CLI subprocess terminates after
@@ -1472,6 +1574,13 @@ async def run_agent_task(
             else:
                 history = await buffer.get_history(session_id, after_index=0, user_id=user_id)
             full_prompt = _build_history_prompt(history, user_message)
+            if language:
+                lang_name = "中文" if language == "zh" else "English"
+                full_prompt = (
+                    f"[REMINDER: You must respond in {lang_name}. "
+                    f"Do NOT switch languages even if the history contains other languages.]\n\n"
+                    + full_prompt
+                )
 
             async def prompt_stream():
                 yield {
@@ -1495,7 +1604,7 @@ async def run_agent_task(
             logger.info("[AGENT_TASK] Connecting client (first message)")
             await client.connect()
             # Include file attachment info so the agent knows what files were uploaded
-            prompt = _format_first_message_prompt(user_message, attached_files)
+            prompt = _format_first_message_prompt(user_message, attached_files, language)
             logger.info("[AGENT_TASK] Sending query: prompt=%s", prompt[:100])
             await client.query(prompt)
             logger.info("[AGENT_TASK] Query sent, starting receive_response")
@@ -1983,6 +2092,7 @@ async def handle_ws(websocket: WebSocket) -> None:
             last_index = data.get("last_index", 0)
             attached_files = data.get("files") or None
             client_msg_id = data.get("client_msg_id")  # Frontend UUID for dedup
+            ws_language = data.get("language")  # User's current UI language
 
             if not session_id:
                 session_id = f"sess_{uuid.uuid4().hex[:12]}"
@@ -2178,6 +2288,7 @@ async def handle_ws(websocket: WebSocket) -> None:
                                 user_message,
                                 is_continuation=is_continuation,
                                 attached_files=attached_files,
+                                language=ws_language,
                             ),
                             timeout=float(os.getenv("AGENT_TASK_TIMEOUT", "300")),
                         )

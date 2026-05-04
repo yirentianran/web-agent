@@ -76,3 +76,81 @@ class TestBuildSystemPromptIdentity:
             assert "Extraction Workflow" in prompt
             assert "Quality gate" in prompt
             assert "error-resolution" in prompt
+
+
+class TestBuildSystemPromptLanguage:
+    def test_english_mode_has_no_chinese_identity_reply(self):
+        """In English mode, canned identity replies must be in English, not Chinese."""
+        with tempfile.TemporaryDirectory() as td:
+            ws = _make_workspace(Path(td))
+            prompt = build_system_prompt("test_user", {}, ws, language="en")
+            assert "我是 Web Agent" not in prompt
+            assert "我底层使用" not in prompt
+            assert "I am Web Agent" in prompt
+
+    def test_chinese_mode_has_chinese_identity_reply(self):
+        """In Chinese mode, canned identity replies must be in Chinese."""
+        with tempfile.TemporaryDirectory() as td:
+            ws = _make_workspace(Path(td))
+            prompt = build_system_prompt("test_user", {}, ws, language="zh")
+            assert "我是 Web Agent" in prompt
+            assert "我底层使用" in prompt
+
+    def test_response_language_comes_before_identity(self):
+        """Response Language section must appear before Identity Instructions."""
+        with tempfile.TemporaryDirectory() as td:
+            ws = _make_workspace(Path(td))
+            prompt = build_system_prompt("test_user", {}, ws, language="en")
+            rl_pos = prompt.index("Response Language")
+            identity_pos = prompt.index("Identity Instructions")
+            assert rl_pos < identity_pos, (
+                f"Response Language ({rl_pos}) must come before Identity Instructions ({identity_pos})"
+            )
+
+    def test_response_language_is_first_section(self):
+        """Response Language must be the first ## section in the prompt."""
+        with tempfile.TemporaryDirectory() as td:
+            ws = _make_workspace(Path(td))
+            prompt = build_system_prompt("test_user", {}, ws, language="zh")
+            first_section = prompt.split("## ")[1]
+            assert first_section.startswith("Response Language"), (
+                f"First section is: {first_section[:50]}"
+            )
+
+    def test_only_response_language_has_absolute_priority(self):
+        """Only Response Language section should claim ABSOLUTE PRIORITY."""
+        with tempfile.TemporaryDirectory() as td:
+            ws = _make_workspace(Path(td))
+            prompt = build_system_prompt("test_user", {}, ws, language="en")
+            identity_start = prompt.index("## Identity Instructions")
+            # Find next ## section after Identity
+            rest = prompt[identity_start + 1:]
+            next_section = rest.index("## ") if "## " in rest else len(rest)
+            identity_section = prompt[identity_start:identity_start + 1 + next_section]
+            assert "ABSOLUTE PRIORITY" not in identity_section
+
+    def test_skills_section_has_language_note(self):
+        """Skills section must include a note about original language + target language."""
+        with tempfile.TemporaryDirectory() as td:
+            ws = _make_workspace(Path(td))
+            skills = {"test-skill": {"description": "A test skill"}}
+            prompt = build_system_prompt("test_user", skills, ws, language="en")
+            assert "original language" in prompt.lower()
+            assert "responding in English" in prompt
+
+    def test_language_directive_includes_thinking(self):
+        """Response Language section must explicitly mention thinking/reasoning."""
+        with tempfile.TemporaryDirectory() as td:
+            ws = _make_workspace(Path(td))
+            prompt = build_system_prompt("test_user", {}, ws, language="zh")
+            # The Response Language section is the first ## section
+            first_section = prompt.split("## ")[1]
+            assert "thinking" in first_section.lower()
+
+    def test_final_check_includes_thinking(self):
+        """Final Check section must explicitly mention thinking blocks."""
+        with tempfile.TemporaryDirectory() as td:
+            ws = _make_workspace(Path(td))
+            prompt = build_system_prompt("test_user", {}, ws, language="zh")
+            # Find the Final Check section
+            assert "including thinking blocks" in prompt

@@ -11,6 +11,7 @@ export interface WSOutgoingMessage {
   files?: string[];
   answers?: Record<string, string>;
   client_msg_id?: string;
+  language?: string;
 }
 
 /** Connection status enum — replaces the simple `connected` boolean. */
