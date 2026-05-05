@@ -447,21 +447,34 @@ options = ClaudeAgentOptions(
 
 Skills are synced to the workspace `.claude/skills/` directory.
 
+### Skill Permission Model
+
+Skills are divided into two categories with distinct permission boundaries:
+
+| Category | Storage | Visibility | Management |
+|----------|---------|-----------|------------|
+| **Personal skills** | `data/users/{user_id}/workspace/.claude/skills/` | Owner only | Full CRUD + evolution + version management by owner |
+| **Shared skills** | `data/shared-skills/` | Admin only | Full management by admin only |
+
+Regular users can upload, delete, evolve, and manage versions of their own personal skills. They cannot see or access shared skills — the `GET /api/shared-skills` endpoint and all shared-skill operations are gated behind `require_admin`.
+
+Skill evolution endpoints (`activate-version`, `rollback`, `evolve-agent`, `evolve-status`, `version-files`, `version-file`, `version`, `version/{name}`) MUST support both personal and shared skills. For personal skills, the caller's ownership is verified via `get_current_user`. For shared skills, `require_admin` is required.
+
 ### Skill Execution Security Boundary
 
 Skills are **not executable code** — they are Markdown instructions injected into the Agent's system prompt. The Agent interprets skill instructions and carries them out via its tools (Bash, Write, WebFetch, etc.). This means a skill can cause the Agent to do anything the Agent is normally permitted to do.
 
-**Trust model**: Uploading a private skill = injecting unverified instructions into your own Agent. The boundary is:
+**Trust model**: Uploading a personal skill = injecting unverified instructions into your own Agent. The boundary is:
 - **User-to-user isolation** via containers — skill-induced actions in user A's container cannot reach user B's files.
-- **Shared skills are read-only** — mounted `ro` in containers, preventing cross-user tampering.
-- **User responsibility** — the user bears the risk of what their private skills instruct the Agent to do.
+- **Shared skills are admin-only** — regular users cannot see or access shared skills; only admins manage them.
+- **User responsibility** — the user bears the risk of what their personal skills instruct the Agent to do.
 
 **Current protections** (container mode):
 
 | Risk | Protection |
 |------|-----------|
 | Cross-user filesystem access | Container isolation (per-user) |
-| Shared skill tampering | Read-only mount |
+| Shared skill unauthorized access | Admin-only endpoints; regular users cannot list or access shared skills |
 | Host system compromise | Non-root user (UID 1000), CPU/memory limits |
 | Resource exhaustion | 4 GB memory, 1 CPU core per container |
 
@@ -479,7 +492,8 @@ These gaps are acceptable for internal/trusted-user deployments where the primar
 **Future hardening** (Phase 3):
 - Network egress whitelist per container (allowlist of approved external domains)
 - Package installation restrictions (pre-approved package index or proxy)
-- Optional skill review/approval gate for shared skill promotion
+- Admin review/approval gate for personal-to-shared skill promotion
+- Skill evolution endpoints support personal skills with ownership verification
 
 ---
 
@@ -985,8 +999,9 @@ Some resources are intentionally shared across users:
 
 | Resource | Path | Access | Reason |
 |----------|------|--------|--------|
-| Shared skills | `data/shared-skills/` | Read-only, all users | Common agent capabilities |
+| Shared skills | `data/shared-skills/` | Admin only | Curated, reviewed agent capabilities managed by admins |
 | CLI session map | `data/cli_sessions.json` | Read/write, all users | Session resume across restarts |
+| Personal skills | `data/users/{user_id}/workspace/.claude/skills/` | Owner only | User-uploaded private skills |
 
 Shared resources must never contain user-specific data. The CLI session map is keyed by web-agent session_id (which already encodes user_id), so cross-user collision is impossible by design. A header comment in the file enforces this constraint:
 
@@ -996,6 +1011,8 @@ Shared resources must never contain user-specific data. The CLI session map is k
 # DO NOT add user-specific data to this file. It is the only cross-user
 # shared state file and must remain safe to read by any user.
 ```
+
+Shared skills are **not visible to regular users**. The `GET /api/shared-skills` endpoint requires `require_admin`. Regular users only see their own personal skills via `GET /api/users/{user_id}/skills`. Skill evolution and version management endpoints work on both categories — personal skill ownership is verified via `get_current_user`, shared skill access requires `require_admin`.
 
 ---
 
@@ -1018,8 +1035,9 @@ Shared resources must never contain user-specific data. The CLI session map is k
 - [ ] `can_use_tool` denies writes outside user workspace
 - [ ] Post-task file relocation captures leaked files
 - [ ] Agent subprocess `cwd` is set to user workspace
-- [ ] User skill code runs with same constraints as Agent tools (container isolation, non-root, resource limits)
-- [ ] Shared skills mounted read-only in user containers
+- [ ] Personal skill code runs with same constraints as Agent tools (container isolation, non-root, resource limits)
+- [ ] Shared skill endpoints require `require_admin`; regular users cannot list or access shared skills
+- [ ] Skill evolution/version endpoints support both personal and shared skills with correct permission checks
 
 ### Data Directory Checklist
 
@@ -1110,6 +1128,15 @@ User records are **never deleted** from the database. There is no `DELETE /api/a
 4. **Simplicity** — Active/disabled is a two-state model with clear semantics. Disabled users cannot authenticate and their running sessions are terminated. Re-enabling is a single-column update. No partial-delete or soft-delete-with-grace-period complexity.
 
 Disabled users' data (sessions, files, messages, memory) is preserved. Containers are stopped but volumes are kept. Storage cost is the only ongoing cost of a disabled user.
+
+### Why Shared Skills Are Admin-Only
+
+Shared skills are visible and manageable only by administrators. Regular users cannot list, view, or access shared skills:
+
+1. **Curated quality** — Shared skills serve as organization-wide agent capabilities. Admin-only management ensures skills are reviewed, tested, and approved before becoming available. The promotion path (personal → shared) is an explicit admin action via `POST /api/users/{user_id}/skills/{skill_name}/promote`.
+2. **Privileged configuration** — Shared skills may reference internal resources, MCP servers, or configurations that should not be exposed to all users. Admin gating prevents unintended information disclosure.
+3. **Clear separation of concerns** — Users own their personal skills fully (CRUD + evolution). Shared skills are a separate, admin-managed namespace. This avoids ambiguity about who can modify a skill and prevents accidental overwrites.
+4. **Future flexibility** — If a future requirement calls for making certain shared skills visible to all users, a `visibility` column can be added to the skill metadata without changing the API surface. Starting restrictive and relaxing is easier than the reverse.
 
 ---
 
@@ -1254,12 +1281,25 @@ Each step lists the target files and key line numbers.
 
 **Depends on:** Steps 2, 3 (need JWT with role claims and working token verification).
 
+---
+
+**Step 11: Skill evolution support for personal skills** — `main_server.py`, `src/skill_evolution.py`
+
+- Update `activate-version`, `rollback`, `evolve-agent`, `evolve-status`, `version-files`, `version-file`, `version`, `version/{name}` endpoints to accept a `skill_type` parameter (`personal` or `shared`)
+- For personal skills: resolve skill directory to `data/users/{user_id}/workspace/.claude/skills/{skill_name}/`, verify ownership via `get_current_user`
+- For shared skills: keep `require_admin`, resolve to `DATA_ROOT / "shared-skills"`
+- Update `SkillEvolutionManager` to accept a configurable `skills_dir` parameter instead of hardcoding `DATA_ROOT / "shared-skills"`
+- Add `POST /api/users/{user_id}/skills/{skill_name}/promote` to `require_admin` (promoting personal → shared is an admin action)
+
+**Depends on:** Steps 3, 10 (need working `get_current_user` with Header support, `require_admin` enforcement).
+
 ### Phase 2: Hardening
 
 1. ~~Add rate limiting per user~~ — Deferred. Not required for current internal deployment. Container CPU/memory limits already prevent single-user resource monopolization.
 2. Set file permissions (0700) on `data/users/{user_id}/` directories
 3. Add comment guard on `cli_sessions.json` — must never contain user-specific data
 4. Remove `destroy_with_volumes()` from Phase 2 since user deletion is not supported (see User Lifecycle). Container cleanup on disable is handled in Phase 1.
+5. Wire skill evolution endpoints to support personal skills with ownership verification (Step 11 remaining work)
 
 ### Phase 3: Production Readiness
 
@@ -1316,8 +1356,10 @@ Status legend: ✅ Implemented ⚠️ Partial / weak ❌ Missing
 | `user_workspace_dir()` helper | ⚠️ | Inline path construction; should be a dedicated helper |
 | PreToolUse hooks enforce workspace boundary | ✅ | `main_server.py:912-957` |
 | Personal skills storage: `workspace/.claude/skills/` | ✅ | `main_server.py:2689-2702` |
-| Shared skills mounted read-only in containers | ✅ | `container_manager.py:65` |
+| Shared skills gated behind `require_admin` | ✅ | `main_server.py:3036,3274,3330` |
 | Skill code execution via Agent tools (not direct exec) | ✅ | See Skill Execution Security Boundary |
+| Skill evolution/version supports personal skills | ❌ | Evolution endpoints currently only operate on `DATA_ROOT/shared-skills/` |
+| Skill evolution/version endpoints check ownership | ❌ | No personal-skill ownership verification; all gated as `require_admin` |
 
 ### Layer 4: Message Buffer Isolation
 

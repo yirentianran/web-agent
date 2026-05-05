@@ -28,8 +28,13 @@
   "login": {
     "title": "Web Agent",
     "placeholder": "Enter your user ID",
+    "passwordPlaceholder": "Enter your password",
     "submitButton": "Login",
     "submittingButton": "Logging in...",
+    "registerTitle": "Create Account",
+    "registerButton": "Register",
+    "switchToRegister": "Create a new account",
+    "switchToLogin": "Already have an account? Login",
     "error": "Login failed"
   },
   "connection": {

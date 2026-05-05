@@ -9,6 +9,7 @@ function renderSettingsMenu(props?: {
   onOpenEvolution?: () => void
   onOpenMCP?: () => void
   onOpenMemory?: () => void
+  userRole?: string
 }) {
   return render(
     <SettingsMenu
@@ -17,6 +18,7 @@ function renderSettingsMenu(props?: {
       onOpenEvolution={props?.onOpenEvolution ?? (() => {})}
       onOpenMCP={props?.onOpenMCP ?? (() => {})}
       onOpenMemory={props?.onOpenMemory ?? (() => {})}
+      userRole={props?.userRole ?? "admin"}
     />,
   )
 }
@@ -98,5 +100,33 @@ describe('SettingsMenu - actions', () => {
     const labels = items.map(el => el.textContent?.trim().replace(/\p{Emoji_Presentation}/gu, '').trim())
     expect(labels[0]).toBe('Skills Management')
     expect(labels[1]).toBe('MCP Servers')
+  })
+})
+
+describe('SettingsMenu - admin role filtering', () => {
+  it('shows admin items for admin users', () => {
+    renderSettingsMenu({ userRole: 'admin' })
+    const trigger = document.querySelector('.settings-menu-trigger') as HTMLElement
+    fireEvent.click(trigger)
+    expect(screen.getByText('MCP Servers')).toBeInTheDocument()
+    expect(screen.getByText('Feedback Management')).toBeInTheDocument()
+    expect(screen.getByText('Skill Evolution')).toBeInTheDocument()
+  })
+
+  it('hides admin items for non-admin users', () => {
+    renderSettingsMenu({ userRole: 'user' })
+    const trigger = document.querySelector('.settings-menu-trigger') as HTMLElement
+    fireEvent.click(trigger)
+    expect(screen.queryByText('MCP Servers')).not.toBeInTheDocument()
+    expect(screen.queryByText('Feedback Management')).not.toBeInTheDocument()
+    expect(screen.queryByText('Skill Evolution')).not.toBeInTheDocument()
+  })
+
+  it('shows Skills Management and Memory Management for all users', () => {
+    renderSettingsMenu({ userRole: 'user' })
+    const trigger = document.querySelector('.settings-menu-trigger') as HTMLElement
+    fireEvent.click(trigger)
+    expect(screen.getByText('Skills Management')).toBeInTheDocument()
+    expect(screen.getByText('Memory Management')).toBeInTheDocument()
   })
 })

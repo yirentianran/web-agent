@@ -6,7 +6,6 @@ Provides token creation, verification, password hashing, and FastAPI dependency 
 from __future__ import annotations
 
 import os
-import warnings
 from datetime import datetime, timedelta, timezone
 
 import bcrypt
@@ -20,15 +19,12 @@ ENFORCE_AUTH = os.getenv("ENFORCE_AUTH", "false").lower() == "true"
 _SECRET = os.getenv("JWT_SECRET", "")
 
 if ENFORCE_AUTH and not _SECRET:
-    warnings.warn(
-        "JWT_SECRET is not set but ENFORCE_AUTH=true. "
-        "Using a random secret -- tokens will not survive server restarts!",
-        RuntimeWarning,
-        stacklevel=2,
+    raise RuntimeError(
+        "ENFORCE_AUTH=true but JWT_SECRET is not set. "
+        "Set JWT_SECRET to a strong random value (at least 32 chars) to enable authentication."
     )
-    _SECRET = os.urandom(32).hex()
 
-JWT_SECRET = _SECRET or "dev-secret-change-in-production-use-at-least-32-chars"
+JWT_SECRET = _SECRET or os.urandom(32).hex()
 
 
 def hash_password(password: str) -> str:
@@ -38,7 +34,12 @@ def hash_password(password: str) -> str:
 
 def verify_password(password: str, hashed: str) -> bool:
     """Verify a password against a bcrypt hash."""
-    return bcrypt.checkpw(password.encode("utf-8"), hashed.encode("utf-8"))
+    if not hashed or not password:
+        return False
+    try:
+        return bcrypt.checkpw(password.encode("utf-8"), hashed.encode("utf-8"))
+    except ValueError:
+        return False
 
 
 def create_token(

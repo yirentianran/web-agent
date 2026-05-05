@@ -1,7 +1,9 @@
 """SQLite database connection management and schema initialization.
 
-Provides an async-compatible database layer using aiosqlite with WAL mode
-for concurrent read support and write serialization.
+Uses a single aiosqlite connection with WAL mode for crash safety.
+All operations are serialized through one background thread, eliminating
+write-write lock contention. WAL auto-checkpoint is disabled and replaced
+with a periodic PASSIVE checkpoint that never blocks readers or writers.
 
 Usage:
     from src.database import Database
@@ -15,11 +17,28 @@ Usage:
 
 from __future__ import annotations
 
+import asyncio
+import sqlite3
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import AsyncIterator
 
 import aiosqlite
+
+_CHECKPOINT_INTERVAL = 300  # seconds between WAL checkpoints
+
+
+def connect_sync(db_path: Path) -> sqlite3.Connection:
+    """Open a sync sqlite3 connection with busy_timeout set.
+
+    Use this for any sync code that needs direct DB access alongside
+    the aiosqlite connection. Without busy_timeout, a sync connection
+    fails immediately with "database is locked" whenever the aiosqlite
+    connection holds a write lock.
+    """
+    conn = sqlite3.connect(str(db_path))
+    conn.execute("PRAGMA busy_timeout=30000")
+    return conn
 
 
 _CREATE_TABLES = """
@@ -174,58 +193,85 @@ CREATE INDEX IF NOT EXISTS idx_generated_files_session ON generated_files(sessio
 
 
 class Database:
-    """SQLite database manager with async connection pooling via aiosqlite."""
+    """SQLite database with single aiosqlite connection.
+
+    A single connection serializes all operations through one background
+    thread, eliminating write-write lock contention. WAL auto-checkpoint
+    is disabled — it was the root cause of random "database is locked"
+    errors — and replaced with a periodic PASSIVE checkpoint.
+    """
 
     def __init__(self, db_path: Path) -> None:
         self.db_path = db_path
-        self._pool: aiosqlite.Connection | None = None
+        self._conn: aiosqlite.Connection | None = None
+        self._checkpoint_task: asyncio.Task | None = None
         self._initialized = False
 
     async def init(self) -> None:
-        """Initialize the database connection and create tables."""
+        """Open connection, apply PRAGMAs, create tables, start checkpoint loop."""
         if self._initialized:
             return
 
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
 
-        self._pool = await aiosqlite.connect(str(self.db_path))
-        self._pool.row_factory = aiosqlite.Row
+        self._conn = await aiosqlite.connect(str(self.db_path))
+        self._conn.row_factory = aiosqlite.Row
 
-        # Enable WAL mode for concurrent reads
-        await self._pool.execute("PRAGMA journal_mode=WAL")
-        # Set busy timeout to handle write contention gracefully (30s)
-        await self._pool.execute("PRAGMA busy_timeout=30000")
-        # Use NORMAL synchronous for better write performance in WAL mode
-        await self._pool.execute("PRAGMA synchronous=NORMAL")
+        await self._conn.execute("PRAGMA journal_mode=WAL")
+        await self._conn.execute("PRAGMA busy_timeout=30000")
+        await self._conn.execute("PRAGMA synchronous=NORMAL")
+        # wal_autocheckpoint=0 disables auto-checkpoint entirely.
+        # Auto-checkpoints were the root cause of random "database is locked"
+        # errors — each checkpoint briefly holds an exclusive lock, and under
+        # write load these collide with INSERT/UPDATE operations.
+        # A manual PASSIVE checkpoint runs on a timer instead; PASSIVE never
+        # blocks readers or writers.
+        await self._conn.execute("PRAGMA wal_autocheckpoint=0")
+        await self._conn.execute("PRAGMA foreign_keys=ON")
 
-        # Create all tables
-        await self._pool.executescript(_CREATE_TABLES)
-        await self._pool.commit()
+        await self._conn.executescript(_CREATE_TABLES)
+        await self._conn.commit()
 
         # Add user_edits column if it doesn't exist (migration for existing DBs)
         try:
-            await self._pool.execute(
+            await self._conn.execute(
                 "ALTER TABLE skill_feedback ADD COLUMN user_edits TEXT NOT NULL DEFAULT ''"
             )
         except Exception:
-            pass  # Column already exists
+            pass
 
-        # Add conversation_snippet column if it doesn't exist (migration for existing DBs)
+        # Add conversation_snippet column if it doesn't exist
         try:
-            await self._pool.execute(
+            await self._conn.execute(
                 "ALTER TABLE skill_feedback ADD COLUMN conversation_snippet TEXT NOT NULL DEFAULT ''"
             )
         except Exception:
-            pass  # Column already exists
+            pass
 
+        self._checkpoint_task = asyncio.create_task(self._checkpoint_loop())
         self._initialized = True
+
+    async def _checkpoint_loop(self) -> None:
+        """Periodically run a PASSIVE WAL checkpoint.
+
+        PASSIVE mode: if another reader/writer is active, the checkpoint
+        returns immediately without blocking. This keeps the WAL file from
+        growing unboundedly (wal_autocheckpoint=0 disables auto-checkpoint).
+        """
+        while True:
+            await asyncio.sleep(_CHECKPOINT_INTERVAL)
+            if self._conn is not None:
+                try:
+                    await self._conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
+                except Exception:
+                    pass
 
     @asynccontextmanager
     async def connection(self) -> AsyncIterator[aiosqlite.Connection]:
-        """Get a database connection. Raises RuntimeError if not initialized."""
-        if self._pool is None:
+        """Yield the database connection. Raises RuntimeError if not initialized."""
+        if not self._initialized or self._conn is None:
             raise RuntimeError("Database not initialized. Call init() first.")
-        yield self._pool
+        yield self._conn
 
     async def migrate_v2(self) -> None:
         """Migrate existing databases from v1 to v2 schema.
@@ -308,8 +354,11 @@ class Database:
             await conn.commit()
 
     async def close(self) -> None:
-        """Close the database connection."""
-        if self._pool is not None:
-            await self._pool.close()
-            self._pool = None
-            self._initialized = False
+        """Close the connection and stop the checkpoint loop."""
+        if self._checkpoint_task is not None:
+            self._checkpoint_task.cancel()
+            self._checkpoint_task = None
+        if self._conn is not None:
+            await self._conn.close()
+            self._conn = None
+        self._initialized = False

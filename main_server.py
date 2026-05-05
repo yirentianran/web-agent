@@ -1331,6 +1331,7 @@ async def _can_use_tool_for_session(
     tool_name: str,
     tool_input: dict[str, Any],
     context: ToolPermissionContext,
+    user_id: str,
 ) -> PermissionResult:
     """Intercept AskUserQuestion and route answer through WebSocket."""
     if tool_name == "AskUserQuestion":
@@ -1343,6 +1344,7 @@ async def _can_use_tool_for_session(
                 "id": f"ask_{uuid.uuid4().hex[:8]}",
                 "input": tool_input,
             },
+            user_id,
         )
 
         # Wait for user answer via WebSocket
@@ -1565,7 +1567,7 @@ async def run_agent_task(
                 return PermissionResultDeny(message=error)
 
         agent_log.tool_call(tool_name, tool_input, session_id=session_id)
-        result = await _can_use_tool_for_session(session_id, tool_name, tool_input, ctx)
+        result = await _can_use_tool_for_session(session_id, tool_name, tool_input, ctx, user_id)
         agent_log.tool_result(tool_name, str(result), session_id=session_id)
         return result
 
@@ -1715,7 +1717,7 @@ async def run_agent_task(
                     content = event.get("content", "")
                     if content and len(content) > 1000:
                         event["content"] = truncate_tool_output(content)
-                buffer.add_message(session_id, event)
+                buffer.add_message(session_id, event, user_id)
 
         # Persist CLI-generated session UUID as soon as the receive_response
         # loop succeeds, before files-scan code that could throw.
@@ -1844,6 +1846,7 @@ async def run_agent_task(
                     "user_id": user_id,
                     "data": generated_files,
                 },
+                user_id,
             )
 
         logger.info(
@@ -1861,11 +1864,12 @@ async def run_agent_task(
                 "subtype": "session_state_changed",
                 "state": "completed",
             },
+            user_id,
         )
         # Re-add the buffered SDK result AFTER file_result and state_change
         # so "Session completed" appears as the last visible message.
         if buffered_result is not None:
-            buffer.add_message(session_id, buffered_result)
+            buffer.add_message(session_id, buffered_result, user_id)
         buffer.mark_done(session_id)
         duration_ms = (time.time() - start_time) * 1000
         agent_log.end_session(session_id, status="completed")
@@ -1895,6 +1899,7 @@ async def run_agent_task(
                 "subtype": "session_timeout",
                 "message": "Agent task timed out. The agent may be stuck processing a file.",
             },
+            user_id,
         )
         buffer.add_message(
             session_id,
@@ -1903,6 +1908,7 @@ async def run_agent_task(
                 "subtype": "session_state_changed",
                 "state": "error",
             },
+            user_id,
         )
         buffer.mark_done(session_id)
         agent_log.end_session(session_id, status="timeout")
@@ -1914,6 +1920,7 @@ async def run_agent_task(
                 "subtype": "session_cancelled",
                 "message": "Session cancelled by user.",
             },
+            user_id,
         )
         # Add state change BEFORE mark_done() for the same reason.
         buffer.add_message(
@@ -1923,6 +1930,7 @@ async def run_agent_task(
                 "subtype": "session_state_changed",
                 "state": "cancelled",
             },
+            user_id,
         )
         buffer.mark_done(session_id)
         agent_log.end_session(session_id, status="cancelled")
@@ -1947,6 +1955,7 @@ async def run_agent_task(
                 "type": "error",
                 "message": error_msg,
             },
+            user_id,
         )
         # Add state change BEFORE mark_done() so the error is delivered.
         buffer.add_message(
@@ -1956,6 +1965,7 @@ async def run_agent_task(
                 "subtype": "session_state_changed",
                 "state": "error",
             },
+            user_id,
         )
         buffer.mark_done(session_id)
         agent_log.end_session(session_id, status="error")
@@ -2312,7 +2322,7 @@ async def handle_ws(websocket: WebSocket) -> None:
                         user_msg_buf["data"] = [{"filename": f} for f in attached_files]
                     if client_msg_id:
                         user_msg_buf["client_msg_id"] = client_msg_id
-                    buffer.add_message(session_id, user_msg_buf)
+                    buffer.add_message(session_id, user_msg_buf, user_id)
 
                     # Broadcast running state to frontend via WebSocket
                     buffer.add_message(
@@ -2322,6 +2332,7 @@ async def handle_ws(websocket: WebSocket) -> None:
                             "subtype": "session_state_changed",
                             "state": "running",
                         },
+                        user_id,
                     )
 
                     if attached_files:
@@ -2417,6 +2428,7 @@ async def handle_ws(websocket: WebSocket) -> None:
                                         "data": [{"filename": f} for f in item["files"]] if item.get("files") else None,
                                         "client_msg_id": item.get("client_msg_id"),
                                     },
+                                    user_id,
                                 )
                             # Cancel the running agent task so the outer loop
                             # creates a fresh one for the new message.
@@ -2626,8 +2638,15 @@ async def get_session_history(
     """
     verify_path_user(user_id, current_user)
     if session_store is not None:
+        # Always verify DB ownership — not just when buffer is cold
+        db_owner = await buffer._get_db_owner(session_id)
+        if db_owner is not None and db_owner != user_id:
+            raise HTTPException(status_code=404, detail="Session not found")
         messages = await session_store.get_session_history(user_id=user_id, session_id=session_id)
-        state = buffer.get_session_state(session_id, user_id=user_id)
+        try:
+            state = buffer.get_session_state(session_id, user_id=user_id)
+        except ValueError:
+            raise HTTPException(status_code=404, detail="Session not found")
         return [
             {**msg, "index": msg.get("seq", i), "session_id": session_id, "session_state": state.get("state", "idle")}
             for i, msg in enumerate(messages)
@@ -2644,14 +2663,18 @@ async def get_session_files(
 ) -> list[dict[str, Any]]:
     """Get all files (uploads + generated) for a session from the database."""
     verify_path_user(user_id, current_user)
+    # Verify DB ownership before accessing session files
+    db_owner = await buffer._get_db_owner(session_id)
+    if db_owner is not None and db_owner != user_id:
+        raise HTTPException(status_code=404, detail="Session not found")
     files: list[dict[str, Any]] = []
     seen: set[str] = set()
 
     # Query uploads and generated_files tables
-    if _db is not None and _db._pool is not None:
-        import sqlite3 as _sqlite3
-        conn = _sqlite3.connect(str(_db.db_path))
-        conn.row_factory = _sqlite3.Row
+    if _db is not None and _db._initialized:
+        import sqlite3
+        conn = sqlite3.connect(str(_db.db_path))
+        conn.row_factory = sqlite3.Row
         try:
             for table, source in [("uploads", "upload"), ("generated_files", "generated")]:
                 rows = conn.execute(
@@ -2738,6 +2761,10 @@ async def delete_session(
 ) -> dict[str, str]:
     """Delete a session, its messages, in-memory buffer, and active client (free disk)."""
     verify_path_user(user_id, current_user)
+    # Verify DB ownership before mutating session
+    db_owner = await buffer._get_db_owner(session_id)
+    if db_owner is not None and db_owner != user_id:
+        raise HTTPException(status_code=404, detail="Session not found")
     if session_store is not None:
         await session_store.delete_session(user_id=user_id, session_id=session_id)
 
@@ -2762,6 +2789,10 @@ async def update_session_title(
 ) -> dict[str, str]:
     """Update a session's title."""
     verify_path_user(user_id, current_user)
+    # Verify DB ownership before mutating session
+    db_owner = await buffer._get_db_owner(session_id)
+    if db_owner is not None and db_owner != user_id:
+        raise HTTPException(status_code=404, detail="Session not found")
     if session_store is not None:
         await session_store.update_session_title(user_id=user_id, session_id=session_id, title=req.title)
     return {"status": "ok", "title": req.title}
@@ -2775,6 +2806,10 @@ async def cancel_session(
 ) -> dict[str, str]:
     """Cancel a running agent task."""
     verify_path_user(user_id, current_user)
+    # Verify DB ownership before mutating session
+    db_owner = await buffer._get_db_owner(session_id)
+    if db_owner is not None and db_owner != user_id:
+        raise HTTPException(status_code=404, detail="Session not found")
     task_key = f"task_{session_id}"
     task = active_tasks.get(task_key)
     if task and not task.done():
@@ -2797,12 +2832,16 @@ async def fork_session(
 ) -> dict[str, str]:
     """Fork a session — duplicate state with a shared history prefix."""
     verify_path_user(user_id, current_user)
+    # Verify DB ownership before accessing session data
+    db_owner = await buffer._get_db_owner(session_id)
+    if db_owner is not None and db_owner != user_id:
+        raise HTTPException(status_code=404, detail="Session not found")
     new_session_id = f"sess_{uuid.uuid4().hex[:12]}"
 
     # Copy history from original session to new session buffer
     history = await buffer.get_history(session_id)
     for msg in history:
-        buffer.add_message(new_session_id, msg)
+        buffer.add_message(new_session_id, msg, user_id)
 
     # Create new session in DB and copy metadata
     if session_store is not None:
@@ -2826,7 +2865,14 @@ async def get_session_status(
 ) -> SessionStatusResponse:
     """Get current session state (for cost/status display)."""
     verify_path_user(user_id, current_user)
-    state = buffer.get_session_state(session_id, user_id=user_id)
+    # Always verify DB ownership — not just when buffer is cold
+    db_owner = await buffer._get_db_owner(session_id)
+    if db_owner is not None and db_owner != user_id:
+        raise HTTPException(status_code=404, detail="Session not found")
+    try:
+        state = buffer.get_session_state(session_id, user_id=user_id)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Session not found")
     return SessionStatusResponse(
         session_id=session_id,
         state=state["state"],
@@ -3261,14 +3307,13 @@ async def delete_skill(
 async def promote_skill_to_shared(
     user_id: str,
     skill_name: str,
-    current_user: str = Depends(get_current_user),
+    current_user: str = Depends(require_admin),
 ) -> dict[str, Any]:
-    """Promote a personal skill directly to shared.
+    """Promote a personal skill directly to shared. Admin only.
 
     Copies the skill to ``DATA_ROOT/shared-skills/<skill_name>/``.
     Returns 409 with conflict detail on name collision.
     """
-    verify_path_user(user_id, current_user)
     _validate_skill_name(skill_name, user_workspace_dir(user_id) / ".claude" / "skills")
     _validate_skill_name(skill_name, DATA_ROOT / "shared-skills")
     personal_dir = user_workspace_dir(user_id) / ".claude" / "skills" / skill_name
@@ -3862,7 +3907,7 @@ async def run_evolution_agent(
             # Stream messages to the buffer for real-time monitoring
             msg_dict = _message_to_dict_if_serializable(msg)
             if msg_dict:
-                buffer.add_message(task_id, msg_dict)
+                buffer.add_message(task_id, msg_dict, user_id)
 
         # Scan the version directory for generated files
         generated_files = []
@@ -3889,6 +3934,7 @@ async def run_evolution_agent(
                 "type": "error",
                 "message": str(e),
             },
+            user_id,
         )
         return {"task_id": task_id, "status": "failed", "reason": str(e)}
 

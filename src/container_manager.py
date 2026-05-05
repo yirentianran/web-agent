@@ -271,10 +271,7 @@ def stop_idle_containers() -> int:
 
 async def _run_idle_monitor() -> None:
     """Background loop that periodically stops idle containers."""
-    try:
-        logger.info("Container idle monitor started (TTL=%ds, check every %ds)", CONTAINER_IDLE_TTL, IDLE_CHECK_INTERVAL)
-    except Exception as e:
-        logger.error("Failed to log idle monitor start: %s", e)
+    logger.info("Container idle monitor started (TTL=%ds, check every %ds)", CONTAINER_IDLE_TTL, IDLE_CHECK_INTERVAL)
     while True:
         await asyncio.sleep(IDLE_CHECK_INTERVAL)
         try:
@@ -288,12 +285,9 @@ async def _run_idle_monitor() -> None:
 def start_idle_monitor() -> None:
     """Start the background idle-monitor asyncio task."""
     global _idle_monitor_task
-    logger.info("start_idle_monitor called, existing task=%s", _idle_monitor_task)
     if _idle_monitor_task is not None and not _idle_monitor_task.done():
-        logger.info("Idle monitor task already running, skipping")
         return
     _idle_monitor_task = asyncio.create_task(_run_idle_monitor())
-    logger.info("Idle monitor task created")
 
 
 def list_active_containers() -> list[dict[str, str]]:

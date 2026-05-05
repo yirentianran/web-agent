@@ -1,5 +1,5 @@
 export interface Message {
-  type: 'user' | 'assistant' | 'system' | 'tool_use' | 'tool_result' | 'result' | 'error' | 'stream_event' | 'file_upload' | 'file_result' | 'heartbeat'
+  type: 'user' | 'assistant' | 'system' | 'tool_use' | 'tool_result' | 'result' | 'error' | 'stream_event' | 'file_upload' | 'file_result' | 'heartbeat' | 'auth_error'
   content: string
   message?: string  // error messages from backend
   subtype?: string

@@ -25,6 +25,8 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from src.database import Database
 
+from src.database import connect_sync
+
 DATA_ROOT = Path(os.getenv("DATA_ROOT", "/data"))
 
 
@@ -73,9 +75,9 @@ class MemoryManager:
 
     def read(self) -> dict[str, Any]:
         """Read the full memory from SQLite, returning an empty structure if absent."""
-        if self.db is not None and self.db._pool is not None:
+        if self.db is not None and self.db._initialized:
             import sqlite3
-            conn = sqlite3.connect(str(self.db.db_path))
+            conn = connect_sync(self.db.db_path)
             try:
                 cursor = conn.execute(
                     "SELECT preferences, entity_memory, audit_context, file_memory FROM user_memory WHERE user_id = ?",
@@ -101,7 +103,7 @@ class MemoryManager:
 
         Writes to SQLite `user_memory` table. Raises if DB is not attached.
         """
-        if self.db is None or self.db._pool is None:
+        if self.db is None or not self.db._initialized:
             raise RuntimeError(
                 "MemoryManager.update() requires a database connection. "
                 "Pass db=... to MemoryManager constructor."
@@ -112,7 +114,7 @@ class MemoryManager:
         updated["updated_at"] = time.time()
 
         import sqlite3
-        conn = sqlite3.connect(str(self.db.db_path))
+        conn = connect_sync(self.db.db_path)
         try:
             conn.execute(
                 """INSERT OR REPLACE INTO user_memory
@@ -138,7 +140,7 @@ class MemoryManager:
 
         Writes to SQLite `user_memory` table. Raises if DB is not attached.
         """
-        if self.db is None or self.db._pool is None:
+        if self.db is None or not self.db._initialized:
             raise RuntimeError(
                 "MemoryManager.replace() requires a database connection. "
                 "Pass db=... to MemoryManager constructor."
@@ -148,7 +150,7 @@ class MemoryManager:
         data["updated_at"] = time.time()
 
         import sqlite3
-        conn = sqlite3.connect(str(self.db.db_path))
+        conn = connect_sync(self.db.db_path)
         try:
             conn.execute(
                 """INSERT OR REPLACE INTO user_memory

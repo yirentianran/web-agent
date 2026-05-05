@@ -10,6 +10,8 @@ import { useTranslation } from "react-i18next";
 import { generateUUID } from "./lib/uuid";
 import Sidebar from "./components/Sidebar";
 import Header from "./components/Header";
+import ThemeToggle from "./components/ThemeToggle";
+import LanguageSwitcher from "./i18n/LanguageSwitcher";
 import ChatArea from "./components/ChatArea";
 import InputBar, { type InputBarHandle } from "./components/InputBar";
 import SkillsPage from "./components/SkillsPage";
@@ -28,14 +30,11 @@ import {
 } from "./hooks/useStreamingText";
 import type { Message, SessionItem, MessageSendState, ConnectionStatus } from "./lib/types";
 import {
-  mergeSessionStates,
   computeRecoverIndex,
-  isStaleRunningState,
   saveLastKnownIndex,
   loadLastKnownIndex,
   clearLastKnownIndex,
   savePendingMessage,
-  loadPendingMessage,
   clearPendingMessage,
 } from "./lib/session-state";
 
@@ -71,6 +70,8 @@ interface LoginScreenProps {
 function LoginScreen({ onLogin }: LoginScreenProps) {
   const { t } = useTranslation();
   const [userId, setUserId] = useState("");
+  const [password, setPassword] = useState("");
+  const [isRegister, setIsRegister] = useState(false);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
 
@@ -83,14 +84,16 @@ function LoginScreen({ onLogin }: LoginScreenProps) {
     setError("");
 
     try {
-      const resp = await fetch("/api/auth/token", {
+      const endpoint = isRegister ? "/api/auth/register" : "/api/auth/token";
+      const resp = await fetch(endpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ user_id: trimmed }),
+        body: JSON.stringify({ user_id: trimmed, password }),
       });
 
       if (!resp.ok) {
-        throw new Error(`HTTP ${resp.status}: ${resp.statusText}`);
+        const detail = await resp.json().catch(() => ({}));
+        throw new Error(detail.detail || `HTTP ${resp.status}`);
       }
 
       const data = await resp.json();
@@ -106,8 +109,18 @@ function LoginScreen({ onLogin }: LoginScreenProps) {
 
   return (
     <div className="login-screen">
+      <header className="app-header login-header">
+        <div className="app-brand">
+          <span className="app-logo">◎</span>
+          <span className="app-name">{t('header.brandName')}</span>
+        </div>
+        <div className="app-header-actions">
+          <LanguageSwitcher />
+          <ThemeToggle />
+        </div>
+      </header>
       <form className="login-form" onSubmit={handleSubmit}>
-        <h2>{t('login.title')}</h2>
+        <h2>{isRegister ? t('login.registerTitle') : t('login.title')}</h2>
         <input
           className="login-input"
           type="text"
@@ -117,13 +130,33 @@ function LoginScreen({ onLogin }: LoginScreenProps) {
           autoFocus
           disabled={loading}
         />
+        <input
+          className="login-input"
+          type="password"
+          value={password}
+          onChange={(e) => setPassword(e.target.value)}
+          placeholder={t('login.passwordPlaceholder')}
+          disabled={loading}
+        />
         {error && <p className="login-error">{error}</p>}
         <button
           className="login-button"
           type="submit"
           disabled={loading || !userId.trim()}
         >
-          {loading ? t('login.submittingButton') : t('login.submitButton')}
+          {loading
+            ? t('login.submittingButton')
+            : isRegister
+              ? t('login.registerButton')
+              : t('login.submitButton')}
+        </button>
+        <button
+          type="button"
+          className="login-toggle"
+          onClick={() => { setIsRegister(!isRegister); setError(""); }}
+          disabled={loading}
+        >
+          {isRegister ? t('login.switchToLogin') : t('login.switchToRegister')}
         </button>
       </form>
     </div>
@@ -160,6 +193,7 @@ interface MainLayoutProps {
   handleLogout: () => void;
   navigate: ReturnType<typeof useNavigate>;
   sessionLoading: boolean;
+  userRole: string;
 }
 
 function MainLayout({
@@ -191,6 +225,7 @@ function MainLayout({
   handleLogout,
   navigate,
   sessionLoading,
+  userRole,
 }: MainLayoutProps) {
   const { t } = useTranslation();
   return (
@@ -219,6 +254,7 @@ function MainLayout({
         onOpenMCP={() => navigate("/mcp")}
         onOpenMemory={() => navigate("/memory")}
         onLogout={handleLogout}
+        userRole={userRole}
       />
 
       {/* Layout */}
@@ -313,22 +349,27 @@ function MainApp() {
   const [authToken, setAuthToken] = useState<string | null>(() => {
     return localStorage.getItem("authToken");
   });
+  const [userRole, setUserRole] = useState<string>(() => {
+    const token = localStorage.getItem("authToken");
+    if (!token) return "user";
+    try {
+      const payload = JSON.parse(atob(token.split(".")[1]));
+      return payload.role || "user";
+    } catch {
+      return "user";
+    }
+  });
   const [messages, setMessages] = useState<Message[]>([]);
   const [sessions, setSessions] = useState<SessionItem[]>([]);
-  const [activeSession, setActiveSession] = useState<string | null>(null);
-  const activeSessionRef = useRef<string | null>(null);
-  // Keep ref in sync so handleIncomingMessage doesn't need activeSession as a dep
+  // urlSessionId is the single source of truth for the active session,
+  // derived from the URL via useMatch below. The ref keeps it current
+  // for callbacks that can't depend on the derived value directly.
+  const sessionMatch = useMatch("/chat/:sessionId");
+  const urlSessionId = sessionMatch?.params.sessionId ?? null;
+  const urlSessionIdRef = useRef<string | null>(urlSessionId);
   useEffect(() => {
-    activeSessionRef.current = activeSession;
-  }, [activeSession]);
-  // Persist activeSession to localStorage
-  useEffect(() => {
-    if (activeSession) {
-      localStorage.setItem("activeSession", activeSession);
-    } else {
-      localStorage.removeItem("activeSession");
-    }
-  }, [activeSession]);
+    urlSessionIdRef.current = urlSessionId;
+  }, [urlSessionId]);
   const [sessionStates, setSessionStates] = useState<Map<string, string>>(
     new Map(),
   );
@@ -357,8 +398,8 @@ function MainApp() {
   }, []);
 
   // Get the current active session's state (for InputBar disabled check)
-  const activeSessionState = activeSession
-    ? (sessionStates.get(activeSession) ?? "idle")
+  const activeSessionState = urlSessionId
+    ? (sessionStates.get(urlSessionId) ?? "idle")
     : "idle";
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [filePanelOpen, setFilePanelOpen] = useState(false);
@@ -366,8 +407,6 @@ function MainApp() {
   const [sessionLoading, setSessionLoading] = useState(false);
   const inputBarRef = useRef<InputBarHandle>(null);
   const navigate = useNavigate();
-  const sessionMatch = useMatch("/chat/:sessionId");
-  const urlSessionId = sessionMatch?.params.sessionId ?? null;
   // Index threshold: messages with index >= this are "new turn" messages.
   // Use MAX_SAFE_INTEGER so only replay messages trigger the first-turn path.
   // Live messages (index < MAX) fall through to normal append logic.
@@ -427,47 +466,66 @@ function MainApp() {
 
   // Restore message history for the active session on mount (survives page refresh)
   useEffect(() => {
-    if (activeSession) {
+    if (urlSessionId) {
       // Load historical messages from backend
       const headers: Record<string, string> = {};
       const token = authTokenRef.current;
       if (token) headers["Authorization"] = `Bearer ${token}`;
-      fetch(`/api/users/${userId}/sessions/${activeSession}/history`, {
+      fetch(`/api/users/${userId}/sessions/${urlSessionId}/history`, {
         headers,
       })
         .then((resp) => {
+          console.log(
+            "[REST /history] status=%d ok=%s userId=%s sessionId=%s",
+            resp.status, resp.ok, userId, urlSessionId,
+          );
+          if (resp.status === 403 || resp.status === 404) {
+            window.location.href = window.location.origin;
+            throw new Error("Permission denied");
+          }
           if (resp.ok) return resp.json();
           return [];
         })
         .then((data) => {
-          // Guard against stale mount-time fetch: if user switched sessions
-          // via handleSelectSession, the ref will point to a different session
-          if (activeSessionRef.current !== activeSession) return;
+          console.log(
+            "[REST /history] data received: %d messages, session=%s",
+            Array.isArray(data) ? data.length : -1, urlSessionId,
+          );
+          // Guard against stale fetch: if user switched sessions,
+          // the ref will point to a different session
+          if (urlSessionIdRef.current !== urlSessionId) return;
           const msgs = (data as any[]).map((m: any) => ({
             ...m,
-            // Use backend's absolute index; fallback to enumerate position
             index: m.index ?? -1,
-            // Defensive: always ensure session_id for correct filtering
-            session_id: activeSession,
+            session_id: urlSessionId,
           }));
           setMessages((prev) => {
-            // If WebSocket replay has already populated messages, merge
-            // instead of replacing — avoids losing agent messages that
-            // arrived via WS between REST DB query and this setState.
-            if (prev.length === 0) return msgs;
-            const prevIndices = new Set(prev.map((m) => m.index));
+            console.log(
+              "[setMessages] prev=%d msgs (prev[0].session=%s) new=%d msgs (session=%s)",
+              prev.length,
+              prev.length > 0 ? prev[0].session_id : "none",
+              msgs.length,
+              urlSessionId,
+            );
+            // Keep only messages belonging to the current session — when
+            // switching sessions, prev holds the old session's messages.
+            const sameSession = prev.filter(
+              (m) => m.session_id === urlSessionId,
+            );
+            if (sameSession.length === 0) {
+              console.log("[setMessages] no same-session msgs, replacing with %d new msgs", msgs.length);
+              return msgs;
+            }
+            const prevIndices = new Set(sameSession.map((m) => m.index));
             const newMsgs = msgs.filter(
               (m: Message) => !prevIndices.has(m.index),
             );
-            if (newMsgs.length === 0) return prev;
-            return [...prev, ...newMsgs].sort(
+            if (newMsgs.length === 0) return sameSession;
+            return [...sameSession, ...newMsgs].sort(
               (a, b) => (a.index ?? 0) - (b.index ?? 0),
             );
           });
           restLoadedRef.current = true;
-          // Derive sessionState from history, but never overwrite
-          // a live "running" state — the agent task may already be in
-          // progress while history fetch returns stale/empty data.
           let derivedState = "idle";
           for (let i = msgs.length - 1; i >= 0; i--) {
             const m = msgs[i];
@@ -484,34 +542,33 @@ function MainApp() {
               break;
             }
           }
-          // Only apply derived state if it's more progressed than current,
-          // or if we're not currently running (avoid overwriting a live "running"
-          // with stale "idle" from empty history of a brand-new session).
-          const currentState = sessionStatesRef.current.get(activeSession) ?? "idle";
+          const currentState = sessionStatesRef.current.get(urlSessionId) ?? "idle";
           if (currentState === "running" && derivedState !== "running") {
             // Preserve live "running" — don't downgrade to "idle"/"completed"
             // from stale history. The WebSocket will deliver the correct state.
           } else {
-            setSessionStateFor(activeSession, derivedState);
+            setSessionStateFor(urlSessionId, derivedState);
           }
-          // Fetch live buffer state — may differ from persisted DB state.
-          // If buffer says running but is stale (>30s), don't trust it —
-          // the agent likely exited and the completion signal was lost.
-          fetch(`/api/users/${userId}/sessions/${activeSession}/status`, {
+          fetch(`/api/users/${userId}/sessions/${urlSessionId}/status`, {
             headers,
           })
-            .then((resp) => resp.json())
+            .then((resp) => {
+              if (resp.status === 403 || resp.status === 404) {
+                window.location.href = window.location.origin;
+                throw new Error("Permission denied");
+              }
+              return resp.json();
+            })
             .then((status) => {
-              if (activeSessionRef.current !== activeSession) return;
+              if (urlSessionIdRef.current !== urlSessionId) return;
               if (status.state === "running" && (status.buffer_age ?? 0) < 30) {
-                setSessionStateFor(activeSession, "running");
+                setSessionStateFor(urlSessionId, "running");
               } else if (
                 status.state === "running" &&
                 (status.buffer_age ?? 0) >= 30
               ) {
-                // Stale buffer — trigger recovery to get real state
                 sendRecover(
-                  activeSession!,
+                  urlSessionId!,
                   msgs.length > 0
                     ? computeRecoverIndex(msgs as unknown as Message[])
                     : 0,
@@ -522,18 +579,21 @@ function MainApp() {
             .catch(() => {});
         })
         .catch(() => {
-          restLoadedRef.current = true; // Allow recovery to proceed
-          setMessages([]);
-          setSessionStateFor(activeSession, "idle");
+          window.location.href = window.location.origin;
         });
     }
-  }, [userId]);  // authToken read via ref — avoids re-fetch on token change
+  }, [userId, urlSessionId]);
 
   const loadSessions = async () => {
+    if (!userId) return;
     try {
       const headers: Record<string, string> = {};
       if (authToken) headers["Authorization"] = `Bearer ${authToken}`;
       const resp = await fetch(`/api/users/${userId}/sessions`, { headers });
+      if (resp.status === 403) {
+        window.location.href = window.location.origin;
+        return;
+      }
       if (resp.ok) {
         const data = await resp.json();
         setSessions(Array.isArray(data) ? data : []);
@@ -553,7 +613,7 @@ function MainApp() {
   // (old heartbeat from previous session could be >60s ago)
   useEffect(() => {
     lastHeartbeatRef.current = Date.now();
-  }, [activeSession]);
+  }, [urlSessionId]);
 
   // Helper: update send state for a message by clientMsgId
   const updateSendState = useCallback(
@@ -572,6 +632,13 @@ function MainApp() {
 
   const handleIncomingMessage = useCallback(
     (msg: Message) => {
+      // Log incoming WS messages for debugging cross-user access
+      if (msg.type !== "heartbeat") {
+        console.log(
+          "[WS incoming] type=%s subtype=%s session=%s index=%d replay=%s",
+          msg.type, msg.subtype || "-", msg.session_id || "-", msg.index ?? -1, msg.replay ?? false,
+        );
+      }
       // Normalize snake_case fields from Python server to camelCase.
       // Without this, dedup logic that checks clientMsgId silently fails
       // because the server sends client_msg_id (snake_case) while the
@@ -581,6 +648,14 @@ function MainApp() {
         msg.clientMsgId = raw.client_msg_id as string;
       }
 
+      // Handle auth failure — clear token and force re-login
+      if (msg.type === "auth_error") {
+        localStorage.removeItem("authToken");
+        localStorage.removeItem("userId");
+        setAuthToken(null);
+        return;
+      }
+
       const TERMINAL_STATES = new Set(["completed", "error", "cancelled"]);
 
       // Track heartbeat for staleness detection
@@ -588,8 +663,8 @@ function MainApp() {
         lastHeartbeatRef.current = Date.now();
         // Agent task no longer exists — trigger immediate recovery
         // instead of waiting for 60s staleness timeout
-        if (msg.agent_alive === false && activeSessionRef.current) {
-          sendRecoverRef.current(activeSessionRef.current, messages.length);
+        if (msg.agent_alive === false && urlSessionIdRef.current) {
+          sendRecoverRef.current(urlSessionIdRef.current, messages.length);
         }
       }
 
@@ -611,7 +686,7 @@ function MainApp() {
         msg.index != null &&
         msg.index >= 0
       ) {
-        const sid = msg.session_id || activeSessionRef.current;
+        const sid = msg.session_id || urlSessionIdRef.current;
         if (sid) {
           saveLastKnownIndex(sid, msg.index, userId);
         }
@@ -661,7 +736,7 @@ function MainApp() {
       // A single WebSocket receives messages from ALL sessions for this user.
       // Only display messages belonging to the currently active session.
       // Still process state changes (session_state_changed, result) for all sessions.
-      if (msg.session_id && msg.session_id !== activeSessionRef.current) {
+      if (msg.session_id && msg.session_id !== urlSessionIdRef.current) {
         if (msg.type === "system" && msg.subtype === "session_state_changed") {
           const newState = msg.state || msg.content || "completed";
           // Index-based filtering: block state changes from previous runs
@@ -844,8 +919,8 @@ function MainApp() {
         setFileRefreshKey(k => k + 1);
       }
 
-      if (!activeSessionRef.current && msg.session_id && !suppressAutoActivateRef.current) {
-        setActiveSession(msg.session_id);
+      if (!urlSessionIdRef.current && msg.session_id && !suppressAutoActivateRef.current) {
+        navigate("/chat/" + msg.session_id);
       }
 
       if (
@@ -908,7 +983,7 @@ function MainApp() {
   const handleSendFailed = useCallback(
     (clientMsgId: string) => {
       updateSendState(clientMsgId, "failed");
-      const activeId = activeSessionRef.current;
+      const activeId = urlSessionIdRef.current;
       if (activeId) {
         const currentState = sessionStatesRef.current.get(activeId);
         if (currentState === "running") {
@@ -936,7 +1011,7 @@ function MainApp() {
     onRecoverTimeout: (sessionId: string) => {
       // Recover failed to yield data within the timeout window.
       // Reset to idle so the spinner doesn't show forever.
-      if (sessionId === activeSessionRef.current) {
+      if (sessionId === urlSessionIdRef.current) {
         setSessionStateFor(sessionId, "idle");
       }
     },
@@ -972,13 +1047,13 @@ function MainApp() {
   const didRecoverRef = useRef(false);
   const recoverTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
-    if (connected && activeSessionRef.current && !didRecoverRef.current) {
+    if (connected && urlSessionIdRef.current && !didRecoverRef.current) {
       const doRecover = () => {
         if (didRecoverRef.current) return;
         didRecoverRef.current = true;
-        const lastIndex = loadLastKnownIndex(activeSessionRef.current!, userId);
+        const lastIndex = loadLastKnownIndex(urlSessionIdRef.current!, userId);
         sendRecover(
-          activeSessionRef.current!,
+          urlSessionIdRef.current!,
           messages.length > 0 ? lastIndex : 0,
         );
       };
@@ -1017,10 +1092,10 @@ function MainApp() {
   // lost (WS delivery failure), the frontend stays 'running' forever.
   // Detect this by checking if no heartbeat arrived for 60s while running.
   useEffect(() => {
-    if (activeSessionState !== "running" || !activeSessionRef.current) return;
+    if (activeSessionState !== "running" || !urlSessionIdRef.current) return;
 
     const checkInterval = setInterval(() => {
-      const sid = activeSessionRef.current;
+      const sid = urlSessionIdRef.current;
       if (!sid) return;
 
       // Only trigger recovery when actually connected — sending
@@ -1040,7 +1115,7 @@ function MainApp() {
 
   const handleResend = useCallback(
     (failedMessage: Message) => {
-      const sessionId = activeSessionRef.current || failedMessage.session_id;
+      const sessionId = urlSessionIdRef.current || failedMessage.session_id;
       if (!sessionId) return;
 
       const newClientMsgId = generateUUID();
@@ -1077,7 +1152,7 @@ function MainApp() {
 
   const handleSend = useCallback(
     async (message: string, files?: File[]) => {
-      let sessionId = activeSessionRef.current;
+      let sessionId = urlSessionIdRef.current;
 
       // Auto-create session if none exists
       if (!sessionId) {
@@ -1091,7 +1166,6 @@ function MainApp() {
           });
           const data = await resp.json();
           sessionId = data.session_id;
-          setActiveSession(sessionId);
           navigate("/chat/" + sessionId);
           await loadSessions();
         } catch (err) {
@@ -1099,7 +1173,7 @@ function MainApp() {
           const errorMsg = err instanceof Error ? err.message : String(err);
           logger.error("Session creation failed, using synthetic ID", errorMsg);
           sessionId = `sess_${generateUUID().replace(/-/g, "").slice(0, 12)}`;
-          setActiveSession(sessionId);
+          navigate("/chat/" + sessionId);
           navigate("/chat/" + sessionId);
           setSessionStateFor(sessionId, "error");
           setTimeout(() => setSessionStateFor(sessionId!, "idle"), 3000);
@@ -1127,6 +1201,7 @@ function MainApp() {
         data: fileMetadata,
         clientMsgId,
         sendState: "sending",
+        session_id: sessionId ?? undefined,
       };
       // Track send state
       sendStateMapRef.current.set(clientMsgId, "sending");
@@ -1195,7 +1270,6 @@ function MainApp() {
     setStreamingTextState(useStreamingText.createInitialState());
     setSessionLoading(false);
     setMessages([]);
-    setActiveSession(null);
     // Prevent WebSocket messages from old sessions from re-activating
     suppressAutoActivateRef.current = true;
     // Force remount of / route's MainLayout for visible feedback
@@ -1203,260 +1277,6 @@ function MainApp() {
     navigate("/");
   }, [navigate]);
 
-  const handleSelectSession = useCallback(
-    async (id: string) => {
-      // Guard: if already on this session, skip
-      if (activeSessionRef.current === id) return;
-
-      // Block auto-recover effect from sending a duplicate recover
-      // during the async history/status load below. handleSelectSession
-      // handles its own recovery at the end.
-      didRecoverRef.current = true;
-
-      setSessionLoading(true);
-      const oldSessionId = activeSessionRef.current;
-      if (oldSessionId) {
-        const oldMaxIndex = computeRecoverIndex(messages) - 1;
-        if (oldMaxIndex >= 0) {
-          saveLastKnownIndex(oldSessionId, oldMaxIndex, userId);
-        }
-      }
-
-      setActiveSession(id);
-      activeSessionRef.current = id; // Sync ref immediately — WS messages arriving
-      // in the same tick must use the new session
-      firstMessageRef.current = null;
-      // Reset tracking refs
-      clearThresholdRef.current = Number.MAX_SAFE_INTEGER;
-      replayStartedRef.current = false;
-      highestUserMsgIndexRef.current = -1;
-      // Reset streaming text state for new session
-      setStreamingTextState(useStreamingText.createInitialState());
-
-      // Restore pending message for this session so the user sees their
-      // message immediately, even if the backend hasn't received the
-      // WebSocket message yet (rapid session switch scenario).
-      // Also check localStorage — pending messages survive page refresh.
-      const storedPending = loadPendingMessage(id, userId);
-      const pending = pendingUserMsgsRef.current.get(id)
-        || (storedPending ? {
-            type: "user" as const,
-            content: storedPending.content,
-            index: -1,
-            data: storedPending.files,
-            clientMsgId: storedPending.clientMsgId,
-            sendState: "sending" as MessageSendState,
-          } as Message : null);
-      if (storedPending) {
-        console.log("[App] handleSelectSession: restored pending from localStorage, clientMsgId=", storedPending.clientMsgId);
-      }
-      if (pending) {
-        setMessages([pending]);
-      } else {
-        setMessages([]);
-      }
-
-      // Load historical messages from backend
-      try {
-        const headers: Record<string, string> = {};
-        if (authToken) headers["Authorization"] = `Bearer ${authToken}`;
-        const resp = await fetch(
-          `/api/users/${userId}/sessions/${id}/history`,
-          { headers },
-        );
-        // Guard: user switched to a different session while fetching
-        if (activeSessionRef.current !== id) { setSessionLoading(false); return; }
-        if (resp.ok) {
-          const data = await resp.json();
-          const msgs = (data as any[]).map((m: any) => ({
-            ...m,
-            index: m.index ?? -1,
-            session_id: id,
-          }));
-
-          // If backend hasn't confirmed the pending message yet (history
-          // doesn't contain it), restore it after loading history so the
-          // user's message isn't lost during the gap between ws.send() and
-          // backend receipt.
-          if (
-            pending &&
-            !msgs.some(
-              (m: Message) =>
-                m.type === "user" && m.content === pending.content,
-            )
-          ) {
-            setMessages((prev) => {
-              // Merge: keep WebSocket-added messages, add pending + REST msgs
-              const combined = [pending, ...msgs];
-              const seen = new Set(prev.map((m) => m.index));
-              const newItems = combined.filter(
-                (m: Message) => !seen.has(m.index),
-              );
-              return [...prev, ...newItems].sort(
-                (a, b) => (a.index ?? 0) - (b.index ?? 0),
-              );
-            });
-            // Pending message was restored from localStorage but NOT found in
-            // REST history — the backend never received it. Re-send after a
-            // short delay (allows recover to complete first).
-            if (storedPending && !msgs.some(
-              (m: Message) => m.type === "user" && m.content === storedPending.content,
-            )) {
-              const pendingToResend = storedPending;
-              setTimeout(() => {
-                if (activeSessionRef.current !== id) return;
-                const currentState = sessionStatesRef.current.get(id);
-                // Only re-send if the session isn't already running (agent task
-                // from the original message would make it "running")
-                if (currentState !== "running") {
-                  sendMessage({
-                    message: pendingToResend.content,
-                    session_id: id,
-                    last_index: computeRecoverIndex(msgs),
-                    files: pendingToResend.files?.map(f => f.filename),
-                    client_msg_id: pendingToResend.clientMsgId,
-                    language: localStorage.getItem('i18nextLng') || 'zh',
-                  });
-                }
-              }, 2000);
-            }
-          } else {
-            setMessages((prev) => {
-              if (prev.length === 0) return msgs;
-              const prevIndices = new Set(prev.map((m) => m.index));
-              const newMsgs = msgs.filter(
-                (m: Message) => !prevIndices.has(m.index),
-              );
-              if (newMsgs.length === 0) return prev;
-              return [...prev, ...newMsgs].sort(
-                (a, b) => (a.index ?? 0) - (b.index ?? 0),
-              );
-            });
-            // Backend confirmed — clear pending from both ref and localStorage
-            pendingUserMsgsRef.current.delete(id);
-            clearPendingMessage(id, userId);
-          }
-          setSessionLoading(false);
-
-          // Restore first user message for title
-          const firstUser = msgs.find((m: Message) => m.type === "user");
-          if (firstUser)
-            firstMessageRef.current = firstUser.content.slice(0, 50);
-
-          // Derive sessionState from the last session_state_changed message,
-          // or fall back to 'idle' if none found.
-          let derivedState = "idle";
-          for (let i = msgs.length - 1; i >= 0; i--) {
-            const m = msgs[i];
-            if (
-              m.type === "system" &&
-              m.subtype === "session_state_changed" &&
-              m.state
-            ) {
-              derivedState = m.state;
-              break;
-            }
-            if (m.type === "result") {
-              derivedState = "completed";
-              break;
-            }
-          }
-
-          // Fetch live buffer state BEFORE setting the derived state —
-          // the buffer may have session_state_changed messages that haven't
-          // been flushed to DB yet (e.g., agent just started). Merge the
-          // two states, preferring the more "active" one.
-          let bufferState: string | undefined;
-          let bufferAge: number = 0;
-          try {
-            const statusResp = await fetch(
-              `/api/users/${userId}/sessions/${id}/status`,
-              { headers },
-            );
-            if (statusResp.ok) {
-              const status = await statusResp.json();
-              bufferState = status.state;
-              bufferAge = status.buffer_age ?? 0;
-            }
-          } catch {
-            // Status endpoint unavailable — fall back to DB-derived state
-          }
-
-          // Guard: user switched to a different session while fetching status
-          if (activeSessionRef.current !== id) return;
-
-          // If buffer says "running" but is stale (>30s), don't trust it —
-          // the agent likely exited and the completion signal was lost.
-          // Trigger recovery instead to get the real state.
-          if (isStaleRunningState(bufferState, bufferAge)) {
-            sendRecover(
-              id,
-              msgs.length > 0
-                ? computeRecoverIndex(msgs as unknown as Message[])
-                : 0,
-            );
-            // Trust DB-derived state, not the stale "running"
-            setSessionStateFor(id, derivedState);
-          } else {
-            const finalState = mergeSessionStates(bufferState, derivedState);
-            setSessionStateFor(id, finalState);
-          }
-
-          // After loading history, recover to catch up any live messages
-          // from an active agent session. Use the max message index so
-          // we don't miss or duplicate messages.
-          sendRecover(id, computeRecoverIndex(msgs));
-
-          // Update last_known_index from loaded history
-          if (msgs.length > 0) {
-            let maxIdx = msgs[0].index;
-            for (let j = 1; j < msgs.length; j++) {
-              if (msgs[j].index > maxIdx) maxIdx = msgs[j].index;
-            }
-            if (maxIdx >= 0) saveLastKnownIndex(id, maxIdx, userId);
-          }
-        } else {
-          // History fetch failed — restore pending if available
-          if (pending) {
-            setMessages([pending]);
-          } else {
-            setMessages([]);
-          }
-          setSessionStateFor(id, "idle");
-          setSessionLoading(false);
-        }
-      } catch {
-        // History fetch failed — restore pending if available
-        if (pending) {
-          setMessages([pending]);
-        } else {
-          setMessages([]);
-        }
-        setSessionStateFor(id, "idle");
-        setSessionLoading(false);
-      }
-    },
-    [userId, authToken, messages, setSessionStateFor, sendRecover],
-  );
-
-  // Stable ref to handleSelectSession so the URL-sync effect doesn't
-  // re-fire on every messages change.
-  const selectSessionRef = useRef(handleSelectSession);
-  selectSessionRef.current = handleSelectSession;
-
-  // Sync URL /chat/:sessionId → actual session loading
-  // Guard with suppressAutoActivateRef to prevent transient state after
-  // handleNewSession from re-loading the old session (activeSession=null
-  // but urlSessionId still has the old value until navigate("/") is processed).
-  useEffect(() => {
-    if (urlSessionId && urlSessionId !== activeSession && !suppressAutoActivateRef.current) {
-      selectSessionRef.current(urlSessionId);
-    }
-    // Clear suppress flag once URL has settled to / (welcome page)
-    if (!urlSessionId) {
-      suppressAutoActivateRef.current = false;
-    }
-  }, [urlSessionId, activeSession]);
 
   const handleDeleteSession = useCallback(
     async (id: string) => {
@@ -1479,9 +1299,8 @@ function MainApp() {
         // Refresh session list
         await loadSessions();
         // Clear if deleted the active session
-        if (id === activeSession) {
+        if (id === urlSessionId) {
           setMessages([]);
-          setActiveSession(null);
           // Clear this session's state from the map
           setSessionStates((prev) => {
             const next = new Map(prev);
@@ -1499,7 +1318,7 @@ function MainApp() {
         alert(err instanceof Error ? err.message : "Failed to delete session");
       }
     },
-    [userId, authToken, activeSession, navigate, t],
+    [userId, authToken, urlSessionId, navigate, t],
   );
 
   const handleRenameSession = useCallback(
@@ -1534,30 +1353,30 @@ function MainApp() {
     localStorage.removeItem("userId");
     setAuthToken(null);
     setUserId("");
+    setUserRole("user");
     setMessages([]);
-    setActiveSession(null);
     setSessions([]);
   }, []);
 
   const stopSession = useCallback(async () => {
-    if (!activeSession) return;
+    if (!urlSessionId) return;
     try {
       const headers: Record<string, string> = {};
       if (authToken) headers["Authorization"] = `Bearer ${authToken}`;
       const resp = await fetch(
-        `/api/users/${userId}/sessions/${activeSession}/cancel`,
+        `/api/users/${userId}/sessions/${urlSessionId}/cancel`,
         {
           method: "POST",
           headers,
         },
       );
       if (resp.ok) {
-        setSessionStateFor(activeSession, "idle");
+        setSessionStateFor(urlSessionId, "idle");
       }
     } catch (err) {
       console.error("Failed to stop session", err);
     }
-  }, [activeSession, userId, authToken]);
+  }, [urlSessionId, userId, authToken]);
 
   // If no auth token, show login screen
   if (!authToken) {
@@ -1565,7 +1384,16 @@ function MainApp() {
       <LoginScreen
         onLogin={(uid) => {
           setUserId(uid);
-          setAuthToken(localStorage.getItem("authToken"));
+          const token = localStorage.getItem("authToken");
+          setAuthToken(token);
+          if (token) {
+            try {
+              const payload = JSON.parse(atob(token.split(".")[1]));
+              setUserRole(payload.role || "user");
+            } catch {
+              setUserRole("user");
+            }
+          }
         }}
       />
     );
@@ -1633,7 +1461,7 @@ function MainApp() {
             sidebarOpen={sidebarOpen}
             setSidebarOpen={setSidebarOpen}
             sessions={sessions}
-            activeSession={activeSession}
+            activeSession={urlSessionId}
             onSelectSession={(id) => navigate("/chat/" + id)}
             onNewSession={handleNewSession}
             onDeleteSession={handleDeleteSession}
@@ -1655,6 +1483,7 @@ function MainApp() {
             handleLogout={handleLogout}
             navigate={navigate}
             sessionLoading={sessionLoading}
+            userRole={userRole}
           />
         }
       />
@@ -1669,7 +1498,7 @@ function MainApp() {
             sidebarOpen={sidebarOpen}
             setSidebarOpen={setSidebarOpen}
             sessions={sessions}
-            activeSession={activeSession}
+            activeSession={urlSessionId}
             onSelectSession={(id) => navigate("/chat/" + id)}
             onNewSession={handleNewSession}
             onDeleteSession={handleDeleteSession}
@@ -1691,6 +1520,7 @@ function MainApp() {
             handleLogout={handleLogout}
             navigate={navigate}
             sessionLoading={sessionLoading}
+            userRole={userRole}
           />
         }
       />

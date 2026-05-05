@@ -42,6 +42,17 @@ def make_heartbeat(agent_alive: bool = True) -> dict[str, Any]:
     }
 
 
+_RETRY_DELAYS = [0.1, 0.25, 0.5, 1.0, 2.0]  # exponential backoff for lock retry
+
+
+def _is_lock_error(exc: Exception) -> bool:
+    """Check if an exception is a SQLite 'database is locked' error."""
+    return (
+        type(exc).__name__ == "OperationalError"
+        and "database is locked" in str(exc).lower()
+    )
+
+
 class MessageBuffer:
     """Per-session message cache with SQLite persistence.
 
@@ -110,58 +121,75 @@ class MessageBuffer:
             return False
 
     async def _write_db_async(self, session_id: str, message: dict) -> bool:
-        """Write one message to SQLite via the async Database connection."""
+        """Write one message to SQLite via the async Database connection.
+
+        Retries on transient "database is locked" errors with exponential
+        backoff, matching SessionStore._retry_on_lock behavior.
+        """
         if self.db is None:
             return False
 
-        try:
-            async with self.db.connection() as conn:
-                # Determine next seq
-                cursor = await conn.execute(
-                    "SELECT COALESCE(MAX(seq), -1) FROM messages WHERE session_id = ?",
-                    (session_id,),
-                )
-                row = await cursor.fetchone()
-                db_max_seq = row[0] if row else -1
+        last_error = None
+        for delay in _RETRY_DELAYS:
+            try:
+                async with self.db.connection() as conn:
+                    # Determine next seq
+                    cursor = await conn.execute(
+                        "SELECT COALESCE(MAX(seq), -1) FROM messages WHERE session_id = ?",
+                        (session_id,),
+                    )
+                    row = await cursor.fetchone()
+                    db_max_seq = row[0] if row else -1
 
-                next_seq = max(self._seq.get(session_id, 0), db_max_seq + 1)
-                self._seq[session_id] = next_seq + 1
+                    next_seq = max(self._seq.get(session_id, 0), db_max_seq + 1)
+                    self._seq[session_id] = next_seq + 1
 
-                usage_json = None
-                if message.get("usage"):
-                    usage_json = json.dumps(message["usage"], ensure_ascii=False)
+                    usage_json = None
+                    if message.get("usage"):
+                        usage_json = json.dumps(message["usage"], ensure_ascii=False)
 
-                await conn.execute(
-                    """INSERT INTO messages
-                       (session_id, seq, type, subtype, name, content, payload, usage, created_at)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                    (
-                        session_id,
-                        next_seq,
-                        message.get("type", ""),
-                        message.get("subtype"),
-                        message.get("name"),
-                        message.get("content"),
-                        json.dumps(message, ensure_ascii=False),
-                        usage_json,
-                        time.time(),
-                    ),
-                )
-                await conn.commit()
+                    await conn.execute(
+                        """INSERT INTO messages
+                           (session_id, seq, type, subtype, name, content, payload, usage, created_at)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        (
+                            session_id,
+                            next_seq,
+                            message.get("type", ""),
+                            message.get("subtype"),
+                            message.get("name"),
+                            message.get("content"),
+                            json.dumps(message, ensure_ascii=False),
+                            usage_json,
+                            time.time(),
+                        ),
+                    )
+                    await conn.commit()
 
-            # Success — clear any previous failure flag
-            buf = self.sessions.get(session_id)
-            if buf:
-                buf.pop("db_failed", None)
-            return True
+                # Success — clear any previous failure flag
+                buf = self.sessions.get(session_id)
+                if buf:
+                    buf.pop("db_failed", None)
+                return True
 
-        except Exception as exc:
-            logger.warning("MessageBuffer: async write failed for session %s: %s", session_id, exc)
-            buf = self.sessions.get(session_id)
-            if buf:
-                buf["db_failed"] = True
-                buf.setdefault("unpersisted_messages", []).append(message)
-            return False
+            except Exception as exc:
+                if _is_lock_error(exc):
+                    last_error = exc
+                    await asyncio.sleep(delay)
+                else:
+                    logger.warning("MessageBuffer: async write failed for session %s: %s", session_id, exc)
+                    buf = self.sessions.get(session_id)
+                    if buf:
+                        buf["db_failed"] = True
+                        buf.setdefault("unpersisted_messages", []).append(message)
+                    return False
+
+        logger.warning("MessageBuffer: async write failed for session %s after retries: %s", session_id, last_error)
+        buf = self.sessions.get(session_id)
+        if buf:
+            buf["db_failed"] = True
+            buf.setdefault("unpersisted_messages", []).append(message)
+        return False
 
     # ── internal helpers ─────────────────────────────────────────
 
@@ -186,10 +214,18 @@ class MessageBuffer:
                 "user_id": user_id,
             }
             self.sessions[session_id] = buf
+            logger.info(
+                "_ensure_buf NEW session=%s user_id=%s",
+                session_id, user_id,
+            )
         else:
             # Ownership verification on existing buffer
             stored_user = self.sessions[session_id].get("user_id")
             if user_id is not None and stored_user is not None and user_id != stored_user:
+                logger.warning(
+                    "_ensure_buf REJECT session=%s stored_user=%s request_user=%s",
+                    session_id, stored_user, user_id,
+                )
                 raise ValueError(
                     f"Session {session_id} is owned by {stored_user}, "
                     f"cannot access as {user_id}"
@@ -197,20 +233,35 @@ class MessageBuffer:
             # Update user_id if it was previously None
             if stored_user is None and user_id is not None:
                 self.sessions[session_id]["user_id"] = user_id
+            logger.info(
+                "_ensure_buf OK session=%s stored_user=%s request_user=%s",
+                session_id, stored_user, user_id,
+            )
         return self.sessions[session_id]
 
-    async def _read_db_async(self, session_id: str, after_index: int = 0) -> list[dict]:
-        """Read messages from SQLite via the async Database connection."""
+    async def _read_db_async(self, session_id: str, after_index: int = 0, user_id: str | None = None) -> list[dict]:
+        """Read messages from SQLite via the async Database connection.
+
+        When user_id is provided, JOINs with sessions table to verify ownership.
+        """
         if self.db is None:
             return []
 
         try:
             async with self.db.connection() as conn:
-                cursor = await conn.execute(
-                    "SELECT type, subtype, name, content, payload, usage "
-                    "FROM messages WHERE session_id = ? AND seq >= ? ORDER BY seq",
-                    (session_id, after_index),
-                )
+                if user_id is not None:
+                    cursor = await conn.execute(
+                        "SELECT m.type, m.subtype, m.name, m.content, m.payload, m.usage "
+                        "FROM messages m JOIN sessions s ON m.session_id = s.session_id "
+                        "WHERE m.session_id = ? AND s.user_id = ? AND m.seq >= ? ORDER BY m.seq",
+                        (session_id, user_id, after_index),
+                    )
+                else:
+                    cursor = await conn.execute(
+                        "SELECT type, subtype, name, content, payload, usage "
+                        "FROM messages WHERE session_id = ? AND seq >= ? ORDER BY seq",
+                        (session_id, after_index),
+                    )
                 rows = await cursor.fetchall()
         except Exception:
             logger.warning("MessageBuffer: async read failed for session %s", session_id)
@@ -247,6 +298,54 @@ class MessageBuffer:
             result.append(msg)
         return result
 
+    async def _get_db_owner(self, session_id: str) -> str | None:
+        """Get the owning user_id of a session from the database.
+
+        Returns None if the session doesn't exist or the DB is unavailable.
+        """
+        if self.db is None:
+            logger.info("_get_db_owner: db is None for session=%s", session_id)
+            return None
+        try:
+            async with self.db.connection() as conn:
+                cursor = await conn.execute(
+                    "SELECT user_id FROM sessions WHERE session_id = ?",
+                    (session_id,),
+                )
+                row = await cursor.fetchone()
+                owner = row[0] if row else None
+                logger.info(
+                    "_get_db_owner: session=%s owner=%s",
+                    session_id, owner,
+                )
+                return owner
+        except Exception as e:
+            logger.warning("_get_db_owner: error for session=%s: %s", session_id, e)
+            return None
+
+    def _sync_db_owner(self, session_id: str) -> str | None:
+        """Sync version of _get_db_owner using a direct sqlite3 connection.
+
+        Used by add_message to verify ownership before creating a buffer entry.
+        """
+        if self.db is None:
+            return None
+        try:
+            import sqlite3
+
+            conn = sqlite3.connect(str(self.db.db_path))
+            try:
+                row = conn.execute(
+                    "SELECT user_id FROM sessions WHERE session_id = ?",
+                    (session_id,),
+                ).fetchone()
+                return row[0] if row else None
+            finally:
+                conn.close()
+        except Exception as e:
+            logger.warning("_sync_db_owner: error for session=%s: %s", session_id, e)
+            return None
+
     # ── public API ───────────────────────────────────────────────
 
     def remove_messages_by_type(self, session_id: str, msg_type: str, user_id: str | None = None) -> None:
@@ -279,8 +378,25 @@ class MessageBuffer:
         future = loop.create_future()
         self._write_queue.put_nowait(("__delete__", {"session_id": session_id, "msg_type": msg_type}, future))
 
-    def add_message(self, session_id: str, message: dict, user_id: str | None = None) -> None:
-        """SDK produces a message → write to memory + enqueue async DB write."""
+    def add_message(self, session_id: str, message: dict, user_id: str) -> None:
+        """SDK produces a message → write to memory + enqueue async DB write.
+
+        For new sessions, verifies user_id against the database before creating
+        the buffer entry, preventing cross-user session hijacking.
+        """
+        # Resolve the true owner from DB for new buffer entries
+        if session_id not in self.sessions and self.db is not None:
+            db_owner = self._sync_db_owner(session_id)
+            if db_owner is not None and db_owner != user_id:
+                logger.warning(
+                    "add_message REJECT session=%s DB owner=%s != caller=%s",
+                    session_id, db_owner, user_id,
+                )
+                raise ValueError(
+                    f"Session {session_id} is owned by {db_owner}, "
+                    f"cannot add message as {user_id}"
+                )
+
         buf = self._ensure_buf(session_id, user_id)
         buf["messages"].append(message)
         self._evict_old(session_id)
@@ -349,7 +465,46 @@ class MessageBuffer:
         Falls back to SQLite when the in-memory list doesn't have enough history.
         The base_index offset ensures global after_index counters stay valid
         even after old messages are evicted.
+
+        When user_id is provided and the session is not yet in the buffer,
+        verifies ownership against the database BEFORE creating the buffer
+        entry — prevents a wrong user from being assigned as owner.
         """
+        # ── Buffer entry does not exist yet → verify ownership via DB first ──
+        if user_id is not None and self.db is not None and session_id not in self.sessions:
+            logger.info(
+                "get_history: checking DB ownership for session=%s user=%s",
+                session_id, user_id,
+            )
+            msgs = await self._read_db_async(session_id, after_index, user_id)
+            if msgs:
+                # Messages returned → user owns this session. Safe to create buffer.
+                logger.info(
+                    "get_history: DB returned %d msgs — assigning session=%s to user=%s",
+                    len(msgs), session_id, user_id,
+                )
+                buf = self._ensure_buf(session_id, user_id)
+                return msgs
+            # No messages returned — could be: wrong owner, no messages, or session not in DB.
+            # Check DB to distinguish "wrong owner" from "new session".
+            db_owner = await self._get_db_owner(session_id)
+            logger.info(
+                "get_history: _get_db_owner session=%s returned=%s request_user=%s",
+                session_id, db_owner, user_id,
+            )
+            if db_owner is not None and db_owner != user_id:
+                logger.warning(
+                    "get_history REJECT session=%s db_owner=%s request_user=%s",
+                    session_id, db_owner, user_id,
+                )
+                raise ValueError(
+                    f"Session {session_id} is owned by {db_owner}, "
+                    f"cannot access as {user_id}"
+                )
+            # Session not in DB → brand-new session. Create buffer for this user.
+            buf = self._ensure_buf(session_id, user_id)
+            return []
+
         buf = self._ensure_buf(session_id, user_id)
         messages = buf["messages"]
         base_index = buf.get("base_index", 0)
@@ -363,7 +518,7 @@ class MessageBuffer:
 
         # Need to read from SQLite
         if self.db is not None:
-            return await self._read_db_async(session_id, after_index)
+            return await self._read_db_async(session_id, after_index, user_id)
 
         return []
 

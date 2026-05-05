@@ -64,7 +64,7 @@ def _make_db(tmp_path: Path, user_id: str, initial: dict | None = None) -> Magic
     conn.close()
 
     mock_db = MagicMock()
-    mock_db._pool = MagicMock()
+    mock_db._initialized = True
     mock_db.db_path = db_path
     return mock_db
 

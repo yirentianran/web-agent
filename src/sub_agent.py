@@ -145,26 +145,26 @@ class SubAgentManager:
 
     async def _save_task(self, task_id: str, task: dict[str, Any]) -> None:
         """Save a task to DB or file."""
-        if self.db is not None and self.db._pool is not None:
+        if self.db is not None and self.db._initialized:
             await self._db_save(task)
         else:
             self._file_save(task)
 
     async def _load_task(self, task_id: str) -> dict[str, Any] | None:
         """Load a task from DB or file."""
-        if self.db is not None and self.db._pool is not None:
+        if self.db is not None and self.db._initialized:
             return await self._db_load(task_id)
         return self._file_load(task_id)
 
     async def _load_all_tasks(self) -> list[dict[str, Any]]:
         """Load all tasks from DB or file."""
-        if self.db is not None and self.db._pool is not None:
+        if self.db is not None and self.db._initialized:
             return await self._db_load_all()
         return self._file_load_all()
 
     async def _delete_task(self, task_id: str) -> None:
         """Delete a task from DB or file."""
-        if self.db is not None and self.db._pool is not None:
+        if self.db is not None and self.db._initialized:
             await self._db_delete(task_id)
         else:
             self._file_delete(task_id)

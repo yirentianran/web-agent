@@ -10,6 +10,8 @@ Usage:
 
 from __future__ import annotations
 
+import asyncio
+import logging
 import time
 from datetime import datetime, timezone
 from typing import Any, TYPE_CHECKING
@@ -18,6 +20,10 @@ if TYPE_CHECKING:
     from src.database import Database
 
 _CATEGORIES = {"auth", "skills", "mcp", "files", "admin", "session", "resource"}
+_MAX_RETRIES = 3
+_RETRY_DELAY = 0.5  # seconds
+
+logger = logging.getLogger(__name__)
 
 
 class AuditLogger:
@@ -35,13 +41,21 @@ class AuditLogger:
 
         user_id = data.get("user_id")
         action = data.get("action")
-        async with self.db.connection() as conn:
-            await conn.execute(
-                "INSERT INTO audit_log (category, user_id, action, data, created_at) "
-                "VALUES (?, ?, ?, ?, ?)",
-                (category, user_id, action, _safe_dumps(data), time.time()),
-            )
-            await conn.commit()
+        for attempt in range(_MAX_RETRIES):
+            try:
+                async with self.db.connection() as conn:
+                    await conn.execute(
+                        "INSERT INTO audit_log (category, user_id, action, data, created_at) "
+                        "VALUES (?, ?, ?, ?, ?)",
+                        (category, user_id, action, _safe_dumps(data), time.time()),
+                    )
+                    await conn.commit()
+                return
+            except Exception:
+                if attempt < _MAX_RETRIES - 1:
+                    await asyncio.sleep(_RETRY_DELAY * (attempt + 1))
+                else:
+                    logger.warning("Audit log write failed after %d retries", _MAX_RETRIES)
 
     async def query(
         self,

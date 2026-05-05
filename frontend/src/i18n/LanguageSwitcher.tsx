@@ -1,7 +1,7 @@
 import { useTranslation } from 'react-i18next'
 
 interface LanguageSwitcherProps {
-  userId: string
+  userId?: string
   authToken?: string | null
 }
 
@@ -10,6 +10,7 @@ export default function LanguageSwitcher({ userId, authToken }: LanguageSwitcher
   const currentLng = i18n.language
 
   const syncLanguageToBackend = (language: string) => {
+    if (!userId) return
     const headers: Record<string, string> = { 'Content-Type': 'application/json' }
     if (authToken) headers['Authorization'] = `Bearer ${authToken}`
     fetch(`/api/users/${userId}/memory`, {

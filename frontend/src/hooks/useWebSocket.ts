@@ -37,9 +37,10 @@ interface UseWebSocketOptions {
   onMessage: (msg: Message) => void;
   onConnect?: () => void;
   onDisconnect?: () => void;
-  onQueueFull?: () => void; // Called when the pending queue overflows
-  onSendFailed?: (clientMsgId: string) => void; // Called when a send times out or connection fails
-  onRecoverTimeout?: (sessionId: string) => void; // Called when a recover fails to yield data
+  onQueueFull?: () => void;
+  onSendFailed?: (clientMsgId: string) => void;
+  onRecoverTimeout?: (sessionId: string) => void;
+  onAuthFailed?: () => void; // Called when WebSocket is rejected due to invalid/expired token
   token?: string;
 }
 
@@ -51,6 +52,7 @@ export function useWebSocket({
   onQueueFull,
   onSendFailed,
   onRecoverTimeout,
+  onAuthFailed,
   token,
 }: UseWebSocketOptions) {
   const wsRef = useRef<WebSocket | null>(null);
@@ -67,6 +69,7 @@ export function useWebSocket({
   const onQueueFullRef = useRef(onQueueFull);
   const onSendFailedRef = useRef(onSendFailed);
   const onRecoverTimeoutRef = useRef(onRecoverTimeout);
+  const onAuthFailedRef = useRef(onAuthFailed);
   const tokenRef = useRef(token);
   const userIdRef = useRef(userId);
   const flushPendingRef = useRef<() => void>(() => {});
@@ -82,6 +85,7 @@ export function useWebSocket({
     onQueueFullRef.current = onQueueFull;
     onSendFailedRef.current = onSendFailed;
     onRecoverTimeoutRef.current = onRecoverTimeout;
+    onAuthFailedRef.current = onAuthFailed;
     tokenRef.current = token;
     userIdRef.current = userId;
   });
@@ -180,6 +184,9 @@ export function useWebSocket({
       console.log("[WebSocket] Received:", event.data.slice(0, 100));
       try {
         const data = JSON.parse(event.data);
+        if (data.type === "auth_error") {
+          intentionalClose = true;
+        }
         onMessageRef.current(data as Message);
       } catch {
         // ignore parse errors

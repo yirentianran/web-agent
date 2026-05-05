@@ -7,9 +7,10 @@ interface SettingsMenuProps {
   onOpenEvolution: () => void
   onOpenMCP: () => void
   onOpenMemory: () => void
+  userRole: string
 }
 
-export default function SettingsMenu({ onOpenSkills, onOpenFeedback, onOpenEvolution, onOpenMCP, onOpenMemory }: SettingsMenuProps) {
+export default function SettingsMenu({ onOpenSkills, onOpenFeedback, onOpenEvolution, onOpenMCP, onOpenMemory, userRole }: SettingsMenuProps) {
   const { t } = useTranslation()
   const [open, setOpen] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
@@ -30,6 +31,8 @@ export default function SettingsMenu({ onOpenSkills, onOpenFeedback, onOpenEvolu
     setOpen(false)
   }
 
+  const isAdmin = userRole === "admin";
+
   return (
     <div className="settings-menu" ref={ref}>
       <button className="settings-menu-trigger" onClick={() => setOpen(v => !v)} type="button" aria-expanded={open} aria-haspopup="menu" title={t('header.settings')}>
@@ -44,18 +47,24 @@ export default function SettingsMenu({ onOpenSkills, onOpenFeedback, onOpenEvolu
             <span className="settings-menu-item-icon">🧩</span>
             {t('header.skillsManagement')}
           </button>
-          <button className="settings-menu-item" role="menuitem" onClick={() => handleAction(onOpenMCP)} type="button">
-            <span className="settings-menu-item-icon">⚡</span>
-            {t('header.mcpServers')}
-          </button>
-          <button className="settings-menu-item" role="menuitem" onClick={() => handleAction(onOpenFeedback)} type="button">
-            <span className="settings-menu-item-icon">💬</span>
-            {t('header.feedbackManagement')}
-          </button>
-          <button className="settings-menu-item" role="menuitem" onClick={() => handleAction(onOpenEvolution)} type="button">
-            <span className="settings-menu-item-icon">🧬</span>
-            {t('header.skillEvolution')}
-          </button>
+          {isAdmin && (
+            <button className="settings-menu-item" role="menuitem" onClick={() => handleAction(onOpenMCP)} type="button">
+              <span className="settings-menu-item-icon">⚡</span>
+              {t('header.mcpServers')}
+            </button>
+          )}
+          {isAdmin && (
+            <button className="settings-menu-item" role="menuitem" onClick={() => handleAction(onOpenFeedback)} type="button">
+              <span className="settings-menu-item-icon">💬</span>
+              {t('header.feedbackManagement')}
+            </button>
+          )}
+          {isAdmin && (
+            <button className="settings-menu-item" role="menuitem" onClick={() => handleAction(onOpenEvolution)} type="button">
+              <span className="settings-menu-item-icon">🧬</span>
+              {t('header.skillEvolution')}
+            </button>
+          )}
           <button className="settings-menu-item" role="menuitem" onClick={() => handleAction(onOpenMemory)} type="button">
             <span className="settings-menu-item-icon">🧠</span>
             {t('header.memoryManagement')}

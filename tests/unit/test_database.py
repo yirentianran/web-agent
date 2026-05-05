@@ -35,7 +35,7 @@ class TestDatabaseInit:
     async def test_init_creates_connection(self, db_path: Path) -> None:
         database = Database(db_path=db_path)
         await database.init()
-        assert database._pool is not None
+        assert database._initialized
         await database.close()
 
     @pytest.mark.asyncio
@@ -96,7 +96,16 @@ class TestConnection:
         async with db.connection() as conn:
             cursor = await conn.execute("PRAGMA busy_timeout")
             row = await cursor.fetchone()
-            assert row[0] == 5000  # 5 seconds
+            assert row[0] == 30000  # 30 seconds
+
+
+    @pytest.mark.asyncio
+    async def test_connection_wal_autocheckpoint_disabled(self, db: Database) -> None:
+        """Auto-checkpoint should be disabled — it was the root cause of random locks."""
+        async with db.connection() as conn:
+            cursor = await conn.execute("PRAGMA wal_autocheckpoint")
+            row = await cursor.fetchone()
+            assert row[0] == 0
 
 
 # ── Close ────────────────────────────────────────────────────────
@@ -108,7 +117,7 @@ class TestClose:
         database = Database(db_path=db_path)
         await database.init()
         await database.close()
-        assert database._pool is None
+        assert not database._initialized
 
     @pytest.mark.asyncio
     async def test_close_idempotent(self, db_path: Path) -> None:
@@ -149,12 +158,12 @@ class TestHelpers:
     @pytest.mark.asyncio
     async def test_insert_and_fetchone(self, db: Database) -> None:
         async with db.connection() as conn:
-            await conn.execute("INSERT INTO users (id) VALUES (?)", ("test-user",))
+            await conn.execute("INSERT INTO users (user_id) VALUES (?)", ("test-user",))
             await conn.commit()
 
         async with db.connection() as conn:
             cursor = await conn.execute(
-                "SELECT id FROM users WHERE id = ?", ("test-user",)
+                "SELECT user_id FROM users WHERE user_id = ?", ("test-user",)
             )
             row = await cursor.fetchone()
             assert row is not None
@@ -164,11 +173,11 @@ class TestHelpers:
     async def test_fetchall(self, db: Database) -> None:
         async with db.connection() as conn:
             for i in range(3):
-                await conn.execute("INSERT INTO users (id) VALUES (?)", (f"user-{i}",))
+                await conn.execute("INSERT INTO users (user_id) VALUES (?)", (f"user-{i}",))
             await conn.commit()
 
         async with db.connection() as conn:
-            cursor = await conn.execute("SELECT id FROM users ORDER BY id")
+            cursor = await conn.execute("SELECT user_id FROM users ORDER BY user_id")
             rows = await cursor.fetchall()
             assert len(rows) == 3
             assert rows[0][0] == "user-0"
@@ -178,21 +187,21 @@ class TestHelpers:
     async def test_transaction_rollback(self, db: Database) -> None:
         """Transaction should rollback on error."""
         async with db.connection() as conn:
-            await conn.execute("INSERT INTO users (id) VALUES (?)", ("tx-user",))
+            await conn.execute("INSERT INTO users (user_id) VALUES (?)", ("tx-user",))
             await conn.commit()
 
         # Verify rollback scenario: if we start a transaction and raise,
         # the data should not be committed
         try:
             async with db.connection() as conn:
-                await conn.execute("INSERT INTO users (id) VALUES (?)", ("rollback-user",))
+                await conn.execute("INSERT INTO users (user_id) VALUES (?)", ("rollback-user",))
                 raise ValueError("Intentional error")
         except ValueError:
             pass
 
         async with db.connection() as conn:
             cursor = await conn.execute(
-                "SELECT COUNT(*) FROM users WHERE id = ?", ("rollback-user",)
+                "SELECT COUNT(*) FROM users WHERE user_id = ?", ("rollback-user",)
             )
             row = await cursor.fetchone()
             # With aiosqlite, auto-commit is on by default per statement,

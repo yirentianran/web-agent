@@ -369,8 +369,8 @@ body {
 .btn-new-session {
   width: 100%;
   padding: 10px 16px;
-  background: linear-gradient(135deg, var(--color-primary) 0%, var(--color-primary-hover) 100%);
-  color: var(--color-btn-new-session-text);
+  background: var(--color-primary);
+  color: white;
   border: none;
   border-radius: 8px;
   cursor: pointer;
@@ -381,15 +381,12 @@ body {
   justify-content: center;
   gap: 6px;
   line-height: 1;
-  transition: all 0.15s ease;
-  box-shadow: var(--shadow-md);
   margin-bottom: 12px;
   flex-shrink: 0;
 }
 
 .btn-new-session:hover {
-  box-shadow: 0 4px 12px rgba(59, 130, 246, 0.4);
-  transform: translateY(-1px);
+  background: var(--color-primary-hover);
 }
 
 .sidebar-list {
@@ -1333,6 +1330,22 @@ body {
 .login-form .login-toggle {
   width: auto;
   max-width: none;
+  background: none;
+  border: none;
+  color: var(--color-primary);
+  font-size: 13px;
+  cursor: pointer;
+  padding: 4px 8px;
+  transition: opacity var(--transition-fast);
+}
+
+.login-form .login-toggle:hover:not(:disabled) {
+  opacity: 0.8;
+}
+
+.login-form .login-toggle:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
 }
 
 .login-form h2 {

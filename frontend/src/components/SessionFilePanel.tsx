@@ -48,6 +48,10 @@ export default function SessionFilePanel({
       let data: FileInfo[] = []
       if (scope === 'session' && activeSessionId) {
         const resp = await fetch(`/api/users/${userId}/sessions/${activeSessionId}/files`, { headers })
+        if (resp.status === 403 || resp.status === 404) {
+          window.location.href = window.location.origin
+          return
+        }
         if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
         const raw = await resp.json()
         data = raw.map((f: Record<string, unknown>) => {
