@@ -5,24 +5,34 @@ Each user gets an isolated container with:
 - Separate Skills directories (shared ro + personal rw)
 - Separate Claude data (sessions, settings, cache)
 - MCP configuration injected via environment variable
+- Idle TTL: containers are stopped after inactivity to save resources
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
+import time
 from pathlib import Path
 
 import docker
 
 logger = logging.getLogger(__name__)
+if not logger.handlers:
+    logger.addHandler(logging.StreamHandler())
+    logger.setLevel(logging.DEBUG if os.getenv("LOG_LEVEL") == "debug" else logging.INFO)
 
 DATA_ROOT = Path(os.getenv("DATA_ROOT", "/data"))
 CONTAINER_IMAGE = "web-agent-user:latest"
 CONTAINER_PORT = 8000
+CONTAINER_IDLE_TTL = int(os.getenv("CONTAINER_IDLE_TTL", "1800"))  # 30 min default
+IDLE_CHECK_INTERVAL = 60  # seconds between idle checks
 
 _client: docker.DockerClient | None = None
+_last_activity: dict[str, float] = {}
+_idle_monitor_task: asyncio.Task | None = None
 
 
 def get_client() -> docker.DockerClient:
@@ -58,29 +68,31 @@ def ensure_user_dirs(user_id: str) -> None:
 def get_user_volumes(user_id: str) -> dict[str, dict[str, str]]:
     """Return Docker volume bindings for a user's container."""
     base = user_data_dir(user_id)
+    root = DATA_ROOT.resolve()  # Docker requires absolute host paths
+    hooks_dir = (Path(__file__).parent / "hooks").resolve()
     return {
         # Public Skills — read-only
-        str(DATA_ROOT / "shared-skills"): {
+        str(root / "shared-skills"): {
             "bind": "/home/agent/.claude/shared-skills",
             "mode": "ro",
         },
         # Personal Skills — read-write
-        str(base / "skills"): {
+        str(base.resolve() / "skills"): {
             "bind": "/home/agent/.claude/personal-skills",
             "mode": "rw",
         },
         # Workspace
-        str(base / "workspace"): {
+        str(base.resolve() / "workspace"): {
             "bind": "/workspace",
             "mode": "rw",
         },
         # Claude data (sessions, settings, cache, memory) — persistent
-        str(base / "claude-data"): {
+        str(base.resolve() / "claude-data"): {
             "bind": "/home/agent/.claude",
             "mode": "rw",
         },
         # Hook scripts
-        str(Path(__file__).parent / "hooks"): {
+        str(hooks_dir): {
             "bind": "/hooks",
             "mode": "ro",
         },
@@ -155,7 +167,9 @@ def ensure_container(user_id: str, mcp_config: dict | None = None) -> str:
 
     Returns the container's internal API URL (for WebSocket bridge).
     Creates the container if it doesn't exist, unpauses if paused.
+    Records activity to prevent idle stop.
     """
+    touch_user(user_id)
     client = get_client()
     name = container_name(user_id)
     ensure_user_dirs(user_id)
@@ -211,6 +225,75 @@ def destroy_container(user_id: str) -> None:
         logger.info("Destroyed container for user %s", user_id)
     except docker.errors.NotFound:
         pass
+
+
+def stop_container(user_id: str) -> None:
+    """Stop a user's container gracefully (SIGTERM, then SIGKILL after timeout).
+
+    Transitions the container to 'exited' state, preserving volumes.
+    ensure_container() will restart it when the user returns.
+    """
+    client = get_client()
+    try:
+        container = client.containers.get(container_name(user_id))
+        container.stop(timeout=30)
+        logger.info("Stopped container for user %s", user_id)
+    except docker.errors.NotFound:
+        pass
+
+
+def touch_user(user_id: str) -> None:
+    """Record user activity timestamp to prevent idle stop."""
+    _last_activity[user_id] = time.time()
+
+
+def stop_idle_containers() -> int:
+    """Stop containers for users who have been idle beyond CONTAINER_IDLE_TTL.
+
+    Returns the number of containers stopped.
+    """
+    now = time.time()
+    stopped = 0
+    for user_id, last_ts in list(_last_activity.items()):
+        if now - last_ts < CONTAINER_IDLE_TTL:
+            continue
+        try:
+            client = get_client()
+            container = client.containers.get(container_name(user_id))
+            if container.status in ("running", "paused"):
+                container.stop(timeout=30)
+                logger.info("Stopped idle container for user %s (idle %.0fs)", user_id, now - last_ts)
+                stopped += 1
+        except docker.errors.NotFound:
+            del _last_activity[user_id]
+    return stopped
+
+
+async def _run_idle_monitor() -> None:
+    """Background loop that periodically stops idle containers."""
+    try:
+        logger.info("Container idle monitor started (TTL=%ds, check every %ds)", CONTAINER_IDLE_TTL, IDLE_CHECK_INTERVAL)
+    except Exception as e:
+        logger.error("Failed to log idle monitor start: %s", e)
+    while True:
+        await asyncio.sleep(IDLE_CHECK_INTERVAL)
+        try:
+            stopped = stop_idle_containers()
+            if stopped > 0:
+                logger.debug("Idle monitor stopped %d container(s)", stopped)
+        except Exception:
+            logger.exception("Error in container idle monitor")
+
+
+def start_idle_monitor() -> None:
+    """Start the background idle-monitor asyncio task."""
+    global _idle_monitor_task
+    logger.info("start_idle_monitor called, existing task=%s", _idle_monitor_task)
+    if _idle_monitor_task is not None and not _idle_monitor_task.done():
+        logger.info("Idle monitor task already running, skipping")
+        return
+    _idle_monitor_task = asyncio.create_task(_run_idle_monitor())
+    logger.info("Idle monitor task created")
 
 
 def list_active_containers() -> list[dict[str, str]]:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -19,6 +20,14 @@ def reset_client_cache() -> None:
     cm._client = None
     yield
     cm._client = None
+
+
+@pytest.fixture(autouse=True)
+def reset_last_activity() -> None:
+    """Reset the module-level _last_activity dict between tests."""
+    cm._last_activity.clear()
+    yield
+    cm._last_activity.clear()
 
 
 @pytest.fixture()
@@ -246,3 +255,110 @@ class TestContainerName:
     def test_container_name_format(self) -> None:
         assert cm.container_name("alice") == "web-agent-alice"
         assert cm.container_name("bob") == "web-agent-bob"
+
+
+# ── idle tracking ──────────────────────────────────────────────────
+
+
+class TestIdleTracking:
+    def test_touch_user_records_timestamp(self) -> None:
+        before = time.time()
+        cm.touch_user("alice")
+        after = time.time()
+        assert "alice" in cm._last_activity
+        assert before <= cm._last_activity["alice"] <= after
+
+    def test_touch_user_overwrites_previous(self) -> None:
+        cm._last_activity["alice"] = 100.0
+        cm.touch_user("alice")
+        assert cm._last_activity["alice"] > 100.0
+
+    @patch("src.container_manager.get_client")
+    def test_stop_container(self, mock_get_client: MagicMock) -> None:
+        mock_container = MagicMock()
+        mock_client = MagicMock()
+        mock_client.containers.get.return_value = mock_container
+        mock_get_client.return_value = mock_client
+
+        cm.stop_container("alice")
+        mock_container.stop.assert_called_once_with(timeout=30)
+
+    @patch("src.container_manager.get_client")
+    def test_stop_container_missing(self, mock_get_client: MagicMock) -> None:
+        mock_client = MagicMock()
+        mock_client.containers.get.side_effect = docker.errors.NotFound("not found")
+        mock_get_client.return_value = mock_client
+
+        cm.stop_container("alice")  # should not raise
+
+    @patch("src.container_manager.get_client")
+    def test_stop_idle_containers_stops_idle(self, mock_get_client: MagicMock) -> None:
+        now = time.time()
+        cm._last_activity["alice"] = now - 3600  # 1 hour idle
+        cm._last_activity["bob"] = now  # freshly active
+
+        mock_container_a = MagicMock()
+        mock_container_a.status = "running"
+        mock_client = MagicMock()
+        mock_client.containers.get.side_effect = lambda name: {
+            "web-agent-alice": mock_container_a,
+        }.get(name, MagicMock(status="running"))
+        mock_get_client.return_value = mock_client
+
+        # Temporarily reduce TTL to ensure alice is detected as idle
+        original_ttl = cm.CONTAINER_IDLE_TTL
+        cm.CONTAINER_IDLE_TTL = 100  # 100 seconds
+        try:
+            stopped = cm.stop_idle_containers()
+            assert stopped == 1
+            mock_container_a.stop.assert_called_once()
+        finally:
+            cm.CONTAINER_IDLE_TTL = original_ttl
+
+    @patch("src.container_manager.get_client")
+    def test_stop_idle_containers_all_active(self, mock_get_client: MagicMock) -> None:
+        now = time.time()
+        cm._last_activity["alice"] = now
+        cm._last_activity["bob"] = now
+
+        mock_client = MagicMock()
+        mock_get_client.return_value = mock_client
+
+        stopped = cm.stop_idle_containers()
+        assert stopped == 0
+        mock_client.containers.get.assert_not_called()
+
+    @patch("src.container_manager.get_client")
+    def test_stop_idle_containers_cleans_missing(self, mock_get_client: MagicMock) -> None:
+        cm._last_activity["alice"] = 0.0  # very old
+        mock_client = MagicMock()
+        mock_client.containers.get.side_effect = docker.errors.NotFound("not found")
+        mock_get_client.return_value = mock_client
+
+        original_ttl = cm.CONTAINER_IDLE_TTL
+        cm.CONTAINER_IDLE_TTL = 1
+        try:
+            stopped = cm.stop_idle_containers()
+            assert stopped == 0
+            assert "alice" not in cm._last_activity
+        finally:
+            cm.CONTAINER_IDLE_TTL = original_ttl
+
+    @patch("src.container_manager.get_client")
+    def test_ensure_container_calls_touch_user(self, mock_get_client: MagicMock, tmp_data_root: Path) -> None:
+        mock_container = MagicMock()
+        mock_container.status = "running"
+        mock_container.attrs = {
+            "NetworkSettings": {
+                "Ports": {"8000/tcp": [{"HostPort": "55555"}]}
+            }
+        }
+
+        mock_client = MagicMock()
+        mock_client.containers.get.side_effect = docker.errors.NotFound("not found")
+        mock_client.containers.run.return_value = mock_container
+        mock_get_client.return_value = mock_client
+
+        assert "alice" not in cm._last_activity
+        cm.ensure_container("alice")
+        assert "alice" in cm._last_activity

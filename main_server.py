@@ -2126,6 +2126,15 @@ async def handle_ws(websocket: WebSocket) -> None:
                     data = item
 
             logger.info("[WS] Processing message: type=%s session_id=%s message=%s", data.get("type"), data.get("session_id"), data.get("message", "")[:50])
+            # Record user activity for container idle-TTL tracking, ensure container running
+            if CONTAINER_MODE and _locked_user_id:
+                _cm = _get_container_manager()
+                if _cm:
+                    _cm.touch_user(_locked_user_id)
+                    try:
+                        _cm.ensure_container(_locked_user_id)
+                    except Exception:
+                        logger.exception("Failed to ensure container for %s", _locked_user_id)
             user_message = data.get("message", "")
             session_id = data.get("session_id")
             last_index = data.get("last_index", 0)
@@ -4857,6 +4866,16 @@ async def startup() -> None:
         logger.info("No DATA_DB_PATH set — using file-based storage")
 
     asyncio.create_task(_cleanup_loop())
+
+    # Start container idle monitor when CONTAINER_MODE is enabled
+    logger.info("DEBUG CONTAINER_MODE=%s", CONTAINER_MODE)
+    if CONTAINER_MODE:
+        _cm = _get_container_manager()
+        logger.info("DEBUG _get_container_manager returned=%s", _cm)
+        if _cm:
+            logger.info("About to call start_idle_monitor")
+            _cm.start_idle_monitor()
+            logger.info("Called start_idle_monitor")
 
 
 async def _cleanup_loop() -> None:
