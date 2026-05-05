@@ -3160,7 +3160,10 @@ async def upload_skill_files(
 
 
 @app.post("/api/shared-skills/upload")
-async def upload_shared_skill(file: UploadFile = File(...)) -> dict[str, Any]:
+async def upload_shared_skill(
+    file: UploadFile = File(...),
+    current_user: str = Depends(require_admin),
+) -> dict[str, Any]:
     """Upload a zip file and extract contents into a shared skill directory."""
     if not file.filename or not file.filename.lower().endswith(".zip"):
         raise HTTPException(status_code=400, detail="Only .zip files are accepted")
@@ -3213,7 +3216,10 @@ def _validate_skill_name(skill_name: str, parent_dir: Path) -> None:
 
 
 @app.delete("/api/shared-skills/{skill_name}")
-async def delete_shared_skill(skill_name: str) -> dict[str, str]:
+async def delete_shared_skill(
+    skill_name: str,
+    current_user: str = Depends(require_admin),
+) -> dict[str, str]:
     """Delete a shared skill."""
     _validate_skill_name(skill_name, DATA_ROOT / "shared-skills")
     skill_dir = DATA_ROOT / "shared-skills" / skill_name
@@ -3583,7 +3589,10 @@ async def submit_skill_feedback(
 
 
 @app.get("/api/skills/{skill_name}/analytics")
-async def get_skill_analytics(skill_name: str) -> dict[str, Any]:
+async def get_skill_analytics(
+    skill_name: str,
+    current_user: str = Depends(get_current_user),
+) -> dict[str, Any]:
     """Get aggregated analytics for a skill."""
     if _db is not None:
         from src.skill_feedback import DBSkillFeedbackManager
@@ -3610,7 +3619,10 @@ async def get_all_skills_analytics(
 
 
 @app.get("/api/skills/{skill_name}/suggestions")
-async def get_skill_suggestions(skill_name: str) -> dict[str, list[str]]:
+async def get_skill_suggestions(
+    skill_name: str,
+    current_user: str = Depends(get_current_user),
+) -> dict[str, list[str]]:
     """Get improvement suggestions for a skill based on feedback."""
     if _db is not None:
         from src.skill_feedback import DBSkillFeedbackManager
@@ -4078,7 +4090,7 @@ async def get_version_file_content(
 # ── Legacy: Evolution Candidates (still used by EvolutionPanel) ──
 @app.get("/api/admin/skills/evolution-candidates")
 async def list_evolution_candidates(
-    current_user: str = Depends(get_current_user),
+    current_user: str = Depends(require_admin),
 ) -> dict[str, list[dict[str, Any]]]:
     """List skills that should evolve."""
     from src.skill_evolution import SkillEvolutionManager
