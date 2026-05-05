@@ -29,7 +29,7 @@ interface PendingSend {
 
 const PENDING_QUEUE_MAX = 100;
 const PRIORITY_QUEUE_MAX = 10; // Separate queue for answers (high priority)
-const SEND_TIMEOUT_MS = 30_000;
+const SEND_TIMEOUT_MS = 300_000; // 5 minutes
 const RECOVER_TIMEOUT_MS = 15_000;
 
 interface UseWebSocketOptions {
