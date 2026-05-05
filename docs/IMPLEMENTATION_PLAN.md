@@ -1,5 +1,7 @@
 # Web Agent - Full Implementation Plan
 
+> **ARCHIVED** — 2026-04-13 snapshot. All phases complete but references deleted modules (`ab_testing.py`, `session_cleanup.py`). Code has evolved past this document. Kept as historical record only.
+>
 > Phase 1: 9/9 | Phase 2: 6/6 | Phase 3: 7/7 | Phase 4: 3/3 | Phase 5: 3/5 (OAuth deferred)
 > Last updated: 2026-04-13 | Tests: 235 passing
 

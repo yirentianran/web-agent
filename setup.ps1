@@ -59,7 +59,7 @@ if (-not (Test-Path ".env")) {
     Copy-Item ".env.example" ".env"
     Write-Host ""
     Write-Host "WARN Created .env from .env.example"
-    Write-Host "     Please edit .env and set your ANTHROPIC_API_KEY before starting"
+    Write-Host "     Please edit .env and set your ANTHROPIC_API_TOKEN before starting"
 }
 
 # Step 5: Install concurrently for start-dev.ps1
@@ -80,7 +80,7 @@ Write-Host ""
 Write-Host "=== Setup complete ==="
 Write-Host ""
 Write-Host "Next steps:"
-Write-Host "  1. Edit .env and set your ANTHROPIC_API_KEY"
+Write-Host "  1. Edit .env and set your ANTHROPIC_API_TOKEN"
 Write-Host "  2. Run .\start-dev.ps1 to start both servers"
 Write-Host "  3. Open http://127.0.0.1:3000 in your browser"
 Write-Host ""

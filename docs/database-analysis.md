@@ -1,5 +1,7 @@
 # 数据库迁移分析 — Web Agent
 
+> **ARCHIVED** — Recommended keeping files (Plan A) but SQLite was implemented instead. Historical rationale is still useful.
+
 **日期**: 2026-04-16
 **范围**: 评估基于文件的存储方式是否需要迁移到数据库
 **当前规模**: ~2 用户, ~17 会话, ~5MB 总数据

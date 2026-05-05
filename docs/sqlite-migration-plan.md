@@ -1,5 +1,7 @@
 # SQLite 迁移计划 — 3000 用户（零安装）
 
+> **ARCHIVED** — Migration is largely complete (`src/database.py`, `src/session_store.py`, `data/web-agent.db` operational). Schema definitions remain valid references.
+
 **日期**: 2026-04-16
 **数据库**: SQLite（Python 内置 `sqlite3` + `aiosqlite` 异步支持）
 **状态**: 零安装、零外部依赖

@@ -1,5 +1,7 @@
 # Web Agent — 架构完成度分析报告
 
+> **ARCHIVED** — 2026-04-13 snapshot. Lists deleted modules (`ab_testing.py`, `session_cleanup.py`). Module-by-module analysis is stale. Kept as historical record only.
+>
 > 分析时间：2026-04-13 | 测试：235 通过 | 对比基准：`docs/claude-agent-sdk-multi-user-architecture.md`
 > 总体完成度：**~90%**（基础设施 100%，内容/示例 0%，安全加固 1 项缺失）
 

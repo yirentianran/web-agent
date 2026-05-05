@@ -1,5 +1,7 @@
 # JSONL 文件全面替换为 SQLite — 设计文档
 
+> **ARCHIVED** — Migration largely complete (session_store.py, message_buffer.py SQLite paths exist). Step 3 (cleanup) not yet done. Design is still accurate.
+
 ## 1. 目标
 
 **移除所有 JSONL 文件读写**，统一使用 SQLite 作为消息和 session 元数据的唯一持久化存储。

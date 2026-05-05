@@ -1,5 +1,7 @@
 # SQLite 数据迁移整改方案
 
+> **ARCHIVED** — Phase 1 (MCP) done (`src/mcp_store.py`). Phase 2-4 status unclear. Plan partially executed.
+
 > 生成日期: 2026-04-20
 > 状态: 待审批
 > 基于: `docs/` 下的数据库分析报告

@@ -41,7 +41,7 @@ if [ ! -f ".env" ]; then
   cp .env.example .env
   echo ""
   echo "⚠  Created .env from .env.example"
-  echo "   Please edit .env and set your ANTHROPIC_API_KEY before starting"
+  echo "   Please edit .env and set your ANTHROPIC_API_TOKEN before starting"
 fi
 
 # Step 5: Install concurrently for start-dev.sh
@@ -54,6 +54,6 @@ echo ""
 echo "=== Setup complete ==="
 echo ""
 echo "Next steps:"
-echo "  1. Edit .env and set your ANTHROPIC_API_KEY"
+echo "  1. Edit .env and set your ANTHROPIC_API_TOKEN"
 echo "  2. Run ./start-dev.sh to start both servers"
 echo "  3. Open http://localhost:3000 in your browser"

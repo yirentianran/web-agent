@@ -1,5 +1,7 @@
 # Multi-User Isolation Verification Guide
 
+> **ARCHIVED** — Line numbers and file references are stale. References deleted modules (`session_cleanup.py`, `ab_testing.py`). Conceptual verification layers are still sound. Kept as reference only.
+
 > 配套设计文档: [MULTI_USER_ISOLATION.md](./MULTI_USER_ISOLATION.md)
 
 ## 前置条件

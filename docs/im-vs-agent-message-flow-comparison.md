@@ -1,5 +1,7 @@
 # Web Agent 消息流 vs IM 消息流 — 对比分析
 
+> **ARCHIVED** — TODO items (send failure, UUID dedup, WS recovery, etc.) were all completed per `im-message-flow-implementation-report.md`. Comparison framework is still useful.
+
 ## 概述
 
 本文档对比 Web Agent 项目的 ChatArea 消息流与即时通讯（IM）系统（微信、WhatsApp、Telegram、Slack、Discord）的消息流设计，找出差异与可借鉴之处。
