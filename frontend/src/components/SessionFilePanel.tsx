@@ -6,8 +6,21 @@ interface FileInfo {
   path: string
   size: number
   source: 'upload' | 'generated'
-  modified_at?: number
+  modified_at?: string
   download_url?: string
+}
+
+function formatTime(isoString: string | undefined): string {
+  if (!isoString) return ''
+  const date = new Date(isoString)
+  if (isNaN(date.getTime())) return ''
+  const now = new Date()
+  const isToday = date.toDateString() === now.toDateString()
+  if (isToday) {
+    return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+  }
+  return date.toLocaleDateString([], { month: '2-digit', day: '2-digit' }) + ' ' +
+    date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
 }
 
 interface SessionFilePanelProps {
@@ -63,7 +76,7 @@ export default function SessionFilePanel({
               size: (f.size as number) || 0,
               source: fullPath.startsWith('outputs/') ? 'generated' : 'upload',
               download_url: f.download_url as string | undefined,
-              modified_at: f.generated_at as number | undefined,
+              modified_at: f.generated_at as string | undefined,
             }
           })
       } else if (scope === 'all') {
@@ -82,9 +95,17 @@ export default function SessionFilePanel({
               path: name,
               size: (f.size as number) || 0,
               source: name.startsWith('outputs/') ? 'generated' : 'upload',
+              modified_at: f.modified_at as string | undefined,
             }
           })
       }
+      // Sort by time descending (newest first)
+      data.sort((a, b) => {
+        if (!a.modified_at && !b.modified_at) return 0
+        if (!a.modified_at) return 1
+        if (!b.modified_at) return -1
+        return new Date(b.modified_at).getTime() - new Date(a.modified_at).getTime()
+      })
       setFiles(data)
     } catch (err) {
       setError(err instanceof Error ? err.message : t('filePanel.loadFailed'))
@@ -211,6 +232,11 @@ function FileGroup({
                   {f.filename}
                 </button>
                 <span className="sfp-item-size">{formatBytes(f.size)}</span>
+                {f.modified_at && (
+                  <span className="sfp-item-time" title={new Date(f.modified_at).toLocaleString()}>
+                    {formatTime(f.modified_at)}
+                  </span>
+                )}
                 <a
                   className="sfp-item-dl"
                   href={`/api/users/${userId}/download/${encodeURIComponent(f.path)}?token=${encodeURIComponent(authToken || '')}`}

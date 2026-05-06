@@ -550,9 +550,21 @@ def _insert_generated_file(user_id: str, session_id: str, filename: str, file_si
 
 
 def _insert_upload_file(user_id: str, session_id: str, filename: str, file_size: int) -> None:
-    """Insert a record into the uploads table, ignoring duplicates."""
+    """Insert a record into the uploads table, ignoring duplicates.
+
+    If file_size is 0, attempts to read the actual size from the workspace
+    uploads directory before inserting. Prefixes the stored filename with
+    ``uploads/`` so download URLs resolve to the correct path.
+    """
     if _db is None:
         return
+    # Prepend uploads/ prefix so download URLs resolve to the correct path
+    stored_name = f"uploads/{filename}" if not filename.startswith("uploads/") else filename
+    actual_size = file_size
+    if actual_size <= 0:
+        upload_path = user_workspace_dir(user_id) / stored_name
+        if upload_path.exists():
+            actual_size = upload_path.stat().st_size
     import uuid
     try:
         import sqlite3 as _sqlite3
@@ -564,10 +576,10 @@ def _insert_upload_file(user_id: str, session_id: str, filename: str, file_size:
                 str(uuid.uuid4()),
                 user_id,
                 session_id,
+                stored_name,
                 filename,
-                filename,
-                file_size,
-                f"/api/users/{user_id}/download/{filename}",
+                actual_size,
+                f"/api/users/{user_id}/download/{stored_name}",
             ),
         )
         conn.commit()
@@ -3236,6 +3248,7 @@ async def list_files(
                     {
                         "path": str(rel),
                         "size": f.stat().st_size,
+                        "modified_at": datetime.fromtimestamp(f.stat().st_mtime, tz=timezone.utc).isoformat(),
                     }
                 )
     return files
