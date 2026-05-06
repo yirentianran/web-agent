@@ -145,6 +145,7 @@ export default function SessionFilePanel({
             title={t('filePanel.uploadsGroup')}
             files={uploadFiles}
             userId={userId}
+            authToken={authToken}
             onFileClick={onFileClick}
             onDelete={handleDelete}
             deleting={deleting}
@@ -153,6 +154,7 @@ export default function SessionFilePanel({
             title={t('filePanel.generatedGroup')}
             files={generatedFiles}
             userId={userId}
+            authToken={authToken}
             onFileClick={onFileClick}
             onDelete={handleDelete}
             deleting={deleting}
@@ -167,6 +169,7 @@ function FileGroup({
   title,
   files,
   userId,
+  authToken,
   onFileClick,
   onDelete,
   deleting,
@@ -174,6 +177,7 @@ function FileGroup({
   title: string
   files: FileInfo[]
   userId: string
+  authToken?: string | null
   onFileClick: (filename: string) => void
   onDelete: (file: FileInfo) => void
   deleting: string | null
@@ -209,7 +213,7 @@ function FileGroup({
                 <span className="sfp-item-size">{formatBytes(f.size)}</span>
                 <a
                   className="sfp-item-dl"
-                  href={`/api/users/${userId}/download/${encodeURIComponent(f.path)}`}
+                  href={`/api/users/${userId}/download/${encodeURIComponent(f.path)}?token=${encodeURIComponent(authToken || '')}`}
                   download
                   title={t('common.download')}
                 >

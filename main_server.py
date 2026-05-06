@@ -5257,9 +5257,35 @@ async def _cleanup_loop() -> None:
 STATIC_DIR = Path(__file__).parent / "src" / "static"
 
 if STATIC_DIR.exists():
-    app.mount("/", StaticFiles(directory=str(STATIC_DIR), html=True), name="static")
+    # Serve Vite-built assets (JS, CSS, images) under /assets/
+    assets_dir = STATIC_DIR / "assets"
+    if assets_dir.exists():
+        app.mount("/assets", StaticFiles(directory=str(assets_dir)), name="assets")
 
-    @app.get("/{full_path:path}")
-    async def spa_fallback(full_path: str):
-        """Serve index.html for SPA client-side routing."""
-        return FileResponse(STATIC_DIR / "index.html")
+
+@app.get("/{full_path:path}")
+async def spa_fallback(full_path: str):
+    """Serve index.html for SPA client-side routing in production.
+
+    In dev mode (PROD=false), the frontend is served by Vite on a separate port,
+    so this fallback is harmless. In production, all non-API paths return the
+    SPA shell so client-side routing works on page refresh.
+    """
+    # Block directory traversal
+    if ".." in full_path:
+        raise HTTPException(status_code=400, detail="Invalid path")
+
+    static_dir = Path(__file__).parent / "src" / "static"
+    if not static_dir.exists():
+        raise HTTPException(status_code=404, detail="Frontend not built")
+
+    # If the request matches a static file, serve it directly
+    file_path = static_dir / full_path
+    if file_path.exists() and file_path.is_file():
+        return FileResponse(file_path)
+
+    # Otherwise serve index.html for SPA routing
+    index_path = static_dir / "index.html"
+    if not index_path.exists():
+        raise HTTPException(status_code=404, detail="index.html not found")
+    return FileResponse(index_path)

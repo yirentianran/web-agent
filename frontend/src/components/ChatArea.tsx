@@ -386,6 +386,7 @@ export default function ChatArea({
             onResend={onResend}
             lastTodoWriteIndex={lastTodoWriteIndex}
             lastUserMsgIndex={lastUserMsgIndex}
+            authToken={authToken}
           />
         ))}
 

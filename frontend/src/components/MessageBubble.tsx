@@ -184,9 +184,10 @@ interface MessageBubbleProps {
   onResend?: (message: Message) => void
   lastTodoWriteIndex?: number
   lastUserMsgIndex?: number
+  authToken?: string | null
 }
 
-export default function MessageBubble({ message, sessionId, onAnswer, onFileClick, onResend, lastTodoWriteIndex, lastUserMsgIndex }: MessageBubbleProps) {
+export default function MessageBubble({ message, sessionId, onAnswer, onFileClick, onResend, lastTodoWriteIndex, lastUserMsgIndex, authToken }: MessageBubbleProps) {
   const { t } = useTranslation()
   if (message.type === 'user') {
     const files = (message.data as Array<{ filename: string; size?: number }> | undefined) || []
@@ -413,6 +414,7 @@ export default function MessageBubble({ message, sessionId, onAnswer, onFileClic
     const files = ((message.data as Array<{ filename: string; size?: number; download_url?: string }> | undefined) || [])
       .filter(f => isValidFilename(f.filename))
     const userId = message.user_id
+    const tokenParam = authToken ? `?token=${encodeURIComponent(authToken)}` : ''
     return (
       <>
         {files.map((f, i) => (
@@ -420,10 +422,12 @@ export default function MessageBubble({ message, sessionId, onAnswer, onFileClic
             <FileCardList
               files={[{
                 ...f,
-                downloadUrl: f.download_url ?? (userId && message.session_id
+                downloadUrl: f.download_url
+                  ? f.download_url + tokenParam
+                  : (userId && message.session_id
                   ? (f.filename.startsWith('outputs/') || f.filename.startsWith('outputs\\')
-                    ? `/api/users/${userId}/download/${f.filename.replace(/\\/g, '/')}`
-                    : `/api/users/${userId}/download/outputs/${f.filename}`)
+                    ? `/api/users/${userId}/download/${f.filename.replace(/\\/g, '/')}${tokenParam}`
+                    : `/api/users/${userId}/download/outputs/${f.filename}${tokenParam}`)
                   : undefined),
               }]}
               status="result"
