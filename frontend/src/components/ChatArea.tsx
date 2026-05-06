@@ -4,7 +4,7 @@ import MessageBubble, { parseTagBlocks, hasIncompleteTag } from "./MessageBubble
 import MarkdownRenderer from "./MarkdownRenderer";
 import SkillFeedbackWidget from "./SkillFeedbackWidget";
 import StatusSpinner from "./StatusSpinner";
-import type { Message } from "../lib/types";
+import type { Message, SessionStatus } from "../lib/types";
 
 const SCROLL_THRESHOLD = 100;
 
@@ -42,7 +42,7 @@ function saveStartTimes(times: Map<string, number>) {
 interface ChatAreaProps {
   messages: Message[];
   sessionId: string | null;
-  sessionState: string;
+  sessionState: SessionStatus;
   onAnswer: (sessionId: string, answers: Record<string, string>) => void;
   scrollPositions: Map<string, number>;
   onFileClick?: (filename: string) => void;
@@ -149,25 +149,15 @@ export default function ChatArea({
       return;
     }
 
-    // Detect transition TO running — restore saved time if available
+    // Detect transition TO running — always record a fresh start time.
+    // The saved start time in sessionStartTimesRef is only for the
+    // session-changed branch above (switching back to a running session).
+    // This branch fires when the SAME session transitions from non-running
+    // to running, which is always a new user turn — must reset the timer.
     if (
       sessionState === "running" &&
       prevSessionStateRef.current !== "running"
     ) {
-      const savedStart = sessionId
-        ? sessionStartTimesRef.current.get(sessionId)
-        : undefined;
-      if (savedStart !== undefined) {
-        // Use saved start time from localStorage. This preserves the timer
-        // across page refreshes. For genuinely new turns after completion,
-        // savedStart will be undefined because the transition away from
-        // running clears it; so any surviving savedStart belongs to the
-        // currently active run.
-        setAgentStartTime(savedStart);
-        prevSessionStateRef.current = sessionState;
-        return;
-      }
-      // No valid saved time — record now
       const now = Date.now();
       if (sessionId) {
         sessionStartTimesRef.current.set(sessionId, now);
@@ -361,7 +351,7 @@ export default function ChatArea({
         )}
         {sessionId !== null && sessionLoading && (
           <div className="chat-welcome">
-            <StatusSpinner isRunning={true} label={t('chat.switchingSession')} />
+            <StatusSpinner label={t('chat.switchingSession')} />
           </div>
         )}
 

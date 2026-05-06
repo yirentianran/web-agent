@@ -75,7 +75,8 @@
     "switchingSession": "切换会话...",
     "agentWorking": "Agent 正在工作...",
     "workingDefault": "工作中...",
-    "errorBanner": "处理请求时发生错误，请重试。"
+    "errorBanner": "处理请求时发生错误，请重试。",
+    "sessionCreateFailed": "创建会话失败，请检查网络连接后重试。"
   },
   "input": {
     "placeholder": "输入指令... (Shift+Enter 换行)",

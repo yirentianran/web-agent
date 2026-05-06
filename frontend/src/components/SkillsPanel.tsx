@@ -1,4 +1,5 @@
 import { useState, useCallback, useEffect, useRef } from 'react'
+import { useTranslation } from 'react-i18next'
 import type { Skill } from '../lib/types'
 import { useSkillsApi } from '../hooks/useSkillsApi'
 
@@ -12,6 +13,7 @@ interface SkillsPanelProps {
 type Tab = 'shared' | 'personal'
 
 export default function SkillsPanel({ authToken, userId, onClose, embedded }: SkillsPanelProps) {
+  const { t } = useTranslation()
   const api = useSkillsApi(authToken, userId)
   const [tab, setTab] = useState<Tab>('personal')
   const [sharedSkills, setSharedSkills] = useState<Skill[]>([])

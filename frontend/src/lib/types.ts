@@ -35,6 +35,9 @@ export interface Message {
 /** Send state machine for user messages */
 export type MessageSendState = 'sending' | 'sent' | 'failed'
 
+/** Session lifecycle status */
+export type SessionStatus = 'idle' | 'running' | 'completed' | 'error' | 'waiting_user' | 'cancelled'
+
 /** WebSocket connection status */
 export type ConnectionStatus = 'connected' | 'connecting' | 'reconnecting' | 'failed'
 
@@ -42,7 +45,7 @@ export interface SessionItem {
   session_id: string
   title: string
   last_message?: string
-  status: 'idle' | 'running' | 'completed' | 'error' | 'waiting_user' | 'cancelled'
+  status: SessionStatus
   cost_usd?: number
   created_at?: string
   size_mb?: number

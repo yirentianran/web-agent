@@ -23,7 +23,6 @@ interface StatusSpinnerProps {
   variant?: "default" | "hook" | "agent";
   startTime?: number;
   label?: string;
-  isRunning?: boolean;
 }
 
 export default function StatusSpinner({

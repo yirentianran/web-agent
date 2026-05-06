@@ -28,7 +28,7 @@ import {
   useStreamingText,
   type StreamingTextState,
 } from "./hooks/useStreamingText";
-import type { Message, SessionItem, MessageSendState, ConnectionStatus } from "./lib/types";
+import type { Message, SessionItem, MessageSendState, ConnectionStatus, SessionStatus } from "./lib/types";
 import {
   computeRecoverIndex,
   saveLastKnownIndex,
@@ -42,10 +42,21 @@ import {
 const logger = {
   error: (message: string, err: unknown) => {
     const detail = err instanceof Error ? err.message : String(err);
-    // In production, replace with a real logger (e.g., pino)
-    // eslint-disable-next-line no-console
     console.error(`[App] ${message}: ${detail}`);
   },
+  warn: (message: string) => {
+    console.warn(`[App] ${message}`);
+  },
+};
+
+// Valid session state transitions — used by setSessionStateFor to
+// warn on unexpected transitions (soft check, no transition is blocked).
+const VALID_TRANSITIONS: Record<string, SessionStatus[]> = {
+  idle: ["running"],
+  running: ["completed", "error", "cancelled", "idle"],
+  completed: ["running"],
+  error: ["running", "idle"],
+  cancelled: ["running", "idle"],
 };
 
 // Persist scroll position to localStorage so it survives page refresh
@@ -196,7 +207,7 @@ interface MainLayoutProps {
   onDeleteSession: (id: string) => Promise<void>;
   onRenameSession: (id: string, title: string) => Promise<void>;
   messages: Message[];
-  activeSessionState: string;
+  activeSessionStatus: SessionStatus;
   sendAnswer: (sessionId: string, answers: Record<string, string>) => void;
   handleFileClick: (filename: string) => void;
   handleResend: (message: Message) => void;
@@ -212,6 +223,8 @@ interface MainLayoutProps {
   handleLogout: () => void;
   navigate: ReturnType<typeof useNavigate>;
   sessionLoading: boolean;
+  sessionCreateError: boolean;
+  setSessionCreateError: (v: boolean | ((v: boolean) => boolean)) => void;
   userRole: string;
 }
 
@@ -228,7 +241,7 @@ function MainLayout({
   onDeleteSession,
   onRenameSession,
   messages,
-  activeSessionState,
+  activeSessionStatus,
   sendAnswer,
   handleFileClick,
   handleResend,
@@ -244,6 +257,8 @@ function MainLayout({
   handleLogout,
   navigate,
   sessionLoading,
+  sessionCreateError,
+  setSessionCreateError,
   userRole,
 }: MainLayoutProps) {
   const { t } = useTranslation();
@@ -297,6 +312,12 @@ function MainLayout({
           />
         </div>
         <main className="main">
+          {sessionCreateError && (
+            <div className="connection-banner connection-banner--failed">
+              <span>{t('chat.sessionCreateFailed')}</span>
+              <button onClick={() => setSessionCreateError(false)}>Dismiss</button>
+            </div>
+          )}
           {queueFull && (
             <div
               style={{
@@ -314,7 +335,7 @@ function MainLayout({
           <ChatArea
             messages={messages}
             sessionId={activeSession}
-            sessionState={activeSessionState}
+            sessionState={activeSessionStatus}
             onAnswer={sendAnswer}
             scrollPositions={sessionScrollPositions}
             onFileClick={handleFileClick}
@@ -328,8 +349,8 @@ function MainLayout({
             ref={inputBarRef}
             onSend={handleSend}
             onStop={stopSession}
-            disabled={status !== "connected" || activeSessionState === "running"}
-            isRunning={activeSessionState === "running" && status === "connected"}
+            disabled={status !== "connected" || activeSessionStatus === "running"}
+            isRunning={activeSessionStatus === "running" && status === "connected"}
             userId={userId}
             authToken={authToken || undefined}
           />
@@ -390,7 +411,7 @@ function MainApp() {
   useEffect(() => {
     urlSessionIdRef.current = urlSessionId;
   }, [urlSessionId]);
-  const [sessionStates, setSessionStates] = useState<Map<string, string>>(
+  const [sessionStates, setSessionStatuss] = useState<Map<string, string>>(
     new Map(),
   );
 
@@ -403,28 +424,36 @@ function MainApp() {
     streamingTextStateRef.current = streamingTextState;
   }, [streamingTextState]);
 
-  // Per-session state setter — updates only the specified session.
-  // Also syncs to sessionStatesRef to avoid stale closure bugs in
+  // Per-session state setter — the single entry point for all session state
+  // changes. Also syncs to sessionStatesRef to avoid stale closure bugs in
   // handleIncomingMessage when WebSocket messages arrive between
   // React scheduling a state update and applying it.
-  const setSessionStateFor = useCallback((sessionId: string, state: string) => {
-    // Sync to ref immediately — survives React render scheduling
-    sessionStatesRef.current.set(sessionId, state);
-    setSessionStates((prev) => {
+  const setSessionStateFor = useCallback((sessionId: string, newState: SessionStatus) => {
+    const prevState = sessionStatesRef.current.get(sessionId);
+    if (prevState === newState) return; // no-op: same state
+    const allowed = VALID_TRANSITIONS[prevState ?? ""];
+    if (allowed && !allowed.includes(newState)) {
+      logger.warn(
+        `Unexpected session state transition: ${prevState} → ${newState} (session: ${sessionId})`,
+      );
+    }
+    sessionStatesRef.current.set(sessionId, newState);
+    setSessionStatuss((prev) => {
       const next = new Map(prev);
-      next.set(sessionId, state);
+      next.set(sessionId, newState);
       return next;
     });
   }, []);
 
   // Get the current active session's state (for InputBar disabled check)
-  const activeSessionState = urlSessionId
-    ? (sessionStates.get(urlSessionId) ?? "idle")
+  const activeSessionStatus: SessionStatus = urlSessionId
+    ? (sessionStates.get(urlSessionId) as SessionStatus | undefined ?? "idle")
     : "idle";
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [filePanelOpen, setFilePanelOpen] = useState(false);
   const [fileRefreshKey, setFileRefreshKey] = useState(0);
   const [sessionLoading, setSessionLoading] = useState(false);
+  const [sessionCreateError, setSessionCreateError] = useState(false);
   const inputBarRef = useRef<InputBarHandle>(null);
   const navigate = useNavigate();
   // Index threshold: messages with index >= this are "new turn" messages.
@@ -487,15 +516,21 @@ function MainApp() {
   // Restore message history for the active session on mount (survives page refresh)
   useEffect(() => {
     if (urlSessionId) {
+      setSessionLoading(true);
+
       // Restore pending message from localStorage so the user's message
       // survives a page refresh even if the WebSocket message hasn't been
       // processed by the server yet.
       const storedPending = loadPendingMessage(urlSessionId, userId);
       if (storedPending) {
+        // Use lastKnownIndex + 1 so the pending message sorts at the bottom
+        // instead of at the top (which would happen with index=-1).
+        const lastKnownIdx = loadLastKnownIndex(urlSessionId, userId);
+        const syntheticIndex = lastKnownIdx >= 0 ? lastKnownIdx + 1 : 0;
         const optimisticMsg: Message = {
           type: "user",
           content: storedPending.content,
-          index: -1, // synthetic — will be replaced when backend echoes
+          index: syntheticIndex,
           data: storedPending.files,
           clientMsgId: storedPending.clientMsgId,
           sendState: "sending",
@@ -580,7 +615,7 @@ function MainApp() {
             );
           });
           restLoadedRef.current = true;
-          let derivedState = "idle";
+          let derivedState: SessionStatus = "idle";
           for (let i = msgs.length - 1; i >= 0; i--) {
             const m = msgs[i];
             if (
@@ -588,7 +623,7 @@ function MainApp() {
               m.subtype === "session_state_changed" &&
               m.state
             ) {
-              derivedState = m.state;
+              derivedState = m.state as SessionStatus;
               break;
             }
             if (m.type === "result") {
@@ -630,9 +665,11 @@ function MainApp() {
                 didRecoverRef.current = true;
               }
             })
-            .catch(() => {});
+            .catch(() => {})
+            .finally(() => { setSessionLoading(false); });
         })
         .catch(() => {
+          setSessionLoading(false);
           window.location.href = window.location.origin;
         });
     }
@@ -792,7 +829,7 @@ function MainApp() {
       // Still process state changes (session_state_changed, result) for all sessions.
       if (msg.session_id && msg.session_id !== urlSessionIdRef.current) {
         if (msg.type === "system" && msg.subtype === "session_state_changed") {
-          const newState = msg.state || msg.content || "completed";
+          const newState = (msg.state || msg.content || "completed") as SessionStatus;
           // Index-based filtering: block state changes from previous runs
           if (msg.index != null && msg.index < highestUserMsgIndexRef.current) {
             // Skip — this state change is older than the current run's user message
@@ -831,7 +868,7 @@ function MainApp() {
           msg.subtype === "session_state_changed" &&
           msg.session_id
         ) {
-          const newState = msg.state || msg.content || "completed";
+          const newState = (msg.state || msg.content || "completed") as SessionStatus;
           const isTerminal = TERMINAL_STATES.has(newState);
           // Accept terminal state changes even if index is slightly lower,
           // but never overwrite a live 'running' state with an old terminal.
@@ -980,7 +1017,7 @@ function MainApp() {
         msg.subtype === "session_state_changed" &&
         msg.session_id
       ) {
-        const newState = msg.state || msg.content || "completed";
+        const newState = (msg.state || msg.content || "completed") as SessionStatus;
         // Live session_state_changed — accept it (subscribe loop
         // only sends current-run messages after last_seen).
         setSessionStateFor(
@@ -1144,7 +1181,7 @@ function MainApp() {
   // lost (WS delivery failure), the frontend stays 'running' forever.
   // Detect this by checking if no heartbeat arrived for 60s while running.
   useEffect(() => {
-    if (activeSessionState !== "running" || !urlSessionIdRef.current) return;
+    if (activeSessionStatus !== "running" || !urlSessionIdRef.current) return;
 
     const checkInterval = setInterval(() => {
       const sid = urlSessionIdRef.current;
@@ -1163,7 +1200,7 @@ function MainApp() {
     }, 10_000); // Check every 10s
 
     return () => clearInterval(checkInterval);
-  }, [activeSessionState, messages, sendRecover, connected]);
+  }, [activeSessionStatus, messages, sendRecover, connected]);
 
   const handleResend = useCallback(
     (failedMessage: Message) => {
@@ -1221,14 +1258,11 @@ function MainApp() {
           navigate("/chat/" + sessionId);
           await loadSessions();
         } catch (err) {
-          // Session creation failed — fall back to synthetic ID so UX isn't broken
           const errorMsg = err instanceof Error ? err.message : String(err);
-          logger.error("Session creation failed, using synthetic ID", errorMsg);
-          sessionId = `sess_${generateUUID().replace(/-/g, "").slice(0, 12)}`;
-          navigate("/chat/" + sessionId);
-          navigate("/chat/" + sessionId);
-          setSessionStateFor(sessionId, "error");
-          setTimeout(() => setSessionStateFor(sessionId!, "idle"), 3000);
+          logger.error("Session creation failed", errorMsg);
+          setSessionCreateError(true);
+          setTimeout(() => setSessionCreateError(false), 8000);
+          return;
         }
       }
 
@@ -1354,7 +1388,7 @@ function MainApp() {
         if (id === urlSessionId) {
           setMessages([]);
           // Clear this session's state from the map
-          setSessionStates((prev) => {
+          setSessionStatuss((prev) => {
             const next = new Map(prev);
             next.delete(id);
             return next;
@@ -1519,7 +1553,7 @@ function MainApp() {
             onDeleteSession={handleDeleteSession}
             onRenameSession={handleRenameSession}
             messages={messages}
-            activeSessionState={activeSessionState}
+            activeSessionStatus={activeSessionStatus}
             sendAnswer={sendAnswer}
             handleFileClick={handleFileClick}
             handleResend={handleResend}
@@ -1535,6 +1569,8 @@ function MainApp() {
             handleLogout={handleLogout}
             navigate={navigate}
             sessionLoading={sessionLoading}
+            sessionCreateError={sessionCreateError}
+            setSessionCreateError={setSessionCreateError}
             userRole={userRole}
           />
         }
@@ -1556,7 +1592,7 @@ function MainApp() {
             onDeleteSession={handleDeleteSession}
             onRenameSession={handleRenameSession}
             messages={messages}
-            activeSessionState={activeSessionState}
+            activeSessionStatus={activeSessionStatus}
             sendAnswer={sendAnswer}
             handleFileClick={handleFileClick}
             handleResend={handleResend}
@@ -1572,6 +1608,8 @@ function MainApp() {
             handleLogout={handleLogout}
             navigate={navigate}
             sessionLoading={sessionLoading}
+            sessionCreateError={sessionCreateError}
+            setSessionCreateError={setSessionCreateError}
             userRole={userRole}
           />
         }

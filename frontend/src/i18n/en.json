@@ -75,7 +75,8 @@
     "switchingSession": "Switching session...",
     "agentWorking": "Agent is working...",
     "workingDefault": "Working...",
-    "errorBanner": "An error occurred while processing your request. Please try again."
+    "errorBanner": "An error occurred while processing your request. Please try again.",
+    "sessionCreateFailed": "Failed to create session. Please check your connection and try again."
   },
   "input": {
     "placeholder": "Enter instruction... (Shift+Enter for newline)",
