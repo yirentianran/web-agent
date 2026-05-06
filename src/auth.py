@@ -98,12 +98,23 @@ def get_current_user(
     1. Authorization: Bearer <token> header (primary)
     2. ?token=<jwt> query parameter (fallback, for WebSocket)
 
-    When ENFORCE_AUTH is False, returns "default" without requiring a token.
+    When ENFORCE_AUTH is False, tries to validate a token if present,
+    returning empty string when no token is provided.
     """
     if not ENFORCE_AUTH:
-        return "default"
+        raw_token: str | None = None
+        if authorization and authorization.startswith("Bearer "):
+            raw_token = authorization.split(" ", 1)[1]
+        elif token:
+            raw_token = token
+        if raw_token is not None:
+            try:
+                return verify_token(raw_token)
+            except HTTPException:
+                pass
+        return ""
 
-    raw_token: str | None = None
+    raw_token = None
     if authorization and authorization.startswith("Bearer "):
         raw_token = authorization.split(" ", 1)[1]
     elif token:
@@ -123,7 +134,7 @@ def require_user_match(path_user_id: str, current_user: str) -> str:
     """Verify that the authenticated user matches the path parameter.
 
     Returns the user_id if they match, raises 403 otherwise.
-    When ENFORCE_AUTH is False, always returns path_user_id (passthrough).
+    When ENFORCE_AUTH is False, allows passthrough.
     """
     if not ENFORCE_AUTH:
         return path_user_id

@@ -2338,7 +2338,7 @@ async def handle_ws(websocket: WebSocket) -> None:
                 if ENFORCE_AUTH and _verified_user_id:
                     incoming_user_id = _verified_user_id
                 elif not ENFORCE_AUTH:
-                    incoming_user_id = data.get("user_id", "default")
+                    incoming_user_id = data.get("user_id", "")
                 else:
                     incoming_user_id = "unknown"
 
@@ -4948,6 +4948,14 @@ async def get_user_feedback(
 class TokenRequest(BaseModel):
     user_id: str
     password: str = ""
+
+
+@app.get("/api/auth/config")
+async def get_auth_config() -> dict[str, bool]:
+    """Return auth configuration so the frontend knows whether password is required."""
+    from src.auth import ENFORCE_AUTH
+
+    return {"enforce_auth": ENFORCE_AUTH}
 
 
 @app.post("/api/auth/token")

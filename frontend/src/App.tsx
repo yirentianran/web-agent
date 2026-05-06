@@ -71,9 +71,21 @@ function LoginScreen({ onLogin }: LoginScreenProps) {
   const { t } = useTranslation();
   const [userId, setUserId] = useState("");
   const [password, setPassword] = useState("");
+  const [enforceAuth, setEnforceAuth] = useState(true);
+  const [configLoaded, setConfigLoaded] = useState(false);
   const [isRegister, setIsRegister] = useState(false);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    fetch("/api/auth/config")
+      .then((r) => r.json())
+      .then((cfg: { enforce_auth: boolean }) => {
+        setEnforceAuth(cfg.enforce_auth);
+        setConfigLoaded(true);
+      })
+      .catch(() => setConfigLoaded(true));
+  }, []);
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
@@ -107,6 +119,8 @@ function LoginScreen({ onLogin }: LoginScreenProps) {
     }
   };
 
+  if (!configLoaded) return null;
+
   return (
     <div className="login-screen">
       <header className="app-header login-header">
@@ -130,14 +144,16 @@ function LoginScreen({ onLogin }: LoginScreenProps) {
           autoFocus
           disabled={loading}
         />
-        <input
-          className="login-input"
-          type="password"
-          value={password}
-          onChange={(e) => setPassword(e.target.value)}
-          placeholder={t('login.passwordPlaceholder')}
-          disabled={loading}
-        />
+        {enforceAuth && (
+          <input
+            className="login-input"
+            type="password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            placeholder={t('login.passwordPlaceholder')}
+            disabled={loading}
+          />
+        )}
         {error && <p className="login-error">{error}</p>}
         <button
           className="login-button"
@@ -150,14 +166,16 @@ function LoginScreen({ onLogin }: LoginScreenProps) {
               ? t('login.registerButton')
               : t('login.submitButton')}
         </button>
-        <button
-          type="button"
-          className="login-toggle"
-          onClick={() => { setIsRegister(!isRegister); setError(""); }}
-          disabled={loading}
-        >
-          {isRegister ? t('login.switchToLogin') : t('login.switchToRegister')}
-        </button>
+        {enforceAuth && (
+          <button
+            type="button"
+            className="login-toggle"
+            onClick={() => { setIsRegister(!isRegister); setError(""); }}
+            disabled={loading}
+          >
+            {isRegister ? t('login.switchToLogin') : t('login.switchToRegister')}
+          </button>
+        )}
       </form>
     </div>
   );
@@ -345,7 +363,7 @@ function MainLayout({
 function MainApp() {
   const { t } = useTranslation();
   const [userId, setUserId] = useState<string>(() => {
-    return localStorage.getItem("userId") || "default";
+    return localStorage.getItem("userId") || "";
   });
   const [authToken, setAuthToken] = useState<string | null>(() => {
     return localStorage.getItem("authToken");
