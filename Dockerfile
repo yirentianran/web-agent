@@ -35,7 +35,6 @@ HEALTHCHECK --interval=30s --timeout=10s --retries=3 \
     CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')" || exit 1
 
 ENV PROD=true \
-    DATA_ROOT=/data \
     PYTHONUNBUFFERED=1
 
 EXPOSE 8000

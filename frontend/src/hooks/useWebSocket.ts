@@ -150,7 +150,12 @@ export function useWebSocket({
   // Core connect function — stable reference, reads everything from refs.
   // Returns { ws, close } where close is a cleanup function that only affects
   // this specific WebSocket (critical for React StrictMode double-mount).
+  // When no token and no userId, skips connection entirely (login/register page).
   const connect = useCallback(() => {
+    if (!tokenRef.current && !userIdRef.current) {
+      return { ws: null, cleanup: () => {} };
+    }
+
     if (reconnectTimer.current) {
       clearTimeout(reconnectTimer.current);
       reconnectTimer.current = null;
@@ -252,10 +257,12 @@ export function useWebSocket({
   }, [failPendingSends]);
 
   // The effect — each invocation captures its own WS and its own intentionalClose flag.
+  // Skips connection when no credentials (login/register page).
   useEffect(() => {
+    if (!token && !userId) return;
     const { cleanup } = connect();
     return cleanup;
-  }, [connect]);
+  }, [connect, token, userId]);
 
   /**
    * Send a message. Returns a `{ clientMsgId }` that can be used to track

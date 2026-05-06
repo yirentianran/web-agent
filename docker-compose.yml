@@ -11,7 +11,7 @@ services:
       - .env
       - .env.docker
     volumes:
-      - web-agent-data:/data
+      - ./data:/data
     restart: unless-stopped
 
 volumes:
