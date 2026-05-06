@@ -6,9 +6,7 @@ import SkillFeedbackWidget from "./SkillFeedbackWidget";
 import StatusSpinner from "./StatusSpinner";
 import type { Message } from "../lib/types";
 
-const SCROLL_THRESHOLD = 100; // pixels from bottom to consider "at bottom"
-
-const TERMINAL_STATES = new Set(["completed", "error", "cancelled"]);
+const SCROLL_THRESHOLD = 100;
 
 const AGENT_START_TIME_KEY = "web-agent-start-times";
 
@@ -160,23 +158,14 @@ export default function ChatArea({
         ? sessionStartTimesRef.current.get(sessionId)
         : undefined;
       if (savedStart !== undefined) {
-        // If we're transitioning from a terminal state (completed/error/cancelled),
-        // the saved start time is from a previous run — discard it so we don't
-        // accumulate elapsed time across separate runs.
-        const prevWasTerminal =
-          prevSessionStateRef.current !== null &&
-          TERMINAL_STATES.has(prevSessionStateRef.current);
-        if (prevWasTerminal) {
-          if (sessionId) {
-            sessionStartTimesRef.current.delete(sessionId);
-            saveStartTimes(sessionStartTimesRef.current);
-          }
-        } else {
-          // Use saved start time from localStorage (preserves timer on page refresh)
-          setAgentStartTime(savedStart);
-          prevSessionStateRef.current = sessionState;
-          return;
-        }
+        // Use saved start time from localStorage. This preserves the timer
+        // across page refreshes. For genuinely new turns after completion,
+        // savedStart will be undefined because the transition away from
+        // running clears it; so any surviving savedStart belongs to the
+        // currently active run.
+        setAgentStartTime(savedStart);
+        prevSessionStateRef.current = sessionState;
+        return;
       }
       // No valid saved time — record now
       const now = Date.now();

@@ -36,6 +36,7 @@ import {
   clearLastKnownIndex,
   savePendingMessage,
   clearPendingMessage,
+  loadPendingMessage,
 } from "./lib/session-state";
 
 const logger = {
@@ -486,6 +487,35 @@ function MainApp() {
   // Restore message history for the active session on mount (survives page refresh)
   useEffect(() => {
     if (urlSessionId) {
+      // Restore pending message from localStorage so the user's message
+      // survives a page refresh even if the WebSocket message hasn't been
+      // processed by the server yet.
+      const storedPending = loadPendingMessage(urlSessionId, userId);
+      if (storedPending) {
+        const optimisticMsg: Message = {
+          type: "user",
+          content: storedPending.content,
+          index: -1, // synthetic — will be replaced when backend echoes
+          data: storedPending.files,
+          clientMsgId: storedPending.clientMsgId,
+          sendState: "sending",
+          session_id: urlSessionId,
+        };
+        pendingUserMsgsRef.current.set(urlSessionId, optimisticMsg);
+        sendStateMapRef.current.set(storedPending.clientMsgId, "sending");
+        setMessages((prev) => {
+          const exists = prev.some(
+            (m) => m.clientMsgId === storedPending.clientMsgId,
+          );
+          if (exists) return prev;
+          return [...prev, optimisticMsg];
+        });
+        // Set state to running — the user sent a message and the agent
+        // should be working on it. REST /history and /status will correct
+        // the state if the message wasn't actually processed yet.
+        setSessionStateFor(urlSessionId, "running");
+      }
+
       // Load historical messages from backend
       const headers: Record<string, string> = {};
       const token = authTokenRef.current;
@@ -536,8 +566,13 @@ function MainApp() {
               return msgs;
             }
             const prevIndices = new Set(sameSession.map((m) => m.index));
+            const prevClientMsgIds = new Set(
+              sameSession.filter((m) => m.clientMsgId).map((m) => m.clientMsgId),
+            );
             const newMsgs = msgs.filter(
-              (m: Message) => !prevIndices.has(m.index),
+              (m: Message) =>
+                !prevIndices.has(m.index) &&
+                !(m.clientMsgId && prevClientMsgIds.has(m.clientMsgId)),
             );
             if (newMsgs.length === 0) return sameSession;
             return [...sameSession, ...newMsgs].sort(
@@ -725,12 +760,12 @@ function MainApp() {
 
       // Backend confirmed user message echo: clear pending and confirm send
       // Match by clientMsgId first, then fallback to content match (backward compat)
-      if (msg.type === "user" && !msg.replay && msg.session_id) {
+      if (msg.type === "user" && msg.session_id) {
         const pending = pendingUserMsgsRef.current.get(msg.session_id);
         const matchedByUuid =
           msg.clientMsgId && pending?.clientMsgId === msg.clientMsgId;
         const matchedByContent =
-          !msg.clientMsgId && pending && pending.content === msg.content;
+          !msg.replay && !msg.clientMsgId && pending && pending.content === msg.content;
         if (matchedByUuid || matchedByContent) {
           pendingUserMsgsRef.current.delete(msg.session_id);
             clearPendingMessage(msg.session_id, userId);
@@ -763,14 +798,12 @@ function MainApp() {
             // Skip — this state change is older than the current run's user message
           } else if (msg.replay) {
             const currentState = sessionStatesRef.current.get(msg.session_id);
-            // Allow error states through even during replay — they're more severe
-            // But block completed/idle/cancelled from overwriting running
-            if (
-              currentState === "running" &&
-              newState !== "running" &&
-              newState !== "error"
-            ) {
-              // Skip — live state takes precedence
+            const isTerminal = TERMINAL_STATES.has(newState);
+            if (isTerminal) {
+              // Replay terminal states are authoritative (from DB)
+              setSessionStateFor(msg.session_id, newState);
+            } else if (currentState === "running") {
+              // Skip — live running state takes precedence over replayed non-terminal
             } else {
               setSessionStateFor(msg.session_id, newState);
             }
@@ -813,12 +846,12 @@ function MainApp() {
             }
           } else if (msg.replay) {
             const currentState = sessionStatesRef.current.get(msg.session_id);
-            if (
-              currentState === "running" &&
-              newState !== "running" &&
-              newState !== "error"
-            ) {
-              // Skip — live state takes precedence over replayed history
+            const isTerminal = TERMINAL_STATES.has(newState);
+            if (isTerminal) {
+              // Replay terminal states are authoritative (from DB)
+              setSessionStateFor(msg.session_id, newState);
+            } else if (currentState === "running") {
+              // Skip — live running state takes precedence over replayed non-terminal
             } else if (newState === "running" && currentState !== "running") {
               // Skip — replayed "running" is stale history;
               // if the agent were truly running we'd get a live message

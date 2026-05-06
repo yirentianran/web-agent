@@ -56,7 +56,11 @@ if TYPE_CHECKING:
 
 import logging.handlers
 
-LOG_FILE = Path(__file__).parent / "server.log"
+_LOG_DIR = os.getenv("LOG_DIR", "")
+if _LOG_DIR:
+    LOG_FILE = Path(_LOG_DIR) / "server.log"
+else:
+    LOG_FILE = Path(__file__).parent / "server.log"
 _EXTRACTION_RULES_PATH = Path(__file__).parent / "src" / "learn-extraction.md"
 
 logger = logging.getLogger(__name__)
@@ -173,6 +177,7 @@ def _get_cli_session_uuid(our_session_id: str) -> str | None:
     """Get the CLI-generated session UUID for a given web-agent session."""
     return _cli_session_map.get(our_session_id)
 
+
 # Load persisted mappings on module init
 _load_cli_session_map()
 
@@ -188,21 +193,66 @@ async def _emit_synthetic_state_change_if_missing(
     if buf_state["state"] in ("completed", "error", "cancelled"):
         all_buffer_msgs = await buffer.get_history(session_id)
         has_state_change = any(
-            m.get("type") == "system"
-            and m.get("subtype") == "session_state_changed"
-            for m in all_buffer_msgs
+            m.get("type") == "system" and m.get("subtype") == "session_state_changed" for m in all_buffer_msgs
         )
         if not has_state_change:
-            if not await _safe_ws_send(websocket, {
+            if not await _safe_ws_send(
+                websocket,
+                {
+                    "type": "system",
+                    "subtype": "session_state_changed",
+                    "state": buf_state["state"],
+                    "index": last_seen,
+                    "replay": False,
+                    "session_id": session_id,
+                },
+            ):
+                return last_seen, False
+            last_seen += 1
+    return last_seen, True
+
+
+async def _handle_orphaned_running(
+    websocket: WebSocket,
+    session_id: str,
+    last_seen: int,
+) -> tuple[int, bool]:
+    """Detect and resolve orphaned "running" sessions.
+
+    When the buffer state is "running" (recovered from DB after server
+    restart) but no asyncio task exists in active_tasks, the agent is
+    truly dead. Emit a synthetic terminal state change so the frontend
+    doesn't spin forever. Returns (updated last_seen, ws_ok).
+    """
+    task_key = f"task_{session_id}"
+    buf_state = buffer.get_state(session_id)
+    task_exists = task_key in active_tasks and not active_tasks[task_key].done()
+
+    if buf_state == "running" and not task_exists:
+        logger.warning(
+            "Orphaned running session %s: buffer state=running but no active task. Emitting synthetic error.",
+            session_id,
+        )
+        if not await _safe_ws_send(
+            websocket,
+            {
                 "type": "system",
                 "subtype": "session_state_changed",
-                "state": buf_state["state"],
+                "state": "error",
+                "message": "Agent task was interrupted (server restart or crash). Please try again.",
                 "index": last_seen,
                 "replay": False,
                 "session_id": session_id,
-            }):
-                return last_seen, False
-            last_seen += 1
+            },
+        ):
+            return last_seen, False
+        last_seen += 1
+        # Set buffer state to error so future status queries return the
+        # correct state and done=True so the subscribe loop exits.
+        buf = buffer.sessions.get(session_id)
+        if buf:
+            buf["state"] = "error"
+        buffer.mark_done(session_id)
     return last_seen, True
 
 
@@ -527,8 +577,10 @@ def _insert_generated_file(user_id: str, session_id: str, filename: str, file_si
     if _db is None:
         return
     import uuid
+
     try:
         import sqlite3 as _sqlite3
+
         conn = _sqlite3.connect(str(_db.db_path))
         conn.execute(
             "INSERT OR IGNORE INTO generated_files (id, user_id, session_id, filename, stored_name, file_size, url) "
@@ -566,8 +618,10 @@ def _insert_upload_file(user_id: str, session_id: str, filename: str, file_size:
         if upload_path.exists():
             actual_size = upload_path.stat().st_size
     import uuid
+
     try:
         import sqlite3 as _sqlite3
+
         conn = _sqlite3.connect(str(_db.db_path))
         conn.execute(
             "INSERT OR IGNORE INTO uploads (id, user_id, session_id, filename, stored_name, file_size, url) "
@@ -686,7 +740,9 @@ def _fallback_extraction_rules() -> str:
     )
 
 
-def build_system_prompt(user_id: str, skills: dict[str, dict[str, Any]], workspace: Path | None = None, language: str | None = None) -> str:
+def build_system_prompt(
+    user_id: str, skills: dict[str, dict[str, Any]], workspace: Path | None = None, language: str | None = None
+) -> str:
     """Assemble the full system prompt from skills + memory.
 
     Language priority: WebSocket message → DB → default 'zh'.
@@ -813,13 +869,13 @@ def build_system_prompt(user_id: str, skills: dict[str, dict[str, Any]], workspa
         "If the accumulated conversation exceeds this limit, the request will be rejected. "
         "To prevent this:\n"
         "- PDF files: ALWAYS use the `pages` parameter to read at most 20 pages per call "
-        "(e.g., `pages: \"1-20\"`, then `pages: \"21-40\"`). Process and summarize each chunk "
+        '(e.g., `pages: "1-20"`, then `pages: "21-40"`). Process and summarize each chunk '
         "before reading the next.\n"
         "- Large text/excel files: ALWAYS use the `offset` and `limit` parameters to read in "
         "chunks of at most 500 lines. Summarize findings progressively.\n"
         "- For long documents, read the table of contents or first few pages first, then "
         "selectively read relevant sections.\n"
-        "- When you encounter a \"request body too large\" error, immediately stop and re-read "
+        '- When you encounter a "request body too large" error, immediately stop and re-read '
         "using smaller chunks.\n"
         "- Avoid holding full document text in the conversation — extract only what is needed "
         "for the current task, then produce the output.\n"
@@ -1269,10 +1325,14 @@ def build_sdk_options(
         resume=resume_session_id,  # Resume a previous CLI session (native multi-turn)
         max_buffer_size=int(os.getenv("MAX_BUFFER_SIZE", str(10 * 1024 * 1024))),
     )
-    logger.info("[AGENT_CONFIG] key=%s, base_url=%s, model=%s",
-                ("SET (via %s)" % ("ANTHROPIC_AUTH_TOKEN" if os.getenv("ANTHROPIC_AUTH_TOKEN") else "ANTHROPIC_API_KEY")) if api_key else "NOT_SET",
-                base_url or "default",
-                model)
+    logger.info(
+        "[AGENT_CONFIG] key=%s, base_url=%s, model=%s",
+        ("SET (via %s)" % ("ANTHROPIC_AUTH_TOKEN" if os.getenv("ANTHROPIC_AUTH_TOKEN") else "ANTHROPIC_API_KEY"))
+        if api_key
+        else "NOT_SET",
+        base_url or "default",
+        model,
+    )
     return options
 
 
@@ -1516,9 +1576,7 @@ def _build_history_prompt(history: list[dict[str, Any]], user_message: str, lang
             name = msg.get("name", "?")
             input_data = msg.get("input")
             if input_data and isinstance(input_data, dict):
-                brief = ", ".join(
-                    f"{k}={str(v)[:50]}" for k, v in list(input_data.items())[:3]
-                )
+                brief = ", ".join(f"{k}={str(v)[:50]}" for k, v in list(input_data.items())[:3])
                 parts.append(f"[Tool Use: {name}({brief})]")
             else:
                 parts.append(f"[Tool Use: {name}]")
@@ -1554,7 +1612,12 @@ def _build_history_prompt(history: list[dict[str, Any]], user_message: str, lang
             f"if they are in the wrong language.\n"
         )
     preamble += "---\n"
-    parts.append(f"User: {user_message}")
+    # Avoid duplicating the user message — it may already be in history
+    # if the sync-persist in handle_ws completed before we queried SQLite.
+    last_part = parts[-1] if parts else ""
+    expected = f"User: {user_message}"
+    if last_part != expected:
+        parts.append(expected)
     # Prime the assistant turn in the target language so the model starts
     # generating in the correct language from the first token.
     if language:
@@ -1615,8 +1678,13 @@ async def run_agent_task(
     """
     from src.agent_logger import AgentLogger
 
-    logger.info("[AGENT_TASK] Starting task: session=%s, user=%s, continuation=%s, message=%s",
-                session_id, user_id, is_continuation, user_message[:50])
+    logger.info(
+        "[AGENT_TASK] Starting task: session=%s, user=%s, continuation=%s, message=%s",
+        session_id,
+        user_id,
+        is_continuation,
+        user_message[:50],
+    )
 
     agent_log = AgentLogger(user_id=user_id)
     agent_log.start_session(session_id, user_message=user_message)
@@ -1706,8 +1774,7 @@ async def run_agent_task(
                 lang_name = "中文" if language == "zh" else "English"
                 full_prompt = (
                     f"IMPORTANT: Your reply below must be in {lang_name}. "
-                    f"Do not use {'英文' if language == 'zh' else 'Chinese'}.\n\n"
-                    + full_prompt
+                    f"Do not use {'英文' if language == 'zh' else 'Chinese'}.\n\n" + full_prompt
                 )
 
             async def prompt_stream():
@@ -1838,9 +1905,7 @@ async def run_agent_task(
                             }
                         )
                         # Persist to generated_files table for session-scoped queries
-                        _insert_generated_file(
-                            user_id, session_id, rel, f.stat().st_size
-                        )
+                        _insert_generated_file(user_id, session_id, rel, f.stat().st_size)
 
         # 2. Scan workspace root for data files that should be in outputs/
         #    Only downloadable result files are included; scripts and logs are left in place
@@ -2080,7 +2145,10 @@ async def run_agent_task_container(
     container_url = cm.ensure_container(user_id)
     logger.info(
         "Container task: user=%s session=%s url=%s continuation=%s",
-        user_id, session_id, container_url, is_continuation,
+        user_id,
+        session_id,
+        container_url,
+        is_continuation,
     )
 
     options_dict = build_container_options_dict(
@@ -2131,12 +2199,14 @@ async def run_agent_task_container(
                 if rel not in workspace_snapshot or mtime > workspace_snapshot[rel]:
                     if rel not in seen_filenames:
                         seen_filenames.add(rel)
-                        generated_files.append({
-                            "filename": rel,
-                            "size": f.stat().st_size,
-                            "generated_at": datetime.fromtimestamp(mtime, tz=timezone.utc).isoformat(),
-                            "download_url": f"/api/users/{user_id}/download/{rel}",
-                        })
+                        generated_files.append(
+                            {
+                                "filename": rel,
+                                "size": f.stat().st_size,
+                                "generated_at": datetime.fromtimestamp(mtime, tz=timezone.utc).isoformat(),
+                                "download_url": f"/api/users/{user_id}/download/{rel}",
+                            }
+                        )
                         _insert_generated_file(user_id, session_id, rel, f.stat().st_size)
 
         # 2. Scan workspace root for data files
@@ -2154,12 +2224,14 @@ async def run_agent_task_container(
                         try:
                             shutil.move(str(f), str(dest))
                             seen_filenames.add(f.name)
-                            generated_files.append({
-                                "filename": f.name,
-                                "size": dest.stat().st_size,
-                                "generated_at": datetime.fromtimestamp(mtime, tz=timezone.utc).isoformat(),
-                                "download_url": f"/api/users/{user_id}/download/outputs/{f.name}",
-                            })
+                            generated_files.append(
+                                {
+                                    "filename": f.name,
+                                    "size": dest.stat().st_size,
+                                    "generated_at": datetime.fromtimestamp(mtime, tz=timezone.utc).isoformat(),
+                                    "download_url": f"/api/users/{user_id}/download/outputs/{f.name}",
+                                }
+                            )
                         except Exception as e:
                             logger.warning("Failed to relocate data file %s to outputs/: %s", f, e)
 
@@ -2184,12 +2256,14 @@ async def run_agent_task_container(
                         try:
                             shutil.move(str(f), str(dest))
                             seen_filenames.add(f.name)
-                            generated_files.append({
-                                "filename": f.name,
-                                "size": dest.stat().st_size,
-                                "generated_at": datetime.fromtimestamp(mtime, tz=timezone.utc).isoformat(),
-                                "download_url": f"/api/users/{user_id}/download/outputs/{f.name}",
-                            })
+                            generated_files.append(
+                                {
+                                    "filename": f.name,
+                                    "size": dest.stat().st_size,
+                                    "generated_at": datetime.fromtimestamp(mtime, tz=timezone.utc).isoformat(),
+                                    "download_url": f"/api/users/{user_id}/download/outputs/{f.name}",
+                                }
+                            )
                         except Exception as e:
                             logger.warning("Failed to relocate stray file %s: %s", f, e)
 
@@ -2202,25 +2276,34 @@ async def run_agent_task_container(
                 if "download_url" not in f:
                     f["download_url"] = build_download_url(user_id, f["filename"], directory="outputs")
             buffer.remove_messages_by_type(session_id, "file_result", user_id=user_id)
-            buffer.add_message(session_id, {
-                "type": "file_result",
-                "content": "",
-                "session_id": session_id,
-                "user_id": user_id,
-                "data": generated_files,
-            }, user_id)
+            buffer.add_message(
+                session_id,
+                {
+                    "type": "file_result",
+                    "content": "",
+                    "session_id": session_id,
+                    "user_id": user_id,
+                    "data": generated_files,
+                },
+                user_id,
+            )
 
         logger.info(
             "Container task %s: completed in %.1fs",
-            session_id, time.time() - start_time,
+            session_id,
+            time.time() - start_time,
         )
 
         # ── Completion ────────────────────────────────────────────
-        buffer.add_message(session_id, {
-            "type": "system",
-            "subtype": "session_state_changed",
-            "state": "completed",
-        }, user_id)
+        buffer.add_message(
+            session_id,
+            {
+                "type": "system",
+                "subtype": "session_state_changed",
+                "state": "completed",
+            },
+            user_id,
+        )
         buffer.mark_done(session_id)
         agent_log.end_session(session_id, status="completed")
 
@@ -2234,16 +2317,24 @@ async def run_agent_task_container(
 
     except asyncio.TimeoutError:
         logger.error("Container task %s: timeout", session_id)
-        buffer.add_message(session_id, {
-            "type": "error",
-            "subtype": "session_timeout",
-            "message": "Session timed out. The operation took too long.",
-        }, user_id)
-        buffer.add_message(session_id, {
-            "type": "system",
-            "subtype": "session_state_changed",
-            "state": "error",
-        }, user_id)
+        buffer.add_message(
+            session_id,
+            {
+                "type": "error",
+                "subtype": "session_timeout",
+                "message": "Session timed out. The operation took too long.",
+            },
+            user_id,
+        )
+        buffer.add_message(
+            session_id,
+            {
+                "type": "system",
+                "subtype": "session_state_changed",
+                "state": "error",
+            },
+            user_id,
+        )
         buffer.mark_done(session_id)
         agent_log.end_session(session_id, status="error")
 
@@ -2253,30 +2344,46 @@ async def run_agent_task_container(
             await bridge.send_cancel()
         except Exception:
             pass
-        buffer.add_message(session_id, {
-            "type": "system",
-            "subtype": "session_cancelled",
-            "message": "Session cancelled.",
-        }, user_id)
-        buffer.add_message(session_id, {
-            "type": "system",
-            "subtype": "session_state_changed",
-            "state": "cancelled",
-        }, user_id)
+        buffer.add_message(
+            session_id,
+            {
+                "type": "system",
+                "subtype": "session_cancelled",
+                "message": "Session cancelled.",
+            },
+            user_id,
+        )
+        buffer.add_message(
+            session_id,
+            {
+                "type": "system",
+                "subtype": "session_state_changed",
+                "state": "cancelled",
+            },
+            user_id,
+        )
         buffer.mark_done(session_id)
         agent_log.end_session(session_id, status="cancelled")
 
     except Exception as exc:
         logger.exception("Container task %s: unexpected error", session_id)
-        buffer.add_message(session_id, {
-            "type": "error",
-            "message": str(exc),
-        }, user_id)
-        buffer.add_message(session_id, {
-            "type": "system",
-            "subtype": "session_state_changed",
-            "state": "error",
-        }, user_id)
+        buffer.add_message(
+            session_id,
+            {
+                "type": "error",
+                "message": str(exc),
+            },
+            user_id,
+        )
+        buffer.add_message(
+            session_id,
+            {
+                "type": "system",
+                "subtype": "session_state_changed",
+                "state": "error",
+            },
+            user_id,
+        )
         buffer.mark_done(session_id)
         agent_log.end_session(session_id, status="error")
 
@@ -2294,6 +2401,7 @@ async def _safe_ws_send(websocket: WebSocket, data: dict) -> bool:
     if client_state is not None:
         try:
             from starlette.websockets import WebSocketState
+
             if client_state is not WebSocketState.CONNECTED:
                 return False
         except ImportError:
@@ -2385,15 +2493,18 @@ async def handle_ws(websocket: WebSocket) -> None:
                     if item is None:
                         return  # WebSocket closed
                     if item.get("_user_id_mismatch"):
-                        await _safe_ws_send(websocket, {
-                            "type": "error",
-                            "subtype": "user_id_mismatch",
-                            "message": (
-                                f"Connection is locked to user '{_locked_user_id}'. "
-                                f"Received message for user '{item.get('_attempted_user_id')}'. "
-                                "This message has been rejected."
-                            ),
-                        })
+                        await _safe_ws_send(
+                            websocket,
+                            {
+                                "type": "error",
+                                "subtype": "user_id_mismatch",
+                                "message": (
+                                    f"Connection is locked to user '{_locked_user_id}'. "
+                                    f"Received message for user '{item.get('_attempted_user_id')}'. "
+                                    "This message has been rejected."
+                                ),
+                            },
+                        )
                         continue
                     logger.info("[WS] Drained item: type=%s session_id=%s", item.get("type"), item.get("session_id"))
                     if item.get("type") == "answer":
@@ -2421,15 +2532,18 @@ async def handle_ws(websocket: WebSocket) -> None:
                     logger.info("[WS] Received None (WebSocket closed)")
                     return  # WebSocket closed
                 if item.get("_user_id_mismatch"):
-                    await _safe_ws_send(websocket, {
-                        "type": "error",
-                        "subtype": "user_id_mismatch",
-                        "message": (
-                            f"Connection is locked to user '{_locked_user_id}'. "
-                            f"Received message for user '{item.get('_attempted_user_id')}'. "
-                            "This message has been rejected."
-                        ),
-                    })
+                    await _safe_ws_send(
+                        websocket,
+                        {
+                            "type": "error",
+                            "subtype": "user_id_mismatch",
+                            "message": (
+                                f"Connection is locked to user '{_locked_user_id}'. "
+                                f"Received message for user '{item.get('_attempted_user_id')}'. "
+                                "This message has been rejected."
+                            ),
+                        },
+                    )
                     continue
                 logger.info("[WS] Received item: type=%s session_id=%s", item.get("type"), item.get("session_id"))
                 if item.get("type") == "answer":
@@ -2444,7 +2558,12 @@ async def handle_ws(websocket: WebSocket) -> None:
                 else:
                     data = item
 
-            logger.info("[WS] Processing message: type=%s session_id=%s message=%s", data.get("type"), data.get("session_id"), data.get("message", "")[:50])
+            logger.info(
+                "[WS] Processing message: type=%s session_id=%s message=%s",
+                data.get("type"),
+                data.get("session_id"),
+                data.get("message", "")[:50],
+            )
             # Record user activity for container idle-TTL tracking, ensure container running
             if CONTAINER_MODE and _locked_user_id:
                 _cm = _get_container_manager()
@@ -2472,15 +2591,20 @@ async def handle_ws(websocket: WebSocket) -> None:
             history = await buffer.get_history(session_id, after_index=last_index)
             logger.info(
                 "[WS] Recover: get_history session=%s after_index=%s returned %d messages",
-                session_id, last_index, len(history),
+                session_id,
+                last_index,
+                len(history),
             )
             for i, h in enumerate(history):
-                if not await _safe_ws_send(websocket, {
-                    **h,
-                    "index": last_index + i,
-                    "replay": True,
-                    "session_id": session_id,
-                }):
+                if not await _safe_ws_send(
+                    websocket,
+                    {
+                        **h,
+                        "index": last_index + i,
+                        "replay": True,
+                        "session_id": session_id,
+                    },
+                ):
                     break
 
             # ── Recover: read-only replay + subscribe (no agent task) ────────
@@ -2498,17 +2622,24 @@ async def handle_ws(websocket: WebSocket) -> None:
                             if item is None:
                                 return  # WebSocket closed
                             if item.get("_user_id_mismatch"):
-                                await _safe_ws_send(websocket, {
-                                    "type": "error",
-                                    "subtype": "user_id_mismatch",
-                                    "message": (
-                                        f"Connection is locked to user '{_locked_user_id}'. "
-                                        f"Received message for user '{item.get('_attempted_user_id')}'. "
-                                        "This message has been rejected."
-                                    ),
-                                })
+                                await _safe_ws_send(
+                                    websocket,
+                                    {
+                                        "type": "error",
+                                        "subtype": "user_id_mismatch",
+                                        "message": (
+                                            f"Connection is locked to user '{_locked_user_id}'. "
+                                            f"Received message for user '{item.get('_attempted_user_id')}'. "
+                                            "This message has been rejected."
+                                        ),
+                                    },
+                                )
                                 continue
-                            logger.info("[WS] Recover loop got item: type=%s session_id=%s", item.get("type"), item.get("session_id"))
+                            logger.info(
+                                "[WS] Recover loop got item: type=%s session_id=%s",
+                                item.get("type"),
+                                item.get("session_id"),
+                            )
                             # Always process answers regardless of session — they're time-sensitive
                             if item.get("type") == "answer":
                                 sid = item.get("session_id", "")
@@ -2537,12 +2668,15 @@ async def handle_ws(websocket: WebSocket) -> None:
                         sent_count = 0
                         for i, h in enumerate(new_messages):
                             idx = last_seen + i
-                            if not await _safe_ws_send(websocket, {
-                                **h,
-                                "index": idx,
-                                "replay": False,
-                                "session_id": session_id,
-                            }):
+                            if not await _safe_ws_send(
+                                websocket,
+                                {
+                                    **h,
+                                    "index": idx,
+                                    "replay": False,
+                                    "session_id": session_id,
+                                },
+                            ):
                                 break
                             sent_count += 1
                         last_seen += sent_count
@@ -2553,19 +2687,28 @@ async def handle_ws(websocket: WebSocket) -> None:
                             final_sent = 0
                             for i, h in enumerate(final_messages):
                                 idx = last_seen + i
-                                if not await _safe_ws_send(websocket, {
-                                    **h,
-                                    "index": idx,
-                                    "replay": False,
-                                    "session_id": session_id,
-                                }):
+                                if not await _safe_ws_send(
+                                    websocket,
+                                    {
+                                        **h,
+                                        "index": idx,
+                                        "replay": False,
+                                        "session_id": session_id,
+                                    },
+                                ):
                                     break
                                 final_sent += 1
                             last_seen += final_sent
 
-                        last_seen, ok = await _emit_synthetic_state_change_if_missing(
-                            websocket, session_id, last_seen
-                        )
+                        last_seen, ok = await _emit_synthetic_state_change_if_missing(websocket, session_id, last_seen)
+                        if not ok:
+                            break
+
+                        # After is_done handling, check for orphaned
+                        # "running" sessions (server restart while agent
+                        # was active). Emit terminal error so the frontend
+                        # doesn't spin forever.
+                        last_seen, ok = await _handle_orphaned_running(websocket, session_id, last_seen)
                         if not ok:
                             break
 
@@ -2580,17 +2723,22 @@ async def handle_ws(websocket: WebSocket) -> None:
                         # trigger frontend recovery by reporting dead agent.
                         agent_alive = True
                     else:
-                        agent_alive = (
-                            (task_key in active_tasks and not active_tasks[task_key].done())
-                            or buf_state == "running"
-                        )
+                        # Only report agent_alive=True when a real
+                        # asyncio task is running. If buf_state is
+                        # "running" but no task exists (server restart),
+                        # report dead agent so the frontend triggers
+                        # recovery (which will then handle the orphan).
+                        agent_alive = task_key in active_tasks and not active_tasks[task_key].done()
                     hb = make_heartbeat(agent_alive=agent_alive)
-                    if not await _safe_ws_send(websocket, {
-                        **hb,
-                        "index": last_seen,
-                        "replay": False,
-                        "session_id": session_id,
-                    }):
+                    if not await _safe_ws_send(
+                        websocket,
+                        {
+                            **hb,
+                            "index": last_seen,
+                            "replay": False,
+                            "session_id": session_id,
+                        },
+                    ):
                         break
                     continue
                 finally:
@@ -2616,8 +2764,12 @@ async def handle_ws(websocket: WebSocket) -> None:
                         is_continuation = await session_store.has_session_history(user_id, session_id)
                     else:
                         is_continuation = False
-                    logger.info("[CONTINUATION] session=%s is_continuation=%s in_memory=%s",
-                                session_id, is_continuation, has_history_in_memory)
+                    logger.info(
+                        "[CONTINUATION] session=%s is_continuation=%s in_memory=%s",
+                        session_id,
+                        is_continuation,
+                        has_history_in_memory,
+                    )
 
                     if buf_state:
                         buf_state["done"] = False
@@ -2631,7 +2783,7 @@ async def handle_ws(websocket: WebSocket) -> None:
                         user_msg_buf["data"] = [{"filename": f} for f in attached_files]
                     if client_msg_id:
                         user_msg_buf["client_msg_id"] = client_msg_id
-                    buffer.add_message(session_id, user_msg_buf, user_id)
+                    buffer.add_message(session_id, user_msg_buf, user_id, skip_async_write=True)
 
                     # Broadcast running state to frontend via WebSocket
                     buffer.add_message(
@@ -2642,11 +2794,22 @@ async def handle_ws(websocket: WebSocket) -> None:
                             "state": "running",
                         },
                         user_id,
+                        skip_async_write=True,
                     )
 
                     if attached_files:
                         for fname in attached_files:
                             _insert_upload_file(user_id, session_id, fname, 0)
+
+                    # Sync-persist the user message + session_state_changed to
+                    # SQLite BEFORE starting the agent task. This eliminates the
+                    # race where a page refresh arrives before the async drain
+                    # loop writes these messages, causing inconsistent state.
+                    buffer.sync_write_messages(session_id, [user_msg_buf, {
+                        "type": "system",
+                        "subtype": "session_state_changed",
+                        "state": "running",
+                    }])
 
                     # Route to container or direct SDK based on mode
                     target_func = run_agent_task_container if CONTAINER_MODE else run_agent_task
@@ -2677,6 +2840,7 @@ async def handle_ws(websocket: WebSocket) -> None:
                             logger.info("[AGENT_TASK] Task %s was cancelled", task_key)
                         except Exception as e:
                             logger.error("[AGENT_TASK] Task %s callback error: %s", task_key, e)
+
                     task.add_done_callback(task_done_callback)
 
                     logger.info(
@@ -2700,15 +2864,18 @@ async def handle_ws(websocket: WebSocket) -> None:
                         if item is None:
                             return  # WebSocket closed
                         if item.get("_user_id_mismatch"):
-                            await _safe_ws_send(websocket, {
-                                "type": "error",
-                                "subtype": "user_id_mismatch",
-                                "message": (
-                                    f"Connection is locked to user '{_locked_user_id}'. "
-                                    f"Received message for user '{item.get('_attempted_user_id')}'. "
-                                    "This message has been rejected."
-                                ),
-                            })
+                            await _safe_ws_send(
+                                websocket,
+                                {
+                                    "type": "error",
+                                    "subtype": "user_id_mismatch",
+                                    "message": (
+                                        f"Connection is locked to user '{_locked_user_id}'. "
+                                        f"Received message for user '{item.get('_attempted_user_id')}'. "
+                                        "This message has been rejected."
+                                    ),
+                                },
+                            )
                             continue
                         # Always process answers regardless of session — they're time-sensitive
                         if item.get("type") == "answer":
@@ -2730,7 +2897,9 @@ async def handle_ws(websocket: WebSocket) -> None:
                             # so the outer loop creates a fresh task for the new input.
                             user_message = item.get("message", "")
                             if user_message:
-                                logger.info("WS: new message for active session %s, cancelling current task", session_id)
+                                logger.info(
+                                    "WS: new message for active session %s, cancelling current task", session_id
+                                )
                                 buffer.add_message(
                                     session_id,
                                     {
@@ -2764,12 +2933,15 @@ async def handle_ws(websocket: WebSocket) -> None:
                                 session_id,
                                 idx,
                             )
-                        if not await _safe_ws_send(websocket, {
-                            **h,
-                            "index": idx,
-                            "replay": False,
-                            "session_id": session_id,
-                        }):
+                        if not await _safe_ws_send(
+                            websocket,
+                            {
+                                **h,
+                                "index": idx,
+                                "replay": False,
+                                "session_id": session_id,
+                            },
+                        ):
                             break
                         sent_count += 1
                     last_seen += sent_count
@@ -2782,39 +2954,48 @@ async def handle_ws(websocket: WebSocket) -> None:
                         final_sent = 0
                         for i, h in enumerate(final_messages):
                             idx = last_seen + i
-                            if not await _safe_ws_send(websocket, {
-                                **h,
-                                "index": idx,
-                                "replay": False,
-                                "session_id": session_id,
-                            }):
+                            if not await _safe_ws_send(
+                                websocket,
+                                {
+                                    **h,
+                                    "index": idx,
+                                    "replay": False,
+                                    "session_id": session_id,
+                                },
+                            ):
                                 break
                             final_sent += 1
                         last_seen += final_sent
 
-                        last_seen, ok = await _emit_synthetic_state_change_if_missing(
-                            websocket, session_id, last_seen
-                        )
+                        last_seen, ok = await _emit_synthetic_state_change_if_missing(websocket, session_id, last_seen)
                         if not ok:
                             break
                         break
+
+                        # After is_done handling, check for orphaned
+                        # "running" sessions (server restart while agent
+                        # was active). Emit terminal error so the frontend
+                        # doesn't spin forever.
+                        last_seen, ok = await _handle_orphaned_running(websocket, session_id, last_seen)
+                        if not ok:
+                            break
 
                     ws_msg = await _wait_for_ws_or_buffer(event, pending_ws_msgs, HEARTBEAT_INTERVAL)
                     if ws_msg:
                         continue  # new WS message — re-check at top
                     # Timeout → send heartbeat
                     task_key = f"task_{session_id}"
-                    agent_alive = (
-                        (task_key in active_tasks and not active_tasks[task_key].done())
-                        or buffer.get_state(session_id) == "running"
-                    )
+                    agent_alive = task_key in active_tasks and not active_tasks[task_key].done()
                     hb = make_heartbeat(agent_alive=agent_alive)
-                    if not await _safe_ws_send(websocket, {
-                        **hb,
-                        "index": last_seen,
-                        "replay": False,
-                        "session_id": session_id,
-                    }):
+                    if not await _safe_ws_send(
+                        websocket,
+                        {
+                            **hb,
+                            "index": last_seen,
+                            "replay": False,
+                            "session_id": session_id,
+                        },
+                    ):
                         # WebSocket closed — exit subscribe loop gracefully
                         break
                     # Heartbeats are synthetic — do NOT increment last_seen.
@@ -2863,9 +3044,7 @@ async def handle_ws(websocket: WebSocket) -> None:
 # ── Helper ───────────────────────────────────────────────────────
 
 
-async def _wait_for_ws_or_buffer(
-    event: asyncio.Event, ws_queue: asyncio.Queue, timeout: float
-) -> bool:
+async def _wait_for_ws_or_buffer(event: asyncio.Event, ws_queue: asyncio.Queue, timeout: float) -> bool:
     """Wait for buffer activity *or* a new WebSocket message.
 
     Returns ``True`` when a WS message arrived (already re-queued for
@@ -2984,6 +3163,7 @@ async def get_session_files(
     # Query uploads and generated_files tables
     if _db is not None and _db._initialized:
         import sqlite3
+
         conn = sqlite3.connect(str(_db.db_path))
         conn.row_factory = sqlite3.Row
         try:
@@ -2996,13 +3176,15 @@ async def get_session_files(
                     fname = row["filename"]
                     if fname not in seen:
                         seen.add(fname)
-                        files.append({
-                            "filename": fname,
-                            "size": row["file_size"],
-                            "source": source,
-                            "generated_at": datetime.fromtimestamp(row["created_at"], tz=timezone.utc).isoformat(),
-                            "download_url": f"/api/users/{user_id}/download/{fname}",
-                        })
+                        files.append(
+                            {
+                                "filename": fname,
+                                "size": row["file_size"],
+                                "source": source,
+                                "generated_at": datetime.fromtimestamp(row["created_at"], tz=timezone.utc).isoformat(),
+                                "download_url": f"/api/users/{user_id}/download/{fname}",
+                            }
+                        )
         except _sqlite3.OperationalError:
             pass
         finally:
@@ -3019,14 +3201,16 @@ async def get_session_files(
                         fname = f.get("filename", "")
                         if fname and fname not in seen and should_include_generated_file(fname):
                             seen.add(fname)
-                            files.append({
-                                "filename": fname,
-                                "size": f.get("size", 0),
-                                "generated_at": f.get("generated_at", ""),
-                                "download_url": f.get(
-                                    "download_url", build_download_url(user_id, fname, directory="outputs")
-                                ),
-                            })
+                            files.append(
+                                {
+                                    "filename": fname,
+                                    "size": f.get("size", 0),
+                                    "generated_at": f.get("generated_at", ""),
+                                    "download_url": f.get(
+                                        "download_url", build_download_url(user_id, fname, directory="outputs")
+                                    ),
+                                }
+                            )
 
     return files
 
@@ -3122,16 +3306,32 @@ async def cancel_session(
     if db_owner is not None and db_owner != user_id:
         raise HTTPException(status_code=404, detail="Session not found")
     task_key = f"task_{session_id}"
+    # Mark buffer as cancelled FIRST so even if the task never responds,
+    # the state is correct and persisted.
+    buffer.cancel(session_id, user_id=user_id)
     task = active_tasks.get(task_key)
     if task and not task.done():
         task.cancel()
-        # Wait for the task's CancelledError handler to finish so the
-        # buffer state is final and consistent when the client reads it.
+        # Wait briefly for the task to finish, but don't block forever.
+        # If the task is stuck in a non-cancellable operation, the timeout
+        # ensures the HTTP request doesn't hang and the buffer state is
+        # already correct from buffer.cancel() above.
         try:
-            await task
+            await asyncio.wait_for(task, timeout=5.0)
+        except asyncio.TimeoutError:
+            logger.warning(
+                "cancel_session: task %s did not finish within timeout — buffer already marked cancelled",
+                task_key,
+            )
         except asyncio.CancelledError:
             pass  # Expected — the task was cancelled
-    buffer.cancel(session_id, user_id=user_id)
+    elif task is None:
+        logger.warning(
+            "cancel_session: no active task found for %s — buffer already marked cancelled",
+            task_key,
+        )
+    # If task is already done, nothing extra to do — buffer.cancel()
+    # already set the state.
     return {"status": "ok"}
 
 
@@ -3423,11 +3623,7 @@ def _extract_zip_to_dir(zip_data: bytes, target_dir: Path) -> list[str]:
     # Collect all file paths and compute the common leading directory prefix.
     # macOS zip artifacts are excluded from prefix computation so they don't
     # break the common-prefix detection.
-    file_paths = [
-        e.filename
-        for e in real_entries
-        if not e.is_dir() and e.filename
-    ]
+    file_paths = [e.filename for e in real_entries if not e.is_dir() and e.filename]
     dirs_per_file = [p.split("/")[:-1] for p in file_paths]
     common_prefix = ""
     if dirs_per_file and all(len(d) > 0 for d in dirs_per_file):
@@ -3647,12 +3843,14 @@ async def promote_skill_to_shared(
             existing_desc = fm.get("description", "")
         raise HTTPException(
             status_code=409,
-            detail=json.dumps({
-                "conflict_type": "name_conflict",
-                "skill_name": skill_name,
-                "existing_description": existing_desc,
-                "message": f"A shared skill named '{skill_name}' already exists.",
-            }),
+            detail=json.dumps(
+                {
+                    "conflict_type": "name_conflict",
+                    "skill_name": skill_name,
+                    "existing_description": existing_desc,
+                    "message": f"A shared skill named '{skill_name}' already exists.",
+                }
+            ),
         )
 
     # Apply guardrails: file count and total size (same as upload endpoint)
@@ -3979,8 +4177,10 @@ async def get_all_skills_analytics(
     """Get analytics for all skills."""
     if _db is not None:
         from src.skill_feedback import DBSkillFeedbackManager
+
         return await DBSkillFeedbackManager(db=_db).get_all_analytics()
     from src.skill_feedback import SkillFeedbackManager
+
     return SkillFeedbackManager().get_all_analytics()
 
 
@@ -3992,9 +4192,11 @@ async def get_skill_suggestions(
     """Get improvement suggestions for a skill based on feedback."""
     if _db is not None:
         from src.skill_feedback import DBSkillFeedbackManager
+
         suggestions = await DBSkillFeedbackManager(db=_db).suggest_improvements(skill_name)
         return {"suggestions": suggestions}
     from src.skill_feedback import SkillFeedbackManager
+
     return {"suggestions": SkillFeedbackManager().suggest_improvements(skill_name)}
 
 
@@ -5200,6 +5402,7 @@ async def startup() -> None:
         session_store = SessionStore(db=_db)
 
         from src.audit_logger import AuditLogger
+
         global _audit_logger
         _audit_logger = AuditLogger(db=_db)
         logger.info("SQLite initialized: %s (%.2f MB)", db_path, db_path.stat().st_size / (1024 * 1024))

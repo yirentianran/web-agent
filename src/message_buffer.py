@@ -13,7 +13,6 @@ import asyncio
 import json
 import logging
 import time
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -47,10 +46,7 @@ _RETRY_DELAYS = [0.1, 0.25, 0.5, 1.0, 2.0]  # exponential backoff for lock retry
 
 def _is_lock_error(exc: Exception) -> bool:
     """Check if an exception is a SQLite 'database is locked' error."""
-    return (
-        type(exc).__name__ == "OperationalError"
-        and "database is locked" in str(exc).lower()
-    )
+    return type(exc).__name__ == "OperationalError" and "database is locked" in str(exc).lower()
 
 
 class MessageBuffer:
@@ -63,7 +59,7 @@ class MessageBuffer:
 
     def __init__(
         self,
-        db: "Database | None" = None,
+        db: Database | None = None,
     ) -> None:
         self.db: Database | None = db
         # session_id -> state dict
@@ -93,9 +89,7 @@ class MessageBuffer:
             try:
                 if session_id == "__delete__":
                     # Handle delete operations
-                    success = await self._delete_db_async(
-                        message["session_id"], message["msg_type"]
-                    )
+                    success = await self._delete_db_async(message["session_id"], message["msg_type"])
                     future.set_result(success)
                 else:
                     success = await self._write_db_async(session_id, message)
@@ -203,20 +197,25 @@ class MessageBuffer:
         (flush_unpersisted) rather than a sync sqlite3 connection.
         """
         if session_id not in self.sessions:
+            # Recover state from SQLite if available, otherwise default to idle.
+            db_state, db_done, db_cost = self._sync_db_state(session_id, user_id)
             buf: dict[str, Any] = {
                 "messages": [],
                 "base_index": 0,
                 "consumers": set(),
-                "done": False,
-                "state": "idle",
+                "done": db_done,
+                "state": db_state,
                 "last_active": time.time(),
-                "cost_usd": 0.0,
+                "cost_usd": db_cost,
                 "user_id": user_id,
             }
             self.sessions[session_id] = buf
             logger.info(
-                "_ensure_buf NEW session=%s user_id=%s",
-                session_id, user_id,
+                "_ensure_buf NEW session=%s user_id=%s state=%s done=%s (from DB)",
+                session_id,
+                user_id,
+                db_state,
+                db_done,
             )
         else:
             # Ownership verification on existing buffer
@@ -224,18 +223,19 @@ class MessageBuffer:
             if user_id is not None and stored_user is not None and user_id != stored_user:
                 logger.warning(
                     "_ensure_buf REJECT session=%s stored_user=%s request_user=%s",
-                    session_id, stored_user, user_id,
+                    session_id,
+                    stored_user,
+                    user_id,
                 )
-                raise ValueError(
-                    f"Session {session_id} is owned by {stored_user}, "
-                    f"cannot access as {user_id}"
-                )
+                raise ValueError(f"Session {session_id} is owned by {stored_user}, cannot access as {user_id}")
             # Update user_id if it was previously None
             if stored_user is None and user_id is not None:
                 self.sessions[session_id]["user_id"] = user_id
             logger.info(
                 "_ensure_buf OK session=%s stored_user=%s request_user=%s",
-                session_id, stored_user, user_id,
+                session_id,
+                stored_user,
+                user_id,
             )
         return self.sessions[session_id]
 
@@ -316,7 +316,8 @@ class MessageBuffer:
                 owner = row[0] if row else None
                 logger.info(
                     "_get_db_owner: session=%s owner=%s",
-                    session_id, owner,
+                    session_id,
+                    owner,
                 )
                 return owner
         except Exception as e:
@@ -345,6 +346,111 @@ class MessageBuffer:
         except Exception as e:
             logger.warning("_sync_db_owner: error for session=%s: %s", session_id, e)
             return None
+
+    def _sync_db_state(self, session_id: str, user_id: str | None = None) -> tuple[str, bool, float]:
+        """Read the last session_state_changed or result message from SQLite
+        to reconstruct the buffer state after a cold start.
+
+        Returns (state, done, cost_usd).
+        """
+        if self.db is None:
+            return ("idle", False, 0.0)
+        try:
+            import sqlite3
+
+            conn = sqlite3.connect(str(self.db.db_path))
+            try:
+                if user_id is not None:
+                    row = conn.execute(
+                        """SELECT m.payload, m.usage
+                           FROM messages m JOIN sessions s ON m.session_id = s.session_id
+                           WHERE m.session_id = ? AND s.user_id = ?
+                           AND (m.type = 'system' AND m.subtype = 'session_state_changed'
+                                OR m.type = 'result')
+                           ORDER BY m.seq DESC LIMIT 1""",
+                        (session_id, user_id),
+                    ).fetchone()
+                else:
+                    row = conn.execute(
+                        """SELECT payload, usage
+                           FROM messages
+                           WHERE session_id = ?
+                           AND (type = 'system' AND subtype = 'session_state_changed'
+                                OR type = 'result')
+                           ORDER BY seq DESC LIMIT 1""",
+                        (session_id,),
+                    ).fetchone()
+
+                if row is None:
+                    return ("idle", False, 0.0)
+
+                payload_json = row[0]
+                if payload_json is None:
+                    return ("idle", False, 0.0)
+
+                payload = json.loads(payload_json)
+                msg_type = payload.get("type", "")
+                if msg_type == "result":
+                    return ("completed", True, 0.0)
+                state = payload.get("state", "idle")
+                done = state in ("completed", "error", "cancelled")
+                return (state, done, 0.0)
+            finally:
+                conn.close()
+        except Exception as e:
+            logger.warning("_sync_db_state: error for session=%s: %s", session_id, e)
+            return ("idle", False, 0.0)
+
+    def sync_write_messages(self, session_id: str, messages: list[dict], user_id: str | None = None) -> bool:
+        """Write messages synchronously to SQLite, bypassing the async drain queue.
+
+        Used for critical messages (user message + session_state_changed: running)
+        that must be persisted BEFORE the agent task starts, so that a page
+        refresh immediately after sending sees the correct state in REST /history.
+        """
+        if self.db is None:
+            return False
+        try:
+            import sqlite3
+
+            conn = sqlite3.connect(str(self.db.db_path))
+            try:
+                for message in messages:
+                    cursor = conn.execute(
+                        "SELECT COALESCE(MAX(seq), -1) FROM messages WHERE session_id = ?",
+                        (session_id,),
+                    )
+                    db_max_seq = cursor.fetchone()[0]
+                    next_seq = max(self._seq.get(session_id, 0), db_max_seq + 1)
+                    self._seq[session_id] = next_seq + 1
+
+                    usage_json = None
+                    if message.get("usage"):
+                        usage_json = json.dumps(message["usage"], ensure_ascii=False)
+
+                    conn.execute(
+                        """INSERT INTO messages
+                           (session_id, seq, type, subtype, name, content, payload, usage, created_at)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        (
+                            session_id,
+                            next_seq,
+                            message.get("type", ""),
+                            message.get("subtype"),
+                            message.get("name"),
+                            message.get("content"),
+                            json.dumps(message, ensure_ascii=False),
+                            usage_json,
+                            time.time(),
+                        ),
+                    )
+                conn.commit()
+                return True
+            finally:
+                conn.close()
+        except Exception as e:
+            logger.warning("sync_write_messages: error for session=%s: %s", session_id, e)
+            return False
 
     # ── public API ───────────────────────────────────────────────
 
@@ -378,11 +484,15 @@ class MessageBuffer:
         future = loop.create_future()
         self._write_queue.put_nowait(("__delete__", {"session_id": session_id, "msg_type": msg_type}, future))
 
-    def add_message(self, session_id: str, message: dict, user_id: str) -> None:
+    def add_message(self, session_id: str, message: dict, user_id: str, *, skip_async_write: bool = False) -> None:
         """SDK produces a message → write to memory + enqueue async DB write.
 
         For new sessions, verifies user_id against the database before creating
         the buffer entry, preventing cross-user session hijacking.
+
+        When *skip_async_write* is True, the message is added to the in-memory
+        buffer but NOT enqueued for async DB persistence. Use this when the
+        caller will handle persistence separately (e.g. sync_write_messages).
         """
         # Resolve the true owner from DB for new buffer entries
         if session_id not in self.sessions and self.db is not None:
@@ -390,12 +500,11 @@ class MessageBuffer:
             if db_owner is not None and db_owner != user_id:
                 logger.warning(
                     "add_message REJECT session=%s DB owner=%s != caller=%s",
-                    session_id, db_owner, user_id,
+                    session_id,
+                    db_owner,
+                    user_id,
                 )
-                raise ValueError(
-                    f"Session {session_id} is owned by {db_owner}, "
-                    f"cannot add message as {user_id}"
-                )
+                raise ValueError(f"Session {session_id} is owned by {db_owner}, cannot add message as {user_id}")
 
         buf = self._ensure_buf(session_id, user_id)
         buf["messages"].append(message)
@@ -412,7 +521,7 @@ class MessageBuffer:
             buf["done"] = False
 
         # Enqueue async DB write via the drain loop
-        if self.db is not None and self._write_queue is not None:
+        if not skip_async_write and self.db is not None and self._write_queue is not None:
             loop = asyncio.get_running_loop()
             future = loop.create_future()
             self._write_queue.put_nowait((session_id, message, future))
@@ -474,14 +583,17 @@ class MessageBuffer:
         if user_id is not None and self.db is not None and session_id not in self.sessions:
             logger.info(
                 "get_history: checking DB ownership for session=%s user=%s",
-                session_id, user_id,
+                session_id,
+                user_id,
             )
             msgs = await self._read_db_async(session_id, after_index, user_id)
             if msgs:
                 # Messages returned → user owns this session. Safe to create buffer.
                 logger.info(
                     "get_history: DB returned %d msgs — assigning session=%s to user=%s",
-                    len(msgs), session_id, user_id,
+                    len(msgs),
+                    session_id,
+                    user_id,
                 )
                 buf = self._ensure_buf(session_id, user_id)
                 return msgs
@@ -490,17 +602,18 @@ class MessageBuffer:
             db_owner = await self._get_db_owner(session_id)
             logger.info(
                 "get_history: _get_db_owner session=%s returned=%s request_user=%s",
-                session_id, db_owner, user_id,
+                session_id,
+                db_owner,
+                user_id,
             )
             if db_owner is not None and db_owner != user_id:
                 logger.warning(
                     "get_history REJECT session=%s db_owner=%s request_user=%s",
-                    session_id, db_owner, user_id,
+                    session_id,
+                    db_owner,
+                    user_id,
                 )
-                raise ValueError(
-                    f"Session {session_id} is owned by {db_owner}, "
-                    f"cannot access as {user_id}"
-                )
+                raise ValueError(f"Session {session_id} is owned by {db_owner}, cannot access as {user_id}")
             # Session not in DB → brand-new session. Create buffer for this user.
             buf = self._ensure_buf(session_id, user_id)
             return []
@@ -560,11 +673,25 @@ class MessageBuffer:
         return self._ensure_buf(session_id, user_id).get("done", False)
 
     def cancel(self, session_id: str, user_id: str | None = None) -> None:
-        """Cancel a running agent task - just sets state and wakes consumers.
-        The CancelledError handler in run_agent_task will add the proper messages.
-        """
+        """Cancel a running agent task — sets state, adds cancellation
+        message, and wakes consumers so the subscribe loop detects the change
+        immediately. The CancelledError handler in run_agent_task will also
+        add its own messages, but this ensures the state is correct even if
+        the task never responds to cancellation."""
         buf = self._ensure_buf(session_id, user_id)
         buf["state"] = "cancelled"
+        # Persist the state change as a buffer message so it survives
+        # server restarts and is visible in message history.
+        # add_message resets done=False, so add the message BEFORE setting done.
+        self.add_message(
+            session_id,
+            {
+                "type": "system",
+                "subtype": "session_state_changed",
+                "state": "cancelled",
+            },
+            user_id or "",
+        )
         buf["done"] = True
         # Wake up all waiting consumers so they can see the cancellation
         for event in list(buf["consumers"]):
@@ -597,11 +724,7 @@ class MessageBuffer:
         Disk files are preserved so history can be reloaded on demand.
         """
         now = time.time()
-        expired = [
-            sid
-            for sid, buf in self.sessions.items()
-            if now - buf["last_active"] > BUFFER_TIMEOUT
-        ]
+        expired = [sid for sid, buf in self.sessions.items() if now - buf["last_active"] > BUFFER_TIMEOUT]
         for sid in expired:
             del self.sessions[sid]
 
