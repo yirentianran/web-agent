@@ -572,6 +572,25 @@ def should_include_generated_file(filename: str) -> bool:
     return ext in DATA_EXTS
 
 
+def snapshot_workspace(workspace: Path) -> dict[str, float]:
+    """Snapshot files in workspace to detect newly generated files later.
+
+    Scans outputs/ recursively and workspace root non-recursively.
+    Returns a mapping of relative_path -> mtime.
+    """
+    snap: dict[str, float] = {}
+    outputs_dir = workspace / "outputs"
+    if outputs_dir.exists():
+        for f in outputs_dir.rglob("*"):
+            if f.is_file():
+                snap[f.relative_to(workspace).as_posix()] = f.stat().st_mtime
+    if workspace.exists():
+        for f in workspace.iterdir():
+            if f.is_file():
+                snap[f.relative_to(workspace).as_posix()] = f.stat().st_mtime
+    return snap
+
+
 def _insert_generated_file(user_id: str, session_id: str, filename: str, file_size: int) -> None:
     """Insert a record into the generated_files table, ignoring duplicates."""
     if _db is None:
@@ -1304,6 +1323,7 @@ def build_sdk_options(
         sdk_env["ANTHROPIC_BASE_URL"] = base_url
     if model:
         sdk_env["MODEL"] = model
+    sdk_env["HOME"] = str(user_dir.resolve())  # Isolate SDK data to user dir
 
     options = ClaudeAgentOptions(
         model=model,
@@ -1728,19 +1748,7 @@ async def run_agent_task(
 
     # Snapshot workspace files before the agent task — used to detect
     # files created by Bash commands after the task ends.
-    # Scan outputs/ recursively (to catch files in subdirectories) and
-    # workspace root (non-recursive) — full rglob over the entire
-    # workspace is too expensive for large projects.
-    workspace_snapshot: dict[str, float] = {}
-    outputs_dir = workspace / "outputs"
-    if outputs_dir.exists():
-        for f in outputs_dir.rglob("*"):
-            if f.is_file():
-                workspace_snapshot[f.relative_to(workspace).as_posix()] = f.stat().st_mtime
-    if workspace.exists():
-        for f in workspace.iterdir():
-            if f.is_file():
-                workspace_snapshot[f.relative_to(workspace).as_posix()] = f.stat().st_mtime
+    workspace_snapshot = snapshot_workspace(workspace)
 
     # Continuation turns always use history prompt from our own message
     # store. --resume is NOT used because it only loads ONE CLI session's
@@ -2157,6 +2165,11 @@ async def run_agent_task_container(
         language=language,
     )
 
+    from src.agent_logger import AgentLogger
+
+    agent_log = AgentLogger(user_id=user_id)
+    agent_log.start_session(session_id, user_message=user_message)
+
     bridge = ContainerBridge(
         container_url=container_url,
         session_id=session_id,
@@ -2174,7 +2187,11 @@ async def run_agent_task_container(
     try:
         # Build the prompt - for continuations, include history
         if is_continuation:
-            prompt = _build_history_prompt(user_id, session_id, user_message)
+            if session_store is not None:
+                history = await session_store.get_session_history(user_id, session_id, after_index=0)
+            else:
+                history = await buffer.get_history(session_id, after_index=0, user_id=user_id)
+            prompt = _build_history_prompt(history, user_message, language=language)
         else:
             prompt = user_message
 
@@ -2311,7 +2328,7 @@ async def run_agent_task_container(
         title = user_message.strip()[:100]
         if session_store:
             try:
-                session_store.update_session_title(user_id, session_id, title)
+                await session_store.update_session_title(user_id, session_id, title)
             except Exception:
                 pass
 

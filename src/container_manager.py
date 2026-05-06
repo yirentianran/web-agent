@@ -55,8 +55,8 @@ def ensure_user_dirs(user_id: str) -> None:
         user_data_dir(user_id) / "workspace" / "uploads",
         user_data_dir(user_id) / "workspace" / "reports",
         user_data_dir(user_id) / "skills",
-        user_data_dir(user_id) / "claude-data" / "sessions",
-        user_data_dir(user_id) / "claude-data" / "memory",
+        user_data_dir(user_id) / ".claude" / "memory",
+        user_data_dir(user_id) / "logs",
     ]
     for d in dirs:
         d.mkdir(parents=True, exist_ok=True)
@@ -87,7 +87,7 @@ def get_user_volumes(user_id: str) -> dict[str, dict[str, str]]:
             "mode": "rw",
         },
         # Claude data (sessions, settings, cache, memory) — persistent
-        str(base.resolve() / "claude-data"): {
+        str(base.resolve() / ".claude"): {
             "bind": "/home/agent/.claude",
             "mode": "rw",
         },
@@ -95,6 +95,11 @@ def get_user_volumes(user_id: str) -> dict[str, dict[str, str]]:
         str(hooks_dir): {
             "bind": "/hooks",
             "mode": "ro",
+        },
+        # Container logs — persist to host so logs survive container restarts
+        str(base.resolve() / "logs"): {
+            "bind": "/app/logs",
+            "mode": "rw",
         },
     }
 
@@ -125,7 +130,7 @@ def get_user_env(user_id: str, mcp_config: dict | None = None) -> dict[str, str]
         "allowedTools": _build_allowed_tools(mcp_config),
         "disallowedTools": ["WebSearch", "WebFetch"],
     })
-    settings_path = user_data_dir(user_id) / "claude-data" / "settings.json"
+    settings_path = user_data_dir(user_id) / ".claude" / "settings.json"
     settings_path.parent.mkdir(parents=True, exist_ok=True)
     settings_path.write_text(settings_json)
 
