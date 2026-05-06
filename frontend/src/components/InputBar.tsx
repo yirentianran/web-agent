@@ -15,6 +15,7 @@ interface InputBarProps {
   disabled?: boolean
   isRunning?: boolean
   userId?: string
+  authToken?: string
 }
 
 export interface InputBarHandle {
@@ -24,7 +25,7 @@ export interface InputBarHandle {
 let fileCounter = 0
 
 const InputBar = forwardRef<InputBarHandle, InputBarProps>(
-  function InputBar({ onSend, onStop, disabled, isRunning, userId }: InputBarProps, ref) {
+  function InputBar({ onSend, onStop, disabled, isRunning, userId, authToken }: InputBarProps, ref) {
     const { t } = useTranslation()
     const [input, setInput] = useState('')
     const [attachedFiles, setAttachedFiles] = useState<AttachedFile[]>([])
@@ -68,7 +69,9 @@ const InputBar = forwardRef<InputBarHandle, InputBarProps>(
       const formData = new FormData()
       formData.append('file', af.file)
       try {
-        const resp = await fetch(`/api/users/${userId}/upload`, { method: 'POST', body: formData })
+        const headers: Record<string, string> = {}
+        if (authToken) headers["Authorization"] = `Bearer ${authToken}`
+        const resp = await fetch(`/api/users/${userId}/upload`, { method: 'POST', headers, body: formData })
         return resp.ok
       } catch {
         return false

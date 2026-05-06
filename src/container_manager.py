@@ -118,22 +118,12 @@ def get_user_env(user_id: str, mcp_config: dict | None = None) -> dict[str, str]
     if mcp_config:
         env["MCP_CONFIG_JSON"] = json.dumps(mcp_config)
 
-    # Write settings.json into the container's .claude directory
+    # Write settings.json into the container's .claude directory.
+    # Hooks and tool permissions are now managed programmatically through the
+    # SDK API in agent_server.py — no longer set via settings.json.
     settings_json = json.dumps({
         "allowedTools": _build_allowed_tools(mcp_config),
         "disallowedTools": ["WebSearch", "WebFetch"],
-        "permissionMode": "bypassPermissions",
-        "hooks": {
-            "PreToolUse": [
-                {"matcher": "Bash", "command": "python /hooks/pre_tool_use.py"}
-            ],
-            "PostToolUse": [
-                {"matcher": "Write|Edit", "command": "python /hooks/post_tool_use.py"}
-            ],
-            "Stop": [
-                {"command": "python /hooks/on_stop.py"}
-            ],
-        },
     })
     settings_path = user_data_dir(user_id) / "claude-data" / "settings.json"
     settings_path.parent.mkdir(parents=True, exist_ok=True)

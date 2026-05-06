@@ -312,6 +312,7 @@ function MainLayout({
             disabled={status !== "connected" || activeSessionState === "running"}
             isRunning={activeSessionState === "running" && status === "connected"}
             userId={userId}
+            authToken={authToken || undefined}
           />
         </main>
         <div className={`file-panel-wrapper ${filePanelOpen ? 'open' : ''}`}>

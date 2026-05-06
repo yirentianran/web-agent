@@ -1,7 +1,8 @@
 """Main FastAPI server — SDK integration, WebSocket, REST APIs.
 
 Phase 1: Direct SDK integration (no Docker).
-Phase 2+: Will add container orchestration and WebSocket bridging.
+Phase 2: Container orchestration with WebSocket bridging — agent tasks route
+         into per-user Docker containers when CONTAINER_MODE=true.
 
 Exposes:
 - WebSocket endpoint for browser → agent communication
@@ -260,6 +261,7 @@ from claude_agent_sdk.types import (
     ToolUseBlock,
     UserMessage,
 )
+from src.container_bridge import ContainerBridge, bridge_answer_futures
 
 
 def parse_skill_frontmatter(content: str) -> dict[str, str | None]:
@@ -522,7 +524,7 @@ def should_include_generated_file(filename: str) -> bool:
 
 def _insert_generated_file(user_id: str, session_id: str, filename: str, file_size: int) -> None:
     """Insert a record into the generated_files table, ignoring duplicates."""
-    if _db is None or _db._pool is None:
+    if _db is None:
         return
     import uuid
     try:
@@ -549,7 +551,7 @@ def _insert_generated_file(user_id: str, session_id: str, filename: str, file_si
 
 def _insert_upload_file(user_id: str, session_id: str, filename: str, file_size: int) -> None:
     """Insert a record into the uploads table, ignoring duplicates."""
-    if _db is None or _db._pool is None:
+    if _db is None:
         return
     import uuid
     try:
@@ -1043,6 +1045,79 @@ def _sync_shared_skills(target_dir: Path) -> None:
 
 
 # ── SDK option builders ──────────────────────────────────────────────
+
+
+def build_container_options_dict(
+    user_id: str,
+    resume_session_id: str | None = None,
+    language: str | None = None,
+) -> dict[str, Any]:
+    """Build a JSON-serializable options dict for the container's agent_server.
+
+    When CONTAINER_MODE=true, this dict is sent to the container via WebSocket
+    instead of creating a ClaudeSDKClient directly in-process.
+
+    The system prompt is built as a full string on the host (so it includes
+    L1 memory from SQLite and L2 memory from the filesystem). The container
+    passes it directly as ``ClaudeAgentOptions.system_prompt``.
+    """
+    mcp_config = load_mcp_config_sync()
+    skills = load_skills(user_id)
+
+    # Build MCP servers dict for the container
+    mcp_servers: dict[str, dict[str, Any]] = {}
+    for server_name, cfg in mcp_config.get("mcpServers", {}).items():
+        if not cfg.get("enabled", True):
+            continue
+        mcp_servers[server_name] = {
+            "type": cfg.get("type", "stdio"),
+            "command": cfg.get("command"),
+            "args": cfg.get("args", []),
+            "env": cfg.get("env", {}),
+            "url": cfg.get("url"),
+        }
+
+    # Sync shared skills (still needed for skill discovery on host)
+    workspace = user_workspace_dir(user_id)
+    project_skills = workspace / ".claude" / "skills"
+    _sync_shared_skills(project_skills)
+
+    # Build SDK env vars
+    sdk_env: dict[str, str] = {}
+    api_key = (
+        os.getenv(f"ANTHROPIC_AUTH_TOKEN_{user_id.upper()}")
+        or os.getenv("ANTHROPIC_AUTH_TOKEN")
+        or os.getenv("ANTHROPIC_API_KEY")
+        or ""
+    )
+    if api_key:
+        sdk_env["ANTHROPIC_AUTH_TOKEN"] = api_key
+    base_url = os.getenv("ANTHROPIC_BASE_URL", "")
+    if base_url:
+        sdk_env["ANTHROPIC_BASE_URL"] = base_url
+    model = os.getenv("MODEL", "claude-sonnet-4-6")
+    sdk_env["MODEL"] = model
+
+    system_prompt_str = build_system_prompt(user_id, skills, workspace, language)
+
+    return {
+        "model": model,
+        "system_prompt": system_prompt_str,
+        "allowed_tools": build_allowed_tools(mcp_config),
+        "disallowed_tools": ["WebSearch", "WebFetch"],
+        "max_turns": int(os.getenv("MAX_TURNS", "200")),
+        "permission_mode": "acceptEdits",
+        "mcp_servers": mcp_servers if mcp_servers else None,
+        "env": sdk_env if sdk_env else None,
+        "include_partial_messages": True,
+        "resume_session_id": resume_session_id,
+        "max_buffer_size": int(os.getenv("MAX_BUFFER_SIZE", str(10 * 1024 * 1024))),
+        "cwd": "/workspace",
+        "skills_dirs": [
+            "/home/agent/.claude/shared-skills",
+            "/home/agent/.claude/personal-skills",
+        ],
+    }
 
 
 def build_sdk_options(
@@ -1972,6 +2047,228 @@ async def run_agent_task(
     # Note: do NOT disconnect — client is kept alive for follow-ups
 
 
+async def run_agent_task_container(
+    user_id: str,
+    session_id: str,
+    user_message: str,
+    is_continuation: bool = False,
+    attached_files: list[str] | None = None,
+    language: str | None = None,
+) -> None:
+    """Run an agent task inside the user's Docker container via WebSocket bridge.
+
+    Called instead of ``run_agent_task`` when ``CONTAINER_MODE=true``.
+    The system prompt is built on the host (including L1/L2 memory from
+    SQLite/filesystem), serialized into the options dict, and sent to the
+    container's agent_server WebSocket. Stream events are forwarded to the
+    buffer. After the bridge completes, generated files are scanned from
+    the mounted workspace volume.
+    """
+    cm = _get_container_manager()
+    container_url = cm.ensure_container(user_id)
+    logger.info(
+        "Container task: user=%s session=%s url=%s continuation=%s",
+        user_id, session_id, container_url, is_continuation,
+    )
+
+    options_dict = build_container_options_dict(
+        user_id,
+        resume_session_id=None,
+        language=language,
+    )
+
+    bridge = ContainerBridge(
+        container_url=container_url,
+        session_id=session_id,
+        user_id=user_id,
+        buffer=buffer,
+        session_store=session_store,
+    )
+
+    start_time = time.time()
+    workspace = user_workspace_dir(user_id)
+    workspace_snapshot = snapshot_workspace(workspace)
+    generated_files: list[dict[str, Any]] = []
+    msg_count = 0
+
+    try:
+        # Build the prompt - for continuations, include history
+        if is_continuation:
+            prompt = _build_history_prompt(user_id, session_id, user_message)
+        else:
+            prompt = user_message
+
+        await bridge.run_and_stream(prompt, options_dict)
+
+        # ── After bridge completes: scan for generated files ─────
+        # Workspace is a mounted host volume, so files created inside the
+        # container are visible from the host at the same paths.
+        task_end = time.time()
+        seen_filenames: set[str] = set()
+        outputs_dir = workspace / "outputs"
+
+        # 1. Scan outputs/ recursively
+        if outputs_dir.exists():
+            for f in outputs_dir.rglob("*"):
+                if not f.is_file():
+                    continue
+                if not should_include_generated_file(f.name):
+                    continue
+                rel = f.relative_to(workspace).as_posix()
+                mtime = f.stat().st_mtime
+                if rel not in workspace_snapshot or mtime > workspace_snapshot[rel]:
+                    if rel not in seen_filenames:
+                        seen_filenames.add(rel)
+                        generated_files.append({
+                            "filename": rel,
+                            "size": f.stat().st_size,
+                            "generated_at": datetime.fromtimestamp(mtime, tz=timezone.utc).isoformat(),
+                            "download_url": f"/api/users/{user_id}/download/{rel}",
+                        })
+                        _insert_generated_file(user_id, session_id, rel, f.stat().st_size)
+
+        # 2. Scan workspace root for data files
+        if workspace.exists():
+            for f in workspace.iterdir():
+                if not f.is_file() or f.name.startswith("."):
+                    continue
+                rel = f.relative_to(workspace).as_posix()
+                mtime = f.stat().st_mtime
+                is_new_or_modified = rel not in workspace_snapshot or mtime > workspace_snapshot[rel]
+                if is_new_or_modified and f.name not in seen_filenames:
+                    ext = f.suffix.lower()
+                    if ext in DATA_EXTS:
+                        dest = outputs_dir / f.name
+                        try:
+                            shutil.move(str(f), str(dest))
+                            seen_filenames.add(f.name)
+                            generated_files.append({
+                                "filename": f.name,
+                                "size": dest.stat().st_size,
+                                "generated_at": datetime.fromtimestamp(mtime, tz=timezone.utc).isoformat(),
+                                "download_url": f"/api/users/{user_id}/download/outputs/{f.name}",
+                            })
+                        except Exception as e:
+                            logger.warning("Failed to relocate data file %s to outputs/: %s", f, e)
+
+        # 3. Scan for files leaked outside workspace
+        outside_dirs = [
+            Path.home(),
+            Path.home() / "outputs",
+            Path(__file__).parent,
+        ]
+        for scan_dir in outside_dirs:
+            if not scan_dir.exists() or not scan_dir.is_dir():
+                continue
+            for f in scan_dir.iterdir():
+                if not f.is_file() or f.name.startswith("."):
+                    continue
+                if not should_include_generated_file(f.name):
+                    continue
+                mtime = f.stat().st_mtime
+                if mtime >= start_time and mtime <= task_end + 5:
+                    if f.name not in seen_filenames:
+                        dest = outputs_dir / f.name
+                        try:
+                            shutil.move(str(f), str(dest))
+                            seen_filenames.add(f.name)
+                            generated_files.append({
+                                "filename": f.name,
+                                "size": dest.stat().st_size,
+                                "generated_at": datetime.fromtimestamp(mtime, tz=timezone.utc).isoformat(),
+                                "download_url": f"/api/users/{user_id}/download/outputs/{f.name}",
+                            })
+                        except Exception as e:
+                            logger.warning("Failed to relocate stray file %s: %s", f, e)
+
+        # ── Emit file_result ──────────────────────────────────────
+        generated_files = [
+            f for f in generated_files if f.get("filename") and should_include_generated_file(f["filename"])
+        ]
+        if generated_files:
+            for f in generated_files:
+                if "download_url" not in f:
+                    f["download_url"] = build_download_url(user_id, f["filename"], directory="outputs")
+            buffer.remove_messages_by_type(session_id, "file_result", user_id=user_id)
+            buffer.add_message(session_id, {
+                "type": "file_result",
+                "content": "",
+                "session_id": session_id,
+                "user_id": user_id,
+                "data": generated_files,
+            }, user_id)
+
+        logger.info(
+            "Container task %s: completed in %.1fs",
+            session_id, time.time() - start_time,
+        )
+
+        # ── Completion ────────────────────────────────────────────
+        buffer.add_message(session_id, {
+            "type": "system",
+            "subtype": "session_state_changed",
+            "state": "completed",
+        }, user_id)
+        buffer.mark_done(session_id)
+        agent_log.end_session(session_id, status="completed")
+
+        # Auto-generate title from first user message
+        title = user_message.strip()[:100]
+        if session_store:
+            try:
+                session_store.update_session_title(user_id, session_id, title)
+            except Exception:
+                pass
+
+    except asyncio.TimeoutError:
+        logger.error("Container task %s: timeout", session_id)
+        buffer.add_message(session_id, {
+            "type": "error",
+            "subtype": "session_timeout",
+            "message": "Session timed out. The operation took too long.",
+        }, user_id)
+        buffer.add_message(session_id, {
+            "type": "system",
+            "subtype": "session_state_changed",
+            "state": "error",
+        }, user_id)
+        buffer.mark_done(session_id)
+        agent_log.end_session(session_id, status="error")
+
+    except asyncio.CancelledError:
+        logger.info("Container task %s: cancelled", session_id)
+        try:
+            await bridge.send_cancel()
+        except Exception:
+            pass
+        buffer.add_message(session_id, {
+            "type": "system",
+            "subtype": "session_cancelled",
+            "message": "Session cancelled.",
+        }, user_id)
+        buffer.add_message(session_id, {
+            "type": "system",
+            "subtype": "session_state_changed",
+            "state": "cancelled",
+        }, user_id)
+        buffer.mark_done(session_id)
+        agent_log.end_session(session_id, status="cancelled")
+
+    except Exception as exc:
+        logger.exception("Container task %s: unexpected error", session_id)
+        buffer.add_message(session_id, {
+            "type": "error",
+            "message": str(exc),
+        }, user_id)
+        buffer.add_message(session_id, {
+            "type": "system",
+            "subtype": "session_state_changed",
+            "state": "error",
+        }, user_id)
+        buffer.mark_done(session_id)
+        agent_log.end_session(session_id, status="error")
+
+
 # ── WebSocket endpoint ───────────────────────────────────────────
 
 
@@ -2090,7 +2387,7 @@ async def handle_ws(websocket: WebSocket) -> None:
                     if item.get("type") == "answer":
                         sid = item.get("session_id", "")
                         answers = item.get("answers", {})
-                        future = pending_answers.get(sid)
+                        future = pending_answers.get(sid) or bridge_answer_futures.get(sid)
                         if future and not future.done():
                             future.set_result(answers)
                     elif item.get("type") == "recover":
@@ -2126,7 +2423,7 @@ async def handle_ws(websocket: WebSocket) -> None:
                 if item.get("type") == "answer":
                     sid = item.get("session_id", "")
                     answers = item.get("answers", {})
-                    future = pending_answers.get(sid)
+                    future = pending_answers.get(sid) or bridge_answer_futures.get(sid)
                     if future and not future.done():
                         future.set_result(answers)
                     continue
@@ -2204,7 +2501,7 @@ async def handle_ws(websocket: WebSocket) -> None:
                             if item.get("type") == "answer":
                                 sid = item.get("session_id", "")
                                 answers = item.get("answers", {})
-                                future = pending_answers.get(sid)
+                                future = pending_answers.get(sid) or bridge_answer_futures.get(sid)
                                 if future and not future.done():
                                     future.set_result(answers)
                             elif item.get("session_id") and item.get("session_id") != session_id:
@@ -2339,9 +2636,11 @@ async def handle_ws(websocket: WebSocket) -> None:
                         for fname in attached_files:
                             _insert_upload_file(user_id, session_id, fname, 0)
 
+                    # Route to container or direct SDK based on mode
+                    target_func = run_agent_task_container if CONTAINER_MODE else run_agent_task
                     task = asyncio.create_task(
                         asyncio.wait_for(
-                            run_agent_task(
+                            target_func(
                                 user_id,
                                 session_id,
                                 user_message,
@@ -2403,7 +2702,7 @@ async def handle_ws(websocket: WebSocket) -> None:
                         if item.get("type") == "answer":
                             sid = item.get("session_id", "")
                             answers = item.get("answers", {})
-                            future = pending_answers.get(sid)
+                            future = pending_answers.get(sid) or bridge_answer_futures.get(sid)
                             if future and not future.done():
                                 future.set_result(answers)
                         elif item.get("session_id") and item.get("session_id") != session_id:
