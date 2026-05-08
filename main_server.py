@@ -1637,8 +1637,9 @@ def _build_history_prompt(history: list[dict[str, Any]], user_message: str, lang
     )
     if language:
         preamble += (
-            f"CRITICAL: You MUST respond in {lang_name}. "
-            f"Do not copy the language of any previous assistant responses "
+            f"CRITICAL: You MUST respond in {lang_name}, including ALL thinking blocks, reasoning, and replies. "
+            f"Any thinking or reasoning content must be in {lang_name}. "
+            f"Do not copy the language of any previous assistant responses or thinking "
             f"if they are in the wrong language.\n"
         )
     preamble += "---\n"
@@ -1651,7 +1652,7 @@ def _build_history_prompt(history: list[dict[str, Any]], user_message: str, lang
     # Prime the assistant turn in the target language so the model starts
     # generating in the correct language from the first token.
     if language:
-        parts.append(f"Assistant (respond in {lang_name} only):")
+        parts.append(f"Assistant (respond and think in {lang_name} only):")
     else:
         parts.append("Assistant:")
 
@@ -1679,9 +1680,9 @@ def _format_first_message_prompt(
     # Natural language priming activates the target language's generation
     # pathway more effectively than a bracketed metadata tag.
     if language == "zh":
-        prefix = f"请用中文回复。\n\n"
+        prefix = f"请用中文回复，包括所有思考内容、推理过程和最终答复。\n\n"
     elif language == "en":
-        prefix = f"Please respond in English.\n\n"
+        prefix = f"Please respond in English, including all thinking blocks, reasoning, and final replies.\n\n"
     else:
         prefix = ""
 
@@ -1792,8 +1793,8 @@ async def run_agent_task(
             if language:
                 lang_name = "中文" if language == "zh" else "English"
                 full_prompt = (
-                    f"IMPORTANT: Your reply below must be in {lang_name}. "
-                    f"Do not use {'英文' if language == 'zh' else 'Chinese'}.\n\n" + full_prompt
+                    f"IMPORTANT: Your reply below, including all thinking blocks, must be in {lang_name}. "
+                    f"Do not use {'英文' if language == 'zh' else 'Chinese'} in any part of your response.\n\n" + full_prompt
                 )
 
             async def prompt_stream():
@@ -2204,7 +2205,7 @@ async def run_agent_task_container(
                 history = await buffer.get_history(session_id, after_index=0, user_id=user_id)
             prompt = _build_history_prompt(history, user_message, language=language)
         else:
-            prompt = user_message
+            prompt = _format_first_message_prompt(user_message, attached_files, language)
 
         await bridge.run_and_stream(prompt, options_dict)
         logger.info(
