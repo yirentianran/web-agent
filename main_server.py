@@ -16,6 +16,7 @@ from dotenv import load_dotenv
 load_dotenv(override=True)  # Load .env file before any env var access, override shell env
 
 import asyncio
+import httpx
 import io
 import json
 import logging
@@ -1662,6 +1663,144 @@ def _format_first_message_prompt(
     return f"{prefix}{user_message}\n\n(Attached files: {paths})"
 
 
+def _build_conversation_summary_text(history: list[dict[str, Any]]) -> str:
+    """Build a condensed transcript from user and assistant messages for title generation."""
+    lines: list[str] = []
+    total_chars = 0
+    max_chars = 2000
+
+    for msg in history:
+        msg_type = msg.get("type", "")
+        if msg_type not in ("user", "assistant"):
+            continue
+        content = (msg.get("content") or "").strip()
+        if not content:
+            continue
+        role = "User" if msg_type == "user" else "Assistant"
+        line = f"{role}: {content}"
+        if total_chars + len(line) > max_chars:
+            remaining = max_chars - total_chars
+            if remaining > 20:
+                lines.append(line[:remaining])
+            break
+        lines.append(line)
+        total_chars += len(line)
+
+    return "\n\n".join(lines)
+
+
+async def _generate_title_via_llm(conversation_text: str, language: str | None = None) -> str:
+    """Call the LLM to generate a concise conversation title."""
+    api_key = os.getenv("ANTHROPIC_AUTH_TOKEN") or os.getenv("ANTHROPIC_API_KEY")
+    base_url = os.getenv("ANTHROPIC_BASE_URL", "")
+    model = os.getenv("MODEL", "claude-sonnet-4-6")
+
+    if not api_key or not base_url:
+        logger.warning("[AUTO_TITLE] Missing API key or base URL — skipping title generation")
+        return ""
+
+    if language == "zh":
+        system_prompt = (
+            "你是一个标题生成器。请根据对话内容生成一个简洁、描述性的标题"
+            "（最多15个字），概括对话的主要话题。"
+            "只回复标题文本，不要加引号、前缀或解释。"
+        )
+        user_prompt = f"为以下对话生成一个简短的标题：\n\n{conversation_text}"
+    else:
+        system_prompt = (
+            "You are a title generator. Generate a concise, descriptive title "
+            "(maximum 15 words) that captures the main topic of the conversation. "
+            "Reply with ONLY the title text — no quotes, no prefixes, no explanations."
+        )
+        user_prompt = f"Generate a short title for this conversation:\n\n{conversation_text}"
+
+    try:
+        logger.debug("[AUTO_TITLE] Calling %s/v1/messages with model=%s", base_url, model)
+        async with httpx.AsyncClient(timeout=120) as client:
+            resp = await client.post(
+                f"{base_url}/v1/messages",
+                headers={
+                    "x-api-key": api_key,
+                    "anthropic-version": "2023-06-01",
+                    "content-type": "application/json",
+                },
+                json={
+                    "model": model,
+                    "max_tokens": 80,
+                    "system": system_prompt,
+                    "messages": [
+                        {"role": "user", "content": user_prompt}
+                    ],
+                },
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                content = data.get("content", [])
+                if isinstance(content, list):
+                    result = process_content_blocks(content, lambda _: None)
+                    # Strip thinking tags — we only want the actual text response for the title
+                    result = re.sub(
+                        r"\[thinking\].*?\[/thinking\]", "", result, flags=re.DOTALL
+                    ).strip()
+                    if result:
+                        logger.debug("[AUTO_TITLE] Extracted title: %s", result[:60])
+                        return result[:100]
+                logger.warning(
+                    "[AUTO_TITLE] Unexpected response structure (status=200): %s",
+                    str(data)[:500],
+                )
+                return ""
+            else:
+                logger.warning(
+                    "[AUTO_TITLE] API returned %d: %s",
+                    resp.status_code,
+                    resp.text[:300],
+                )
+                return ""
+    except Exception:
+        logger.warning("[AUTO_TITLE] LLM call failed", exc_info=True)
+        return ""
+
+
+async def _auto_generate_title(
+    session_id: str,
+    user_id: str,
+    buffer: MessageBuffer,
+    session_store: Any = None,
+    language: str | None = None,
+) -> None:
+    """Generate a conversation-summary title if the session has no manual title."""
+    if session_store is None:
+        return
+
+    try:
+        sessions = await session_store.list_sessions(user_id)
+        session_info = next((s for s in sessions if s["session_id"] == session_id), None)
+        if session_info and session_info.get("title"):
+            return  # Preserve manually-set titles
+
+        history = await buffer.get_history(session_id)
+        if not history:
+            logger.debug("[AUTO_TITLE] session=%s: no history yet", session_id)
+            return
+
+        conversation_text = _build_conversation_summary_text(history)
+        if not conversation_text.strip():
+            logger.debug("[AUTO_TITLE] session=%s: empty conversation text", session_id)
+            return
+
+        logger.debug("[AUTO_TITLE] session=%s: generating title from %d chars", session_id, len(conversation_text))
+        title = await _generate_title_via_llm(conversation_text, language)
+        if not title:
+            logger.info("[AUTO_TITLE] session=%s: LLM returned empty title", session_id)
+            return
+
+        await session_store.update_session_title(user_id, session_id, title)
+        logger.info("[AUTO_TITLE] session=%s title=%s", session_id, title[:60])
+    except Exception:
+        logger.warning("[AUTO_TITLE] Failed for session=%s", session_id, exc_info=True)
+
+
 async def run_agent_task(
     user_id: str,
     session_id: str,
@@ -1997,6 +2136,11 @@ async def run_agent_task(
             msg_count,
             time.time() - start_time,
         )
+
+        # Generate title BEFORE completion messages so the frontend's
+        # loadSessions() (triggered by "result") sees the new title.
+        await _auto_generate_title(session_id, user_id, buffer, session_store, language)
+
         # Add state change BEFORE mark_done() so the subscribe loop's
         # final pull (after is_done() returns True) catches the message.
         buffer.add_message(
@@ -2015,23 +2159,6 @@ async def run_agent_task(
         buffer.mark_done(session_id)
         duration_ms = (time.time() - start_time) * 1000
         agent_log.end_session(session_id, status="completed")
-
-        # Auto-generate session title from first user message (backend-driven,
-        # not dependent on frontend WebSocket events).
-        if session_store is not None:
-            try:
-                sessions = await session_store.list_sessions(user_id)
-                session_info = next((s for s in sessions if s["session_id"] == session_id), None)
-                if session_info and not session_info.get("title"):
-                    history = await buffer.get_history(session_id)
-                    first_user = next((m for m in history if m.get("type") == "user"), None)
-                    if first_user:
-                        title = (first_user.get("content") or "")[:50].strip()
-                        if title:
-                            await session_store.update_session_title(user_id, session_id, title)
-                            logger.info("[AGENT_TASK] Auto-title: %s", title[:40])
-            except Exception:
-                logger.warning("[AGENT_TASK] Auto-title failed", exc_info=True)
 
     except asyncio.TimeoutError:
         buffer.add_message(
@@ -2298,6 +2425,9 @@ async def run_agent_task_container(
             time.time() - start_time,
         )
 
+        # Generate title BEFORE completion messages so the frontend sees it.
+        await _auto_generate_title(session_id, user_id, buffer, session_store, language)
+
         # ── Completion ────────────────────────────────────────────
         buffer.add_message(
             session_id,
@@ -2310,14 +2440,6 @@ async def run_agent_task_container(
         )
         buffer.mark_done(session_id)
         agent_log.end_session(session_id, status="completed")
-
-        # Auto-generate title from first user message
-        title = user_message.strip()[:100]
-        if session_store:
-            try:
-                await session_store.update_session_title(user_id, session_id, title)
-            except Exception:
-                pass
 
     except asyncio.TimeoutError:
         logger.error("Container task %s: timeout", session_id)
@@ -5068,8 +5190,6 @@ async def get_mcp_servers_status(
                 )
             else:
                 try:
-                    import httpx
-
                     async with httpx.AsyncClient() as client:
                         resp = await client.get(url, timeout=3.0)
                         if resp.status_code < 500:
