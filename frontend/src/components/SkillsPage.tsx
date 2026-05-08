@@ -6,14 +6,16 @@ import { useSkillsApi } from '../hooks/useSkillsApi'
 interface SkillsPageProps {
   authToken: string | null
   userId: string
+  userRole: string
   onBack: () => void
 }
 
 type Tab = 'shared' | 'personal'
 
-export default function SkillsPage({ authToken, userId, onBack }: SkillsPageProps) {
+export default function SkillsPage({ authToken, userId, userRole, onBack }: SkillsPageProps) {
   const { t } = useTranslation()
   const api = useSkillsApi(authToken, userId)
+  const isAdmin = userRole === 'admin'
   const [tab, setTab] = useState<Tab>('personal')
   const [sharedSkills, setSharedSkills] = useState<Skill[]>([])
   const [personalSkills, setPersonalSkills] = useState<Skill[]>([])
@@ -130,7 +132,9 @@ export default function SkillsPage({ authToken, userId, onBack }: SkillsPageProp
 
       <div className="skills-tabs">
         <button className={`skills-tab ${tab === 'personal' ? 'active' : ''}`} onClick={() => setTab('personal')} type="button">{t('skills.personalTab')}</button>
-        <button className={`skills-tab ${tab === 'shared' ? 'active' : ''}`} onClick={() => setTab('shared')} type="button">{t('skills.sharedTab')}</button>
+        {isAdmin && (
+          <button className={`skills-tab ${tab === 'shared' ? 'active' : ''}`} onClick={() => setTab('shared')} type="button">{t('skills.sharedTab')}</button>
+        )}
       </div>
 
       {error && <div className="skills-error">{error}</div>}

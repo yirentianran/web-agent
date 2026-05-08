@@ -22,6 +22,7 @@ vi.mock('../hooks/useSkillsApi', () => ({
 const defaultProps = {
   authToken: 'test-token',
   userId: 'test-user',
+  userRole: 'user',
   onClose: vi.fn(),
 }
 

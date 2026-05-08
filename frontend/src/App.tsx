@@ -1526,6 +1526,7 @@ function MainApp() {
           <SkillsPage
             authToken={authToken}
             userId={userId}
+            userRole={userRole}
             onBack={() => navigate("/")}
           />
         }

@@ -30,13 +30,21 @@ export function useSkillsApi(authToken: string | null, userId: string) {
     uploadPersonal: async (file: File): Promise<{ status: string; skill_name: string; files: string[] }> => {
       const formData = new FormData()
       formData.append('file', file)
-      const resp = await fetch(`/api/users/${userId}/skills/upload`, { method: 'POST', body: formData })
+      const resp = await fetch(`/api/users/${userId}/skills/upload`, {
+        method: 'POST',
+        body: formData,
+        headers: { ...headersRef.current },
+      })
       return handleUploadResponse(resp)
     },
     uploadShared: async (file: File): Promise<{ status: string; skill_name: string; files: string[] }> => {
       const formData = new FormData()
       formData.append('file', file)
-      const resp = await fetch('/api/shared-skills/upload', { method: 'POST', body: formData })
+      const resp = await fetch('/api/shared-skills/upload', {
+        method: 'POST',
+        body: formData,
+        headers: { ...headersRef.current },
+      })
       return handleUploadResponse(resp)
     },
     promote: (name: string): Promise<{ status: string; skill_name: string; message: string }> =>
