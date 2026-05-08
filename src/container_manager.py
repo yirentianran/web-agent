@@ -22,6 +22,8 @@ from pathlib import Path
 
 import docker
 
+from src.constants import BUILTIN_TOOLS, DISABLED_TOOLS
+
 logger = logging.getLogger(__name__)
 if not logger.handlers:
     logger.addHandler(logging.StreamHandler())
@@ -211,7 +213,7 @@ def get_user_env(user_id: str, mcp_config: dict | None = None) -> dict[str, str]
     # SDK API in agent_server.py — no longer set via settings.json.
     settings_json = json.dumps({
         "allowedTools": _build_allowed_tools(mcp_config),
-        "disallowedTools": ["WebSearch", "WebFetch"],
+        "disallowedTools": list(DISABLED_TOOLS),
     })
     settings_path = user_data_dir(user_id) / ".claude" / "settings.json"
     settings_path.parent.mkdir(parents=True, exist_ok=True)
@@ -222,12 +224,12 @@ def get_user_env(user_id: str, mcp_config: dict | None = None) -> dict[str, str]
 
 def _build_allowed_tools(mcp_config: dict | None) -> list[str]:
     """Expand all MCP tool names to their fully-qualified form."""
-    # WebFetch/WebSearch excluded: MCP fetch servers provide web content retrieval
-    tools = ["Read", "Edit", "Write", "Glob", "Grep", "Bash",
-             "Agent", "Skill"]
+    disabled = set(DISABLED_TOOLS)
+    tools = [t for t in BUILTIN_TOOLS if t not in disabled]
     if mcp_config:
-        for server_name in mcp_config.get("mcpServers", {}):
-            cfg = mcp_config["mcpServers"][server_name]
+        for server_name, cfg in mcp_config.get("mcpServers", {}).items():
+            if not cfg.get("enabled", True):
+                continue
             for tool_name in cfg.get("tools", []):
                 tools.append(f"mcp__{server_name}__{tool_name}")
     return tools

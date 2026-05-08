@@ -19,6 +19,8 @@ function isValidFilename(name: string | undefined | null): boolean {
 
 // ── Tool display helpers ─────────────────────────────────────────
 
+const DISABLED_TOOLS = ['WebSearch', 'WebFetch'] as const
+
 const TOOL_ICONS: Record<string, string> = {
   Read: '📖',
   Write: '✏️',
@@ -50,11 +52,8 @@ function buildToolSummary(name: string | undefined, input: Record<string, unknow
   if (name === 'Edit') {
     return String(input.file_path || '')
   }
-  if (name === 'WebSearch') {
-    return String(input.query || '')
-  }
-  if (name === 'WebFetch') {
-    return String(input.url || '')
+  if (DISABLED_TOOLS.includes(name as typeof DISABLED_TOOLS[number])) {
+    return String(input.query ?? input.url ?? '')
   }
   if (name === 'Agent') {
     return String(input.prompt || input.description || '')

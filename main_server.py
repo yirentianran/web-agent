@@ -37,6 +37,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from src.constants import BUILTIN_TOOLS, DISABLED_TOOLS
 from src.auth import create_token, verify_token, get_current_user, verify_path_user
 from src.admin_auth import require_admin
 from src.message_buffer import HEARTBEAT_INTERVAL, MessageBuffer, make_heartbeat
@@ -1004,8 +1005,8 @@ def build_allowed_tools(mcp_config: dict[str, Any]) -> list[str]:
 
     Only includes tools from servers where enabled is True (default True).
     """
-    # WebFetch/WebSearch excluded: MCP fetch servers provide web content retrieval
-    tools = ["Read", "Edit", "Write", "Glob", "Grep", "Bash", "Agent", "Skill"]
+    disabled = set(DISABLED_TOOLS)
+    tools = [t for t in BUILTIN_TOOLS if t not in disabled]
     for server_name, cfg in mcp_config.get("mcpServers", {}).items():
         if not cfg.get("enabled", True):
             continue
@@ -1208,7 +1209,7 @@ def build_container_options_dict(
         "model": model,
         "system_prompt": system_prompt_str,
         "allowed_tools": build_allowed_tools(mcp_config),
-        "disallowed_tools": ["WebSearch", "WebFetch"],
+        "disallowed_tools": list(DISABLED_TOOLS),
         "max_turns": int(os.getenv("MAX_TURNS", "200")),
         "permission_mode": "acceptEdits",
         "mcp_servers": mcp_servers if mcp_servers else None,
@@ -1347,7 +1348,7 @@ def build_sdk_options(
             "append": build_system_prompt(user_id, skills, workspace, language),
         },
         allowed_tools=build_allowed_tools(mcp_config),
-        disallowed_tools=["WebSearch", "WebFetch"],
+        disallowed_tools=list(DISABLED_TOOLS),
         max_turns=max_turns,
         permission_mode="acceptEdits",
         mcp_servers=mcp_servers if mcp_servers else None,
@@ -1840,10 +1841,10 @@ async def run_agent_task(
         tool_input: dict[str, Any],
         ctx: ToolPermissionContext,
     ) -> PermissionResult:
-        # Block WebSearch and WebFetch — MCP fetch servers handle web content
-        if tool_name in ("WebSearch", "WebFetch"):
+        # Block disabled tools — MCP fetch servers handle web content
+        if tool_name in DISABLED_TOOLS:
             return PermissionResultDeny(
-                message="WebSearch/WebFetch are disabled. Use MCP fetch tools instead.",
+                message=f"{tool_name} is disabled. Use MCP fetch tools instead.",
             )
 
         # Block file writes outside user directory (workspace + memory)
@@ -4626,7 +4627,7 @@ def _build_evolution_sdk_options(
         cwd=str(version_dir),
         system_prompt=system_prompt,
         allowed_tools=build_allowed_tools(load_mcp_config()),
-        disallowed_tools=["WebSearch", "WebFetch"],
+        disallowed_tools=list(DISABLED_TOOLS),
         max_turns=max_turns,
         permission_mode="acceptEdits",
         max_buffer_size=int(os.getenv("MAX_BUFFER_SIZE", str(10 * 1024 * 1024))),
