@@ -35,8 +35,8 @@ function mockScrollContainer(container: HTMLElement, opts?: { scrollHeight?: num
   Object.defineProperty(container, 'scrollTop', { value: 0, writable: true, configurable: true })
 }
 
-function renderChatArea(messages: Message[], opts?: { sessionId?: string | null; sessionState?: string }): RenderResult {
-  const { sessionId = 'test-session', sessionState = 'idle' } = opts || {}
+function renderChatArea(messages: Message[], opts?: { sessionId?: string | null; sessionState?: string; mockScroll?: { scrollHeight?: number; clientHeight?: number } }): RenderResult {
+  const { sessionId = 'test-session', sessionState = 'idle', mockScroll } = opts || {}
   const scrollPositions = new Map<string, number>()
   const result = render(
     <ChatArea
@@ -48,6 +48,9 @@ function renderChatArea(messages: Message[], opts?: { sessionId?: string | null;
     />,
   )
   const messagesContainer = result.container.querySelector('.messages') as HTMLElement
+  if (mockScroll) {
+    mockScrollContainer(messagesContainer, mockScroll)
+  }
   return { messagesContainer, scrollPositions, rerender: result.rerender, container: result.container }
 }
 
@@ -120,13 +123,25 @@ describe('ChatArea - auto-scroll to bottom', () => {
   })
 
   it('scrolls to bottom on first visit to a session', () => {
+    // Start with empty messages so useEffect doesn't scroll before mock is set
+    const { messagesContainer, scrollPositions, rerender } = renderChatArea([], { mockScroll: { scrollHeight: 1000, clientHeight: 500 } })
+
+    // Now add messages - this triggers "wasEmpty && messages.length > 0" condition
     const messages: Message[] = [
       { type: 'user', content: 'Hello', index: 0 },
       { type: 'assistant', content: 'Hi there!', index: 1 },
     ]
-
-    const { messagesContainer, scrollPositions } = renderChatArea(messages)
-    mockScrollContainer(messagesContainer, { scrollHeight: 1000, clientHeight: 500 })
+    act(() => {
+      rerender(
+        <ChatArea
+          messages={messages}
+          sessionId="test-session"
+          sessionState="idle"
+          onAnswer={() => {}}
+          scrollPositions={scrollPositions}
+        />,
+      )
+    })
 
     // First visit should have scrolled to bottom
     act(() => { vi.advanceTimersByTime(50) })
@@ -146,13 +161,27 @@ describe('ChatArea - auto-scroll to bottom', () => {
     mockScrollContainer(messagesContainer, { scrollHeight: 500, clientHeight: 500 })
     // User is at bottom (scrollHeight === clientHeight, distance = 0)
 
-    // Add a new message
+    // Trigger initial scroll setup after mock
+    const scrollPositions = new Map<string, number>()
+    act(() => {
+      rerender(
+        <ChatArea
+          messages={initialMessages}
+          sessionId="test-session"
+          sessionState="completed"
+          onAnswer={() => {}}
+          scrollPositions={scrollPositions}
+        />,
+      )
+    })
+
+    // Add a new message - content height increases
     const newMessages: Message[] = [
       { type: 'user', content: 'Hello', index: 0 },
       { type: 'assistant', content: 'Hi there!', index: 1 },
     ]
+    mockScrollContainer(messagesContainer, { scrollHeight: 1000, clientHeight: 500 })  // New content is taller
 
-    const scrollPositions = new Map<string, number>()
     act(() => {
       rerender(
         <ChatArea
@@ -166,8 +195,8 @@ describe('ChatArea - auto-scroll to bottom', () => {
     })
     act(() => { vi.advanceTimersByTime(50) })
 
-    // Should have auto-scrolled to bottom
-    expect(messagesContainer.scrollTop).toBe(500)
+    // Should have auto-scrolled to bottom (1000 = new scrollHeight)
+    expect(messagesContainer.scrollTop).toBe(1000)
   })
 
   it('does NOT auto-scroll when user has scrolled up', () => {
@@ -328,8 +357,22 @@ describe('ChatArea - auto-scroll on session running', () => {
       { type: 'user', content: 'Hello', index: 0 },
     ]
 
-    const { messagesContainer, rerender } = renderChatArea(messages, { sessionState: 'running' })
+    const { messagesContainer, rerender } = renderChatArea(messages, { sessionState: 'idle' })
     mockScrollContainer(messagesContainer, { scrollHeight: 1000, clientHeight: 500 })
+
+    // Transition to running state after mock is set
+    const scrollPositions = new Map<string, number>()
+    act(() => {
+      rerender(
+        <ChatArea
+          messages={messages}
+          sessionId="test-session"
+          sessionState="running"
+          onAnswer={() => {}}
+          scrollPositions={scrollPositions}
+        />,
+      )
+    })
     act(() => { vi.advanceTimersByTime(50) })
 
     // Initial running should have scrolled to bottom
@@ -345,7 +388,6 @@ describe('ChatArea - auto-scroll on session running', () => {
       { type: 'assistant', content: 'Working on it...', index: 1 },
     ]
 
-    const scrollPositions = new Map<string, number>()
     act(() => {
       rerender(
         <ChatArea

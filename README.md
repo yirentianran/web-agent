@@ -81,19 +81,20 @@ Backend at `http://127.0.0.1:8000`, frontend dev server at `http://127.0.0.1:300
 
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
-| `ANTHROPIC_AUTH_TOKEN` | Yes | — | Anthropic API key (`sk-ant-api03-...`) or Bailian key (`sk-sp-...`) |
+| `ANTHROPIC_AUTH_TOKEN` | Yes | — | Anthropic API key. Also checks `ANTHROPIC_API_KEY` as fallback. Per-user override: `ANTHROPIC_AUTH_TOKEN_<USERID>` |
 | `ANTHROPIC_BASE_URL` | No | Anthropic default | Custom API endpoint (e.g., Bailian: `https://coding.dashscope.aliyuncs.com/apps/anthropic`) |
 | `MODEL` | No | `claude-sonnet-4-6` | Model name (e.g., `qwen3.6-plus` for Bailian) |
 | `DATA_ROOT` | No | `./data` | Runtime data directory |
 | `DATA_DB_PATH` | No | `./data/web-agent.db` | SQLite database path |
 | `AGENT_TASK_TIMEOUT` | No | `300` | Max agent task duration (seconds) |
 | `MAX_TURNS` | No | `200` | Max conversation turns per task |
-| `LOG_LEVEL` | No | `info` | Logging level (debug, info, warning, error) |
+| `LOG_LEVEL` | No | `INFO` | Logging level: `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL` (invalid values fall back to `INFO`) |
 | `PROD` | No | `false` | Production mode — serves frontend static files from backend |
 | `ENFORCE_AUTH` | No | `false` | Require JWT authentication for all endpoints |
 | `JWT_SECRET` | No | auto-generated | JWT signing secret (set in production) |
 | `CONTAINER_MODE` | No | `false` | Enable per-user Docker container isolation |
 | `CONTAINER_IDLE_TTL` | No | `1800` | Idle seconds before stopping a container |
+| `HOST_DATA_ROOT` | No | — | Absolute host path to `data/` (required for container volume mounts when main server runs in Docker) |
 | `MAX_UPLOAD_BYTES` | No | `209715200` | Max upload file size (200 MB) |
 | `TOOL_RESULT_MAX_CHARS` | No | `500` | Max chars per tool result in context |
 | `RESOURCE_MAX_CPU_PERCENT` | No | `100` | Per-container CPU limit |
@@ -141,13 +142,16 @@ web-agent/
 │   ├── skill_evolution.py      # Feedback-driven improvement pipeline
 │   ├── sub_agent.py            # Sub-agent task lifecycle
 │   ├── container_manager.py    # Per-user Docker container management
+│   ├── container_bridge.py      # WebSocket bridge to user containers
+│   ├── block_processor.py       # Unified content-block processing (SDK + container)
 │   ├── sandbox.py              # Code execution isolation adapter
 │   ├── resource_manager.py     # Container resource monitoring
 │   └── hooks/                  # PreToolUse, PostToolUse, Stop hooks
 ├── frontend/src/               # React SPA (Vite)
 │   ├── components/             # ChatArea, MessageBubble, InputBar, Sidebar, etc.
 │   ├── hooks/                  # useWebSocket, useStreamingText, useSkillsApi, etc.
-│   └── lib/                    # Types, session-state, todos, uuid
+│   ├── lib/                    # Types, session-state, todos, uuid
+│   └── utils/                  # Logger, helpers
 ├── tests/                      # Backend pytest tests
 ├── scripts/                    # build.sh, manage.sh, verify scripts, migrations
 ├── data/                       # Runtime data (never committed)

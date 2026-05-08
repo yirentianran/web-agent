@@ -38,16 +38,9 @@ import {
   clearPendingMessage,
   loadPendingMessage,
 } from "./lib/session-state";
+import { createLogger } from "./utils/logger";
 
-const logger = {
-  error: (message: string, err: unknown) => {
-    const detail = err instanceof Error ? err.message : String(err);
-    console.error(`[App] ${message}: ${detail}`);
-  },
-  warn: (message: string) => {
-    console.warn(`[App] ${message}`);
-  },
-};
+const logger = createLogger("[App]");
 
 // Valid session state transitions — used by setSessionStateFor to
 // warn on unexpected transitions (soft check, no transition is blocked).
@@ -559,7 +552,7 @@ function MainApp() {
         headers,
       })
         .then((resp) => {
-          console.log(
+          logger.debug(
             "[REST /history] status=%d ok=%s userId=%s sessionId=%s",
             resp.status, resp.ok, userId, urlSessionId,
           );
@@ -571,7 +564,7 @@ function MainApp() {
           return [];
         })
         .then((data) => {
-          console.log(
+          logger.debug(
             "[REST /history] data received: %d messages, session=%s",
             Array.isArray(data) ? data.length : -1, urlSessionId,
           );
@@ -584,7 +577,7 @@ function MainApp() {
             session_id: urlSessionId,
           }));
           setMessages((prev) => {
-            console.log(
+            logger.debug(
               "[setMessages] prev=%d msgs (prev[0].session=%s) new=%d msgs (session=%s)",
               prev.length,
               prev.length > 0 ? prev[0].session_id : "none",
@@ -597,7 +590,7 @@ function MainApp() {
               (m) => m.session_id === urlSessionId,
             );
             if (sameSession.length === 0) {
-              console.log("[setMessages] no same-session msgs, replacing with %d new msgs", msgs.length);
+              logger.debug("[setMessages] no same-session msgs, replacing with %d new msgs", msgs.length);
               return msgs;
             }
             const prevIndices = new Set(sameSession.map((m) => m.index));
@@ -725,7 +718,7 @@ function MainApp() {
     (msg: Message) => {
       // Log incoming WS messages for debugging cross-user access
       if (msg.type !== "heartbeat") {
-        console.log(
+        logger.debug(
           "[WS incoming] type=%s subtype=%s session=%s index=%d replay=%s",
           msg.type, msg.subtype || "-", msg.session_id || "-", msg.index ?? -1, msg.replay ?? false,
         );
@@ -1006,7 +999,7 @@ function MainApp() {
           .filter(m => m.type === "assistant")
           .map(m => m.index)
           .join(",");
-        console.log(
+        logger.debug(
           "[setMessages] type=%s subtype=%s idx=%d replay=%s firstTurn=%s result=%s prevLen=%d nextLen=%d assistants=[%s] clearThresh=%d replayStarted=%s",
           msg.type,
           msg.subtype || "-",
@@ -1139,8 +1132,7 @@ function MainApp() {
     },
     onQueueFull: () => {
       // Queue overflow — show a non-blocking warning to the user
-      // eslint-disable-next-line no-console
-      console.warn(
+      logger.warn(
         "[WebSocket] Pending queue full. Messages will be dropped until connection restores.",
       );
     },
@@ -1493,7 +1485,7 @@ function MainApp() {
         setSessionStateFor(urlSessionId, "idle");
       }
     } catch (err) {
-      console.error("Failed to stop session", err);
+      logger.error("Failed to stop session", err);
     }
   }, [urlSessionId, userId, authToken]);
 

@@ -5,6 +5,9 @@ import { FileCardList } from './FileCards'
 import AskUserQuestionCard from './AskUserQuestionCard'
 import TodoWriteViz from './TodoWriteViz'
 import { parseTodoWriteInput } from '../lib/todos'
+import { createLogger } from '../utils/logger'
+
+const logger = createLogger('[MessageBubble]')
 
 // ── Filename validation ──────────────────────────────────────────
 
@@ -487,10 +490,10 @@ export default function MessageBubble({ message, sessionId, onAnswer, onFileClic
   // assistant
   const hasContent = message.content && message.content.trim().length > 0
   if (!hasContent) {
-    console.log("[MessageBubble] assistant SKIP (no content) index=%d", message.index)
+    logger.debug("[MessageBubble] assistant SKIP (no content) index=%d", message.index)
     return null
   }
-  console.log(
+  logger.debug(
     "[MessageBubble] assistant RENDER index=%d contentLen=%d preview=%s",
     message.index,
     message.content.length,

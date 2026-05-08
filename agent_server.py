@@ -62,7 +62,8 @@ _stream_handler.setFormatter(_formatter)
 _logger = logging.getLogger()
 _logger.addHandler(_file_handler)
 _logger.addHandler(_stream_handler)
-_logger.setLevel(logging.INFO)
+LOG_LEVEL = getattr(logging, os.getenv("LOG_LEVEL", "INFO").upper(), logging.INFO)
+_logger.setLevel(LOG_LEVEL)
 
 app = FastAPI(title="agent-server")
 

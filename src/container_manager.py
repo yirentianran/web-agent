@@ -25,7 +25,8 @@ import docker
 logger = logging.getLogger(__name__)
 if not logger.handlers:
     logger.addHandler(logging.StreamHandler())
-    logger.setLevel(logging.DEBUG if os.getenv("LOG_LEVEL") == "debug" else logging.INFO)
+LOG_LEVEL = getattr(logging, os.getenv("LOG_LEVEL", "INFO").upper(), logging.INFO)
+logger.setLevel(LOG_LEVEL)
 
 DATA_ROOT = Path(os.getenv("DATA_ROOT", "/data"))
 

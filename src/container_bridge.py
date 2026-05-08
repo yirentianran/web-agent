@@ -27,6 +27,8 @@ import websockets
 from websockets.asyncio.client import ClientConnection
 from websockets.exceptions import ConnectionClosed
 
+from src.block_processor import process_content_blocks
+
 logger = logging.getLogger("container_bridge")
 
 # Module-level registry for AskUserQuestion Futures.
@@ -199,36 +201,16 @@ class ContainerBridge:
                     msg_content = data.get("message", {})
                     if msg_content:
                         content_blocks = msg_content.get("content", [])
-                        text_parts: list[str] = []
-                        for block in content_blocks:
-                            if not isinstance(block, dict):
-                                continue
-                            bt = block.get("type", "")
-                            if bt == "text":
-                                text_parts.append(block.get("text", ""))
-                            elif bt == "thinking":
-                                thinking_text = block.get("thinking", "")
-                                text_parts.append(f"[thinking]{thinking_text}[/thinking]")
-                            elif bt == "tool_use":
-                                tool_name = block.get("name", "")
-                                self.buffer.add_message(self.session_id, {
-                                    "type": "tool_use",
-                                    "name": tool_name,
-                                    "id": block.get("id", ""),
-                                    "input": block.get("input", {}),
-                                }, self.user_id)
-                            elif bt == "server_tool_use":
-                                tool_name = block.get("name", "")
-                                self.buffer.add_message(self.session_id, {
-                                    "type": "tool_use",
-                                    "name": tool_name,
-                                    "id": block.get("id", ""),
-                                    "input": block.get("input", {}),
-                                }, self.user_id)
-                        if text_parts:
+
+                        def _emit_block(d: dict) -> None:
+                            self.buffer.add_message(self.session_id, d, self.user_id)
+
+                        combined_text = process_content_blocks(content_blocks, _emit_block)
+
+                        if combined_text:
                             self.buffer.add_message(self.session_id, {
                                 "type": "assistant",
-                                "content": "\n".join(text_parts),
+                                "content": combined_text,
                             }, self.user_id)
                     else:
                         # Fallback: bare content string (legacy or result-fallback path)

@@ -9,7 +9,7 @@ services:
       - "${PORT:-8000}:8000"
     env_file:
       - .env
-      - .env.docker
+      - .env.production
     environment:
       - HOST_DATA_ROOT=${HOST_DATA_ROOT:-/home/ubuntu/web-agent/data}
     volumes:

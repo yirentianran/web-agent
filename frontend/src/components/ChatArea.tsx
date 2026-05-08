@@ -4,6 +4,7 @@ import MessageBubble, { parseTagBlocks, hasIncompleteTag } from "./MessageBubble
 import MarkdownRenderer from "./MarkdownRenderer";
 import SkillFeedbackWidget from "./SkillFeedbackWidget";
 import StatusSpinner from "./StatusSpinner";
+import { createLogger } from "../utils/logger";
 import type { Message, SessionStatus } from "../lib/types";
 
 const SCROLL_THRESHOLD = 100;
@@ -356,7 +357,8 @@ export default function ChatArea({
         )}
 
         {sessionId !== null && (() => {
-          console.log(
+          const wsLogger = createLogger("[ChatArea]");
+          wsLogger.debug(
             "[ChatArea RENDER] session=%s rawMessages=%d sortedMessages=%d filteredMessages=%d hasVisible=%s",
             sessionId,
             messages.length,
@@ -366,10 +368,10 @@ export default function ChatArea({
           );
           // Log every visible message type/index for diagnostics
           const visibleTypes = filteredMessages.map(m => `${m.type}:${m.subtype || ""}@${m.index}`);
-          console.log("[ChatArea RENDER] message types:", visibleTypes.join(", "));
+          wsLogger.debug("[ChatArea RENDER] message types:", visibleTypes.join(", "));
           // Log assistant messages specifically
           const assistants = filteredMessages.filter(m => m.type === "assistant");
-          console.log("[ChatArea RENDER] assistant count=%d indices=%s",
+          wsLogger.debug("[ChatArea RENDER] assistant count=%d indices=%s",
             assistants.length,
             assistants.map(m => `${m.index}(len=${(m.content || "").length})`).join(", "),
           );

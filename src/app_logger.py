@@ -77,7 +77,8 @@ def get_app_logger(name: str = "web-agent") -> logging.Logger:
         return _app_logger
 
     _app_logger = logging.getLogger(name)
-    _app_logger.setLevel(logging.INFO)
+LOG_LEVEL = getattr(logging, os.getenv("LOG_LEVEL", "INFO").upper(), logging.INFO)
+_app_logger.setLevel(LOG_LEVEL)
 
     handler = _create_handler(APP_LOG_DIR)
     _app_logger.addHandler(handler)

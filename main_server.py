@@ -28,7 +28,7 @@ import uuid
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Iterator
+from typing import TYPE_CHECKING, Any, Callable, Iterator
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File, HTTPException, Header, Depends
 from fastapi.middleware.cors import CORSMiddleware
@@ -64,7 +64,8 @@ else:
 _EXTRACTION_RULES_PATH = Path(__file__).parent / "src" / "learn-extraction.md"
 
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
+LOG_LEVEL = getattr(logging, os.getenv("LOG_LEVEL", "INFO").upper(), logging.INFO)
+logger.setLevel(LOG_LEVEL)
 
 # Shared rotating file handler — all loggers write via this single handler
 # to avoid Windows PermissionError when multiple handlers try to rotate the same file.
@@ -311,6 +312,7 @@ from claude_agent_sdk.types import (
     ToolUseBlock,
     UserMessage,
 )
+from src.block_processor import process_content_blocks
 from src.container_bridge import ContainerBridge, bridge_answer_futures
 
 
@@ -1384,50 +1386,18 @@ def message_to_dicts(msg: Any) -> Iterator[dict[str, Any]]:
         return
 
     if isinstance(msg, AssistantMessage):
-        text_parts: list[str] = []
-        # Build a map of tool_use_id -> tool name so ToolResultBlock can resolve names
-        tool_use_names: dict[str, str] = {}
-        for block in msg.content:
-            if isinstance(block, ToolUseBlock):
-                tool_use_names[block.id] = block.name
+        # Collect emitted tool_use/tool_result messages
+        emitted: list[dict[str, Any]] = []
 
-        for block in msg.content:
-            if isinstance(block, TextBlock):
-                text_parts.append(block.text)
-            elif isinstance(block, ThinkingBlock):
-                text_parts.append(f"[thinking] {block.thinking}[/thinking]")
-            elif isinstance(block, ToolUseBlock):
-                yield {
-                    "type": "tool_use",
-                    "name": block.name,
-                    "id": block.id,
-                    "input": block.input,
-                }
-            elif isinstance(block, ToolResultBlock):
-                tool_name = tool_use_names.get(block.tool_use_id, "unknown")
-                content_val: str
-                if isinstance(block.content, list):
-                    content_val = json.dumps(block.content, ensure_ascii=False)
-                elif block.content is None:
-                    content_val = ""
-                else:
-                    content_val = block.content
-                result_dict: dict[str, Any] = {
-                    "type": "tool_result",
-                    "name": tool_name,
-                    "tool_use_id": block.tool_use_id,
-                    "content": content_val,
-                }
-                if block.is_error is not None:
-                    result_dict["is_error"] = block.is_error
-                yield result_dict
-            else:
-                text_parts.append(str(block))
-        if text_parts:
-            yield {
-                "type": "assistant",
-                "content": "\n".join(text_parts),
-            }
+        def _emit(d: dict[str, Any]) -> None:
+            emitted.append(d)
+
+        combined_text = process_content_blocks(msg.content, _emit)
+
+        for d in emitted:
+            yield d
+        if combined_text:
+            yield {"type": "assistant", "content": combined_text}
         return
 
     if isinstance(msg, ResultMessage):

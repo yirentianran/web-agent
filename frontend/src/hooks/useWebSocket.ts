@@ -1,6 +1,9 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import type { Message } from "../lib/types";
 import { generateUUID } from "../lib/uuid";
+import { createLogger } from "../utils/logger";
+
+const logger = createLogger("[WebSocket]");
 
 /** Outgoing WebSocket message shape — sent from frontend to backend. */
 export interface WSOutgoingMessage {
@@ -101,7 +104,7 @@ export function useWebSocket({
 
   const flushPending = useCallback(() => {
     const ws = wsRef.current;
-    console.log("[WebSocket] flushPending: wsRef=", ws?.readyState, "pendingQueue=", pendingQueue.current.length, "priorityQueue=", priorityQueue.current.length);
+    logger.debug("flushPending: wsRef=", ws?.readyState, "pendingQueue=", pendingQueue.current.length, "priorityQueue=", priorityQueue.current.length);
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
     const recover = pendingRecoverRef.current;
     if (recover) {
@@ -112,7 +115,7 @@ export function useWebSocket({
         last_index: recover.lastIndex,
         user_id: userIdRef.current,
       });
-      console.log("[WebSocket] flushPending: sending queued recover:", payload.slice(0, 120));
+      logger.debug("flushPending: sending queued recover:", payload.slice(0, 120));
       ws.send(payload);
       const existing = recoverTimers.current.get(recover.sessionId);
       if (existing) clearTimeout(existing);
@@ -125,13 +128,13 @@ export function useWebSocket({
     while (priorityQueue.current.length > 0) {
       const msg = priorityQueue.current.shift()!;
       const payload = JSON.stringify({ type: "answer", ...msg, user_id: userIdRef.current });
-      console.log("[WebSocket] Sending priority:", payload.slice(0, 100));
+      logger.debug("Sending priority:", payload.slice(0, 100));
       ws.send(payload);
     }
     while (pendingQueue.current.length > 0) {
       const msg = pendingQueue.current.shift()!;
       const payload = JSON.stringify({ type: "chat", ...msg, user_id: userIdRef.current });
-      console.log("[WebSocket] Sending pending:", payload.slice(0, 100));
+      logger.debug("Sending pending:", payload.slice(0, 100));
       ws.send(payload);
     }
   }, []);
@@ -180,13 +183,13 @@ export function useWebSocket({
       reconnectAttempts.current = 0;
       setQueueFull(false);
       setStatus("connected");
-      console.log("[WebSocket] Connected, wsRef:", wsRef.current === ws, "readyState:", ws.readyState);
+      logger.debug("Connected, wsRef:", wsRef.current === ws, "readyState:", ws.readyState);
       onConnectRef.current?.();
       flushPendingRef.current();
     };
 
     ws.onmessage = (event) => {
-      console.log("[WebSocket] Received:", event.data.slice(0, 100));
+      logger.debug("Received:", event.data.slice(0, 100));
       try {
         const data = JSON.parse(event.data);
         if (data.type === "auth_error") {
@@ -273,7 +276,7 @@ export function useWebSocket({
       const clientMsgId = data.client_msg_id || generateUUID();
       const enriched = { ...data, client_msg_id: clientMsgId };
       const ws = wsRef.current;
-      console.log("[WebSocket] sendMessage: ws=", ws?.readyState, "wsRef=", wsRef.current === ws, "userId=", userIdRef.current);
+      logger.debug("sendMessage: ws=", ws?.readyState, "wsRef=", wsRef.current === ws, "userId=", userIdRef.current);
 
       const onReject = () => {
         onSendFailedRef.current?.(clientMsgId);
@@ -283,7 +286,7 @@ export function useWebSocket({
 
       if (ws?.readyState === WebSocket.OPEN) {
         const payload = JSON.stringify({ type: "chat", ...enriched, user_id: userIdRef.current });
-        console.log("[WebSocket] Sending direct:", payload.slice(0, 100));
+        logger.debug("Sending direct:", payload.slice(0, 100));
         ws.send(payload);
       } else {
         if (pendingQueue.current.length < PENDING_QUEUE_MAX) {
@@ -340,7 +343,7 @@ export function useWebSocket({
   const sendRecover = useCallback(
     (sessionId: string, lastIndex: number) => {
       const ws = wsRef.current;
-      console.log("[WebSocket] sendRecover: ws=", ws?.readyState, "sessionId=", sessionId, "lastIndex=", lastIndex);
+      logger.debug("sendRecover: ws=", ws?.readyState, "sessionId=", sessionId, "lastIndex=", lastIndex);
       if (ws?.readyState === WebSocket.OPEN) {
         const payload = JSON.stringify({
           type: "recover",
@@ -349,7 +352,7 @@ export function useWebSocket({
           user_id: userIdRef.current,
           language: localStorage.getItem('i18nextLng') || 'zh',
         });
-        console.log("[WebSocket] sendRecover: sending directly:", payload.slice(0, 120));
+        logger.debug("sendRecover: sending directly:", payload.slice(0, 120));
         ws.send(payload);
         // Start a timeout — if no messages arrive for this session
         // within RECOVER_TIMEOUT_MS, the recover likely failed.

@@ -16,6 +16,65 @@
 - 主服务器作为 WebSocket 桥接，将浏览器消息转发到用户容器
 - 用户容器通过 bind mount 访问宿主机上的数据文件
 
+### 1.1.1 架构选择：Docker-out-of-Docker (DooD)
+
+web-agent 的 CONTAINER_MODE 采用 **Docker-out-of-Docker** 架构，而非嵌套 Docker-in-Docker。
+
+#### 核心机制
+
+```yaml
+# docker-compose.yml
+volumes:
+  - /var/run/docker.sock:/var/run/docker.sock
+```
+
+将宿主机 Docker daemon socket 挂入 web-agent 容器。main_server 通过 `docker.from_env()` 直接与宿主机 Docker daemon 通信，创建的用户容器是宿主机的**兄弟容器**（sibling container），而非嵌套在 web-agent 容器内部。
+
+#### 进程结构
+
+```
+宿主机
+├── Docker Daemon (通过 /var/run/docker.sock)
+│   ├── web-agent 容器         ← docker-compose 启动
+│   ├── web-agent-yguo 容器    ← main_server 通过 socket 创建
+│   ├── web-agent-xiangyan     ← 同上
+│   └── ...
+```
+
+#### 为什么不使用 Docker-in-Docker (DinD)
+
+| 对比维度 | DooD (当前方案) | DinD (嵌套 Docker) |
+|---------|----------------|---------------------|
+| 复杂度 | 低，只需挂载一个 socket | 高，需要在容器内运行完整 Docker daemon |
+| 性能 | 直接共享宿主机内核，无额外开销 | 多一层虚拟化开销 |
+| 存储 | 用户容器镜像复用，不用重复拉取 | 需要独立镜像存储层 |
+| 文件共享 | 宿主机路径直接绑定挂载 | 路径映射复杂，多层嵌套 |
+| 安全 | 需 socket 访问权限 | 也需 privileged 模式 |
+
+#### 路径映射要点
+
+Docker daemon 在宿主机上解析卷挂载源路径，因此容器内代码需要知道宿主机的真实路径。这就是 `HOST_DATA_ROOT` 存在的原因：
+
+```python
+# src/container_manager.py
+_HOST_DATA_ROOT = os.getenv("HOST_DATA_ROOT")
+if _HOST_DATA_ROOT:
+    HOST_DATA_ROOT = Path(_HOST_DATA_ROOT)  # docker-compose 部署：显式宿主机路径
+else:
+    HOST_DATA_ROOT = DATA_ROOT.resolve()     # 本地开发：main_server 直接在宿主机运行
+```
+
+#### 数据库一致性
+
+两种部署模式操作的是同一个 SQLite 数据库文件：
+
+| 模式 | 数据库路径来源 | 实际文件 |
+|------|-------------|---------|
+| docker-compose | `.env.docker` → `DATA_DB_PATH=/data/web-agent.db` | 通过 `./data:/data` 卷挂载 → 宿主机 `./data/web-agent.db` |
+| 本地 uvicorn | `.env` → `DATA_DB_PATH=./data/web-agent.db` | 直接读写宿主机 `./data/web-agent.db` |
+
+> macOS Docker 通过 Linux VM 运行，bind mount 跨文件系统，inode 必然不同，不代表是不同文件。
+
 ### 1.2 模式检测与路由
 
 `main_server.py` 第 267-285 行：
