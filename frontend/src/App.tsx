@@ -924,53 +924,66 @@ function MainApp() {
           (msg.replay || msg.index >= clearThresholdRef.current);
 
         let next: Message[];
+        let dedupResult = "append";  // track dedup outcome for logging
 
         if (isFirstTurnMessage) {
           replayStartedRef.current = true;
           if (prev.some((m) => m.index === msg.index)) {
             next = prev;
+            dedupResult = "skip:firstTurn-indexDup";
           } else if (msg.type === "user" && !msg.replay) {
             if (
               msg.clientMsgId &&
               prev.some((m) => m.clientMsgId === msg.clientMsgId)
             ) {
               next = prev;
+              dedupResult = "skip:firstTurn-user-clientMsgIdDup";
             } else if (
               prev.some(
                 (m) => m.type === "user" && m.content === msg.content,
               )
             ) {
               next = prev;
+              dedupResult = "skip:firstTurn-user-contentDup";
             } else {
               next = [...prev, msg];
+              dedupResult = "append:firstTurn-user";
             }
           } else {
             next = [...prev, msg];
+            dedupResult = "append:firstTurn-other";
           }
         } else if (msg.replay && prev.some((m) => m.index === msg.index)) {
           next = prev;
+          dedupResult = "skip:replay-indexDup";
         } else if (msg.type === "user" && !msg.replay) {
           if (
             msg.clientMsgId &&
             prev.some((m) => m.clientMsgId === msg.clientMsgId)
           ) {
             next = prev;
+            dedupResult = "skip:user-clientMsgIdDup";
           } else if (
             !msg.clientMsgId &&
             prev.some((m) => m.type === "user" && m.content === msg.content)
           ) {
             next = prev;
+            dedupResult = "skip:user-contentDup";
           } else {
             next = [...prev, msg];
+            dedupResult = "append:user";
           }
         } else if (!msg.replay && msg.type !== "user") {
           if (msg.index != null && prev.some((m) => m.index === msg.index)) {
             next = prev;
+            dedupResult = "skip:nonReplay-indexDup";
           } else {
             next = [...prev, msg];
+            dedupResult = "append:nonReplay-nonUser";
           }
         } else {
           next = [...prev, msg];
+          dedupResult = "append:fallthrough";
         }
 
         // Restore send states from the source-of-truth map. This
@@ -987,6 +1000,26 @@ function MainApp() {
           }
           return m;
         });
+
+        // ── DIAGNOSTIC LOGGING ──────────────────────────────
+        const assistantIndices = next
+          .filter(m => m.type === "assistant")
+          .map(m => m.index)
+          .join(",");
+        console.log(
+          "[setMessages] type=%s subtype=%s idx=%d replay=%s firstTurn=%s result=%s prevLen=%d nextLen=%d assistants=[%s] clearThresh=%d replayStarted=%s",
+          msg.type,
+          msg.subtype || "-",
+          msg.index ?? -1,
+          msg.replay ?? false,
+          isFirstTurnMessage,
+          dedupResult,
+          prev.length,
+          next.length,
+          assistantIndices,
+          clearThresholdRef.current,
+          replayStartedRef.current,
+        );
 
         // Update maxMsgIndexRef synchronously so handleSend always
         // reads the latest value, avoiding stale last_index on send.

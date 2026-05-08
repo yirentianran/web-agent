@@ -2,8 +2,8 @@
 
 Removes:
 - data/.msg-buffer/*.jsonl (duplicate of messages table)
-- data/users/*/claude-data/sessions/*.jsonl (duplicate)
-- data/users/*/claude-data/sessions/*.meta.json (stale)
+- data/users/*/.claude/sessions/*.jsonl (duplicate)
+- data/users/*/.claude/sessions/*.meta.json (stale)
 - data/users/*/tasks/*.json (if tasks migrated to DB)
 - data/users/*/memory.json (if memory migrated to DB)
 
@@ -70,15 +70,15 @@ def main() -> None:
             msg_buffer.rmdir()
             print(f"  [DEL] dir: {msg_buffer}")
 
-    # 2. User-level claude-data sessions
+    # 2. User-level .claude sessions
     users_dir = data_root / "users"
     if users_dir.exists():
         for user_dir in sorted(users_dir.iterdir()):
             if not user_dir.is_dir():
                 continue
 
-            # claude-data/sessions/*.jsonl and *.meta.json
-            sessions_dir = user_dir / "claude-data" / "sessions"
+            # .claude/sessions/*.jsonl and *.meta.json
+            sessions_dir = user_dir / ".claude" / "sessions"
             if sessions_dir.exists():
                 for f in sorted(sessions_dir.glob("*.jsonl")):
                     remove(f, "session-jsonl")

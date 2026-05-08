@@ -661,8 +661,10 @@ def _insert_upload_file(user_id: str, session_id: str, filename: str, file_size:
         pass
 
 
-def check_bash_command_for_external_writes(cmd: str, workspace: Path) -> str | None:
+def check_bash_command_for_external_writes(cmd: str, workspace: Path, user_dir: Path | None = None) -> str | None:
     """Return an error message if the command writes outside workspace, or None if safe."""
+    if user_dir is None:
+        user_dir = workspace
     # Patterns that indicate writes to paths outside the workspace
     outside_patterns = [
         r"(?:>\s*|\w+\s+)(/Users/[^\s'\"]+)",
@@ -672,10 +674,15 @@ def check_bash_command_for_external_writes(cmd: str, workspace: Path) -> str | N
         r"(?:>\s*|\w+\s+)(/etc/[^\s'\"]+)",
         r"(?:>\s*|\w+\s+)(/root/[^\s'\"]+)",
     ]
+    _user_dir_str = str(user_dir.resolve())
     for pat in outside_patterns:
         match = re.search(pat, cmd)
         if match:
             target = match.group(1) if match.lastindex else match.group(0)
+            target_path = Path(target)
+            # Allow writes inside the user's isolated data directory
+            if target_path.is_absolute() and str(target_path.resolve()).startswith(_user_dir_str):
+                continue
             return (
                 f"Command writes to '{target}' which is outside the workspace. "
                 "Save all files within the workspace directory (use outputs/ for generated files)."
@@ -1187,6 +1194,13 @@ def build_container_options_dict(
 
     system_prompt_str = build_system_prompt(user_id, skills, workspace, language)
 
+    # Resolve container-internal paths that match host paths
+    cm = _get_container_manager()
+    if cm is not None:
+        container_cwd = str(cm.container_workspace_dir(user_id))
+    else:
+        container_cwd = "/workspace"
+
     return {
         "model": model,
         "system_prompt": system_prompt_str,
@@ -1199,11 +1213,7 @@ def build_container_options_dict(
         "include_partial_messages": True,
         "resume_session_id": resume_session_id,
         "max_buffer_size": int(os.getenv("MAX_BUFFER_SIZE", str(10 * 1024 * 1024))),
-        "cwd": "/workspace",
-        "skills_dirs": [
-            "/home/agent/.claude/shared-skills",
-            "/home/agent/.claude/personal-skills",
-        ],
+        "cwd": container_cwd,
     }
 
 
@@ -1712,6 +1722,7 @@ async def run_agent_task(
 
     # Resolve workspace path — needed for both tool permission check and file snapshot
     workspace = user_workspace_dir(user_id)
+    user_dir = user_data_dir(user_id)
 
     # Build options
     async def can_use_tool_cb(
@@ -1737,7 +1748,7 @@ async def run_agent_task(
         # Block Bash commands that write to paths outside workspace
         if tool_name == "Bash":
             cmd = str(tool_input.get("command", ""))
-            error = check_bash_command_for_external_writes(cmd, workspace)
+            error = check_bash_command_for_external_writes(cmd, workspace, user_dir)
             if error:
                 return PermissionResultDeny(message=error)
 
@@ -2196,6 +2207,11 @@ async def run_agent_task_container(
             prompt = user_message
 
         await bridge.run_and_stream(prompt, options_dict)
+        logger.info(
+            "Container bridge completed normally: session=%s elapsed=%.1fs",
+            session_id,
+            time.time() - start_time,
+        )
 
         # ── After bridge completes: scan for generated files ─────
         # Workspace is a mounted host volume, so files created inside the
@@ -2383,12 +2399,17 @@ async def run_agent_task_container(
         agent_log.end_session(session_id, status="cancelled")
 
     except Exception as exc:
-        logger.exception("Container task %s: unexpected error", session_id)
+        logger.exception(
+            "Container task %s: unexpected error type=%s: %s",
+            session_id,
+            type(exc).__name__,
+            exc,
+        )
         buffer.add_message(
             session_id,
             {
                 "type": "error",
-                "message": str(exc),
+                "message": f"{type(exc).__name__}: {exc}" if str(exc) else f"Unexpected error: {type(exc).__name__}",
             },
             user_id,
         )
@@ -2791,6 +2812,11 @@ async def handle_ws(websocket: WebSocket) -> None:
                     if buf_state:
                         buf_state["done"] = False
                         buf_state["state"] = "running"
+
+                    # Create session in database for new (non-continuation) sessions
+                    # so message writes don't fail with FOREIGN KEY constraint.
+                    if not is_continuation and session_store is not None:
+                        await session_store.create_session(user_id, session_id)
 
                     # Buffer user message BEFORE agent task starts — ensures recovery
                     # includes the user message even during the race window before

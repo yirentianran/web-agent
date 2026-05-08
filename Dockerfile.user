@@ -13,33 +13,47 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-# Install system deps for agent tools (git, curl, build-essential for pip packages)
+# Use Aliyun mirror for faster apt in China
+RUN sed -i 's|http://deb.debian.org/debian|https://mirrors.aliyun.com/debian|g' /etc/apt/sources.list.d/debian.sources
+
+# Install system deps for agent tools (git, curl, build-essential, nodejs for MCP servers)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     curl \
     build-essential \
+    nodejs \
+    npm \
     && rm -rf /var/lib/apt/lists/*
 
-# Create non-root agent user (uid 1000 matches host useradd convention)
+# Create non-root agent user (uid 1000 matches host useradd convention).
+# Workspace and .claude directories are provided via volume mounts at
+# runtime; the agent user's home directory (/home/agent) is created by
+# --create-home as a fallback for standalone testing.
 RUN useradd --create-home --uid 1000 agent && \
-    mkdir -p /workspace /home/agent/.claude && \
-    chown -R agent:agent /workspace /home/agent /app
+    chown -R agent:agent /home/agent /app
 
 # Copy backend source (for hooks, utilities, agent server)
 COPY pyproject.toml uv.lock ./
-COPY src/ ./src/
 
-# Install Python deps via uv
+# Install Python deps via uv (cached unless pyproject.toml/uv.lock change)
 RUN pip install --no-cache-dir uv && \
-    uv sync --frozen --no-dev && \
-    chown -R agent:agent /app
+    uv sync --frozen --no-dev
 
-# Copy agent server entry point
+# Copy source code and agent entry point (does not invalidate uv sync cache)
+COPY src/ ./src/
 COPY agent_server.py ./
+RUN chown -R agent:agent /app
+
+# Copy agent server entry point and container entrypoint
+COPY agent_server.py ./
+COPY entrypoint.sh /
 
 ENV PYTHONUNBUFFERED=1 \
-    HOME=/home/agent
+    HOME=/home/agent \
+    WORKSPACE=/workspace
 
 EXPOSE 8000
-USER agent
+# Don't set USER — entrypoint.sh runs as root to adapt agent UID/GID,
+# then drops privileges with runuser before executing the CMD.
+ENTRYPOINT ["/entrypoint.sh"]
 CMD ["uv", "run", "uvicorn", "agent_server:app", "--host", "0.0.0.0", "--port", "8000"]

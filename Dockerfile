@@ -28,8 +28,8 @@ COPY --from=frontend-build /build/frontend/dist/ ./src/static/
 
 # Non-root user
 RUN useradd --create-home --uid 1000 appuser && \
-    mkdir -p /data && \
-    chown -R appuser:appuser /data /app
+    mkdir -p /data /app/logs && \
+    chown -R appuser:appuser /data /app /app/logs
 
 HEALTHCHECK --interval=30s --timeout=10s --retries=3 \
     CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')" || exit 1

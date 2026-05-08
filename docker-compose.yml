@@ -10,8 +10,13 @@ services:
     env_file:
       - .env
       - .env.docker
+    environment:
+      - HOST_DATA_ROOT=${HOST_DATA_ROOT:-/home/ubuntu/web-agent/data}
     volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
       - ./data:/data
+      - ./logs:/app/logs
+    user: root  # Required for Docker socket access (per-user container management)
     restart: unless-stopped
 
 volumes:

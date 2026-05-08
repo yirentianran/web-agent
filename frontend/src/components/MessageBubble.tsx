@@ -486,7 +486,16 @@ export default function MessageBubble({ message, sessionId, onAnswer, onFileClic
 
   // assistant
   const hasContent = message.content && message.content.trim().length > 0
-  if (!hasContent) return null
+  if (!hasContent) {
+    console.log("[MessageBubble] assistant SKIP (no content) index=%d", message.index)
+    return null
+  }
+  console.log(
+    "[MessageBubble] assistant RENDER index=%d contentLen=%d preview=%s",
+    message.index,
+    message.content.length,
+    message.content.slice(0, 80).replace(/\n/g, '\\n'),
+  )
 
   const thinkingParts = parseThinkingBlocks(message.content)
   const hasThinking = thinkingParts.some(p => p.kind === 'thinking')

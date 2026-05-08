@@ -355,6 +355,26 @@ export default function ChatArea({
           </div>
         )}
 
+        {sessionId !== null && (() => {
+          console.log(
+            "[ChatArea RENDER] session=%s rawMessages=%d sortedMessages=%d filteredMessages=%d hasVisible=%s",
+            sessionId,
+            messages.length,
+            sortedMessages.length,
+            filteredMessages.length,
+            hasVisibleMessages,
+          );
+          // Log every visible message type/index for diagnostics
+          const visibleTypes = filteredMessages.map(m => `${m.type}:${m.subtype || ""}@${m.index}`);
+          console.log("[ChatArea RENDER] message types:", visibleTypes.join(", "));
+          // Log assistant messages specifically
+          const assistants = filteredMessages.filter(m => m.type === "assistant");
+          console.log("[ChatArea RENDER] assistant count=%d indices=%s",
+            assistants.length,
+            assistants.map(m => `${m.index}(len=${(m.content || "").length})`).join(", "),
+          );
+          return null;
+        })()}
         {sessionId !== null && filteredMessages.map((msg, i) => (
           <MessageBubble
             key={msg.clientMsgId ?? `${msg.index}-${i}`}

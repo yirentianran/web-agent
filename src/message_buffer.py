@@ -278,7 +278,6 @@ class MessageBuffer:
                 msg["content"] = row[3]
             if row[4] is not None:
                 parsed = json.loads(row[4])
-                msg["payload"] = parsed
                 # Map payload fields to top-level keys (same logic as session_store.py)
                 if msg["type"] == "file_result" and "data" in parsed:
                     msg["data"] = parsed["data"]
@@ -291,6 +290,8 @@ class MessageBuffer:
                         msg["input"] = parsed["input"]
                 if msg["type"] == "tool_result" and "tool_use_id" in parsed:
                     msg["tool_use_id"] = parsed["tool_use_id"]
+                if msg["type"] == "stream_event" and "event" in parsed:
+                    msg["event"] = parsed["event"]
                 if msg["type"] == "system" and msg.get("subtype") == "session_state_changed" and "state" in parsed:
                     msg["state"] = parsed["state"]
             if row[5] is not None:

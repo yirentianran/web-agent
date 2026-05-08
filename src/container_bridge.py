@@ -20,6 +20,8 @@ import asyncio
 import json
 import logging
 import time
+import urllib.error
+import urllib.request
 
 import websockets
 from websockets.asyncio.client import ClientConnection
@@ -57,8 +59,30 @@ class ContainerBridge:
         self._error: str | None = None
 
     async def connect(self, retries: int = 3, backoff: float = 1.0) -> None:
-        """Open WebSocket to container's /ws endpoint with retry."""
+        """Open WebSocket to container's /ws endpoint with retry and health check."""
         ws_url = f"{self.container_url}/ws".replace("http://", "ws://").replace("https://", "wss://")
+        health_url = f"{self.container_url}/api/health"
+
+        # Wait for container health endpoint to be ready (up to 15s)
+        deadline = time.time() + 15
+        last_health_error = None
+        while time.time() < deadline:
+            try:
+                req = urllib.request.Request(health_url)
+                with urllib.request.urlopen(req, timeout=2) as resp:
+                    if resp.status == 200:
+                        data = json.loads(resp.read())
+                        if data.get("status") == "ok":
+                            break
+            except (urllib.error.URLError, OSError, ConnectionError, json.JSONDecodeError) as exc:
+                last_health_error = exc
+            await asyncio.sleep(0.5)
+        else:
+            logger.warning(
+                "Container health check failed for %s after %.1fs: %s",
+                health_url, time.time() - (deadline - 15), last_health_error,
+            )
+
         last_error = None
         for attempt in range(retries):
             try:
@@ -125,6 +149,9 @@ class ContainerBridge:
 
         await self.send_run(prompt, options)
 
+        accumulated_text = ""
+        explicit_assistant = False
+
         try:
             while True:
                 # Check cancellation
@@ -138,26 +165,103 @@ class ContainerBridge:
                     # No message in 30s — check if agent is still alive
                     if self._receive_task.done():
                         exc = self._receive_task.exception()
-                        if exc:
-                            logger.error("Receive task failed: %s", exc)
+                        error_msg = f"Container receive task died: {exc}" if exc else "Container receive task ended unexpectedly"
+                        logger.error("Receive task failed for session %s: %s", self.session_id, exc)
+                        if not self._error:
+                            self.buffer.add_message(self.session_id, {
+                                "type": "error",
+                                "message": error_msg,
+                            }, self.user_id)
+                            self._error = error_msg
                         break
                     continue
 
                 msg_type = data.get("type", "")
 
+                # Touch user activity to prevent container idle timeout
+                try:
+                    from src.container_manager import touch_user as _touch  # noqa: PLC0415
+                    _touch(self.user_id)
+                except ImportError:
+                    pass
+
                 if msg_type == "stream_event":
-                    event = data["event"]
-                    self.buffer.add_message(self.session_id, event, self.user_id)
+                    self.buffer.add_message(self.session_id, data, self.user_id)
+                    # Accumulate text from content_block_delta events
+                    event = data.get("event", {})
+                    if isinstance(event, dict) and event.get("type") == "content_block_delta":
+                        delta = event.get("delta", {})
+                        if isinstance(delta, dict) and delta.get("type") == "text_delta":
+                            accumulated_text += delta.get("text", "")
+                elif msg_type == "assistant":
+                    # Transform container assistant message to frontend-compatible format.
+                    # Container now sends {"type": "assistant", "message": {role, content: [blocks]}}.
+                    msg_content = data.get("message", {})
+                    if msg_content:
+                        content_blocks = msg_content.get("content", [])
+                        text_parts: list[str] = []
+                        for block in content_blocks:
+                            if not isinstance(block, dict):
+                                continue
+                            bt = block.get("type", "")
+                            if bt == "text":
+                                text_parts.append(block.get("text", ""))
+                            elif bt == "thinking":
+                                thinking_text = block.get("thinking", "")
+                                text_parts.append(f"[thinking]{thinking_text}[/thinking]")
+                            elif bt == "tool_use":
+                                tool_name = block.get("name", "")
+                                self.buffer.add_message(self.session_id, {
+                                    "type": "tool_use",
+                                    "name": tool_name,
+                                    "id": block.get("id", ""),
+                                    "input": block.get("input", {}),
+                                }, self.user_id)
+                            elif bt == "server_tool_use":
+                                tool_name = block.get("name", "")
+                                self.buffer.add_message(self.session_id, {
+                                    "type": "tool_use",
+                                    "name": tool_name,
+                                    "id": block.get("id", ""),
+                                    "input": block.get("input", {}),
+                                }, self.user_id)
+                        if text_parts:
+                            self.buffer.add_message(self.session_id, {
+                                "type": "assistant",
+                                "content": "\n".join(text_parts),
+                            }, self.user_id)
+                    else:
+                        # Fallback: bare content string (legacy or result-fallback path)
+                        if data.get("content"):
+                            self.buffer.add_message(self.session_id, data, self.user_id)
+                    explicit_assistant = True
 
                 elif msg_type == "permission_check":
                     await self._handle_permission_check(data)
 
                 elif msg_type == "done":
                     logger.info("Container task done for session %s", self.session_id)
+                    if accumulated_text.strip() and not explicit_assistant:
+                        logger.info(
+                            "Bridge emitting synthetic assistant message len=%d for session %s",
+                            len(accumulated_text),
+                            self.session_id,
+                        )
+                        self.buffer.add_message(self.session_id, {
+                            "type": "assistant",
+                            "content": accumulated_text,
+                        }, self.user_id)
                     break
 
                 elif msg_type == "error":
-                    self._error = data.get("message", "Container agent error")
+                    raw_msg = data.get("message", "")
+                    self._error = raw_msg or "Container agent error (empty message)"
+                    logger.error(
+                        "Container error for session %s: message=%r full_data=%s",
+                        self.session_id,
+                        raw_msg,
+                        json.dumps(data, default=str)[:500],
+                    )
                     self.buffer.add_message(self.session_id, {
                         "type": "error",
                         "message": self._error,
@@ -181,17 +285,23 @@ class ContainerBridge:
                 except json.JSONDecodeError:
                     logger.warning("Invalid JSON from container: %s", raw_msg[:200])
         except ConnectionClosed as exc:
-            logger.info("Container WS connection closed: code=%s reason=%s", exc.code, exc.reason)
+            logger.warning(
+                "Container WS closed for session %s: code=%s reason=%s",
+                self.session_id, exc.code, exc.reason,
+            )
             if not self._error:
+                error_msg = f"Container connection closed unexpectedly (code={exc.code})"
+                if exc.reason:
+                    error_msg += f": {exc.reason}"
                 self._receive_queue.put_nowait({
                     "type": "error",
-                    "message": f"Container connection closed: {exc.reason or 'unexpected'}",
+                    "message": error_msg,
                 })
         except Exception:
-            logger.exception("Receive loop error")
+            logger.exception("Receive loop error for session %s", self.session_id)
             self._receive_queue.put_nowait({
                 "type": "error",
-                "message": "Container bridge receive error",
+                "message": f"Container bridge receive error for session {self.session_id}",
             })
 
     async def _handle_permission_check(self, data: dict) -> None:

@@ -107,10 +107,17 @@ def check_bash_command_for_external_writes(cmd: str, paths: PathContext) -> str 
         r"(?:>\s*|\w+\s+)(/etc/[^\s'\"]+)",
         r"(?:>\s*|\w+\s+)(/root/[^\s'\"]+)",
     ]
+    _user_dir = str(paths.user_dir.resolve())
     for pat in outside_patterns:
         match = re.search(pat, cmd)
         if match:
             target = match.group(1) if match.lastindex else match.group(0)
+            target_path = Path(target)
+            # Allow writes inside the user's isolated data directory,
+            # even if the path matches a pattern (e.g., /home/... when
+            # HOST_DATA_ROOT is under /home/ in docker-compose deployment).
+            if target_path.is_absolute() and str(target_path.resolve()).startswith(_user_dir):
+                continue
             return (
                 f"Command writes to '{target}' which is outside the workspace. "
                 "Save all files within the workspace directory (use outputs/ for generated files)."

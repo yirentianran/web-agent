@@ -106,7 +106,7 @@ def main() -> None:
     # 4. Count session meta files
     meta_files = []
     for uid in user_ids:
-        sessions_meta_dir = users_dir / uid / "claude-data" / "sessions"
+        sessions_meta_dir = users_dir / uid / ".claude" / "sessions"
         if sessions_meta_dir.exists():
             meta_files.extend(sessions_meta_dir.glob("*.meta.json"))
     print(f"  Session meta files: {len(meta_files)}")
