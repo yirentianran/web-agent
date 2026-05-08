@@ -60,7 +60,7 @@ export interface EvolveStatusResult {
   messages?: unknown[]
 }
 
-export interface VersionFileInfo {
+interface VersionFileInfo {
   path: string
   size: number
   is_skill_md: boolean

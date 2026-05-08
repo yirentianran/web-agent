@@ -53,12 +53,6 @@ export interface SessionItem {
   file_count?: number
 }
 
-export interface SessionState {
-  state: 'idle' | 'running' | 'completed' | 'error' | 'waiting_user' | 'cancelled'
-  cost_usd: number
-  last_active: number
-}
-
 /** Payload of the AskUserQuestion tool — streamed to the frontend as tool_use.input */
 export interface AskUserQuestionInput {
   questions: Array<{
@@ -68,7 +62,7 @@ export interface AskUserQuestionInput {
   }>
 }
 
-export type SkillSource = 'shared' | 'personal'
+type SkillSource = 'shared' | 'personal'
 
 export interface Skill {
   name: string
@@ -85,10 +79,6 @@ export interface TodoWriteTodo {
   content: string
   status: 'pending' | 'in_progress' | 'completed' | 'deleted'
   activeForm?: string
-}
-
-export interface TodoWriteInput {
-  todos: TodoWriteTodo[]
 }
 
 export type McpServerType = 'stdio' | 'http'

@@ -36,3 +36,6 @@ Thumbs.db
 .claude/
 skills/
 node_modules/
+
+# Test coverage output
+frontend/coverage/

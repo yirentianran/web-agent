@@ -98,7 +98,7 @@ export interface FormattedEditContent {
   newContent: string
 }
 
-export function formatEditContent(input: Record<string, unknown>): FormattedEditContent {
+function formatEditContent(input: Record<string, unknown>): FormattedEditContent {
   const filePath = input.file_path ? String(input.file_path) : null
   const oldStr = String(input.old_string ?? '')
   const newStr = String(input.new_string ?? '')

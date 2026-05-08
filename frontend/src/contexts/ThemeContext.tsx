@@ -72,4 +72,3 @@ function ThemeProvider({ children }: { children: React.ReactNode }) {
 }
 
 export { ThemeContext, ThemeProvider }
-export type { Theme, ThemeContextValue }

@@ -288,6 +288,20 @@ def _get_container_manager():
         return None
 
 
+def _container_guard() -> tuple:
+    """Guard for container-mode REST endpoints.
+
+    Returns (cm, None) on success, or (None, JSONResponse) if container mode is disabled.
+    Usage: ``cm, err = _container_guard(); if err: return err``
+    """
+    if not CONTAINER_MODE:
+        return None, JSONResponse({"error": "container mode disabled"}, status_code=501)
+    cm = _get_container_manager()
+    if cm is None:
+        return None, JSONResponse({"error": "container mode disabled"}, status_code=501)
+    return cm, None
+
+
 # ── Phase 1: Direct SDK integration ─────────────────────────────
 # In Phase 2+, this moves into container-internal agent_server.py
 # and main_server bridges to it via WebSocket.
@@ -622,6 +636,92 @@ def _insert_generated_file(user_id: str, session_id: str, filename: str, file_si
         conn.close()
     except Exception:
         pass
+
+
+def _scan_workspace_for_generated_files(
+    workspace: Path,
+    user_id: str,
+    session_id: str,
+    workspace_snapshot: dict[str, float],
+    start_time: float,
+    task_end: float,
+    existing_files: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Scan workspace for files created/modified during an agent task.
+
+    Three scan phases:
+    1. outputs/ recursive — new or modified files
+    2. workspace root — data files moved to outputs/
+    3. outside dirs — stray files moved to outputs/
+
+    Returns the updated file list (existing_files with new entries appended).
+    """
+    seen_filenames: set[str] = {f["filename"] for f in existing_files}
+    outputs_dir = workspace / "outputs"
+
+    # 1. Scan outputs/ recursively
+    if outputs_dir.exists():
+        for f in outputs_dir.rglob("*"):
+            if not f.is_file() or not should_include_generated_file(f.name):
+                continue
+            rel = f.relative_to(workspace).as_posix()
+            mtime = f.stat().st_mtime
+            if rel not in workspace_snapshot or mtime > workspace_snapshot[rel]:
+                if rel not in seen_filenames:
+                    seen_filenames.add(rel)
+                    existing_files.append({
+                        "filename": rel,
+                        "size": f.stat().st_size,
+                        "generated_at": datetime.fromtimestamp(mtime, tz=timezone.utc).isoformat(),
+                        "download_url": f"/api/users/{user_id}/download/{rel}",
+                    })
+                    _insert_generated_file(user_id, session_id, rel, f.stat().st_size)
+
+    # 2. Scan workspace root for data files
+    if workspace.exists():
+        for f in workspace.iterdir():
+            if not f.is_file() or f.name.startswith("."):
+                continue
+            rel = f.relative_to(workspace).as_posix()
+            mtime = f.stat().st_mtime
+            if (rel not in workspace_snapshot or mtime > workspace_snapshot[rel]) and f.name not in seen_filenames:
+                if f.suffix.lower() in DATA_EXTS:
+                    dest = outputs_dir / f.name
+                    try:
+                        shutil.move(str(f), str(dest))
+                        seen_filenames.add(f.name)
+                        existing_files.append({
+                            "filename": f.name,
+                            "size": dest.stat().st_size,
+                            "generated_at": datetime.fromtimestamp(mtime, tz=timezone.utc).isoformat(),
+                            "download_url": f"/api/users/{user_id}/download/outputs/{f.name}",
+                        })
+                    except Exception as e:
+                        logger.warning("Failed to relocate data file %s to outputs/: %s", f, e)
+
+    # 3. Scan outside dirs for stray files
+    for scan_dir in (Path.home(), Path.home() / "outputs", Path(__file__).parent):
+        if not scan_dir.exists() or not scan_dir.is_dir():
+            continue
+        for f in scan_dir.iterdir():
+            if not f.is_file() or f.name.startswith(".") or not should_include_generated_file(f.name):
+                continue
+            mtime = f.stat().st_mtime
+            if start_time <= mtime <= task_end + 5 and f.name not in seen_filenames:
+                dest = outputs_dir / f.name
+                try:
+                    shutil.move(str(f), str(dest))
+                    seen_filenames.add(f.name)
+                    existing_files.append({
+                        "filename": f.name,
+                        "size": dest.stat().st_size,
+                        "generated_at": datetime.fromtimestamp(mtime, tz=timezone.utc).isoformat(),
+                        "download_url": f"/api/users/{user_id}/download/outputs/{f.name}",
+                    })
+                except Exception as e:
+                    logger.warning("Failed to relocate stray file %s: %s", f, e)
+
+    return existing_files
 
 
 def _insert_upload_file(user_id: str, session_id: str, filename: str, file_size: int) -> None:
@@ -1145,6 +1245,83 @@ def _sync_shared_skills(target_dir: Path) -> None:
 # ── SDK option builders ──────────────────────────────────────────────
 
 
+def _build_sdk_config(
+    user_id: str,
+    mcp_config: dict,
+    skills: list,
+    workspace: Path,
+    language: str | None = None,
+    user_data_dir_override: Path | None = None,
+) -> dict[str, Any]:
+    """Build shared SDK configuration used by both local and container modes.
+
+    Returns dict with keys: model, sdk_env, system_prompt, allowed_tools,
+    disallowed_tools, max_turns, mcp_servers, include_partial_messages,
+    max_buffer_size.
+    """
+    max_turns = int(os.getenv("MAX_TURNS", "200"))
+
+    # MCP servers — normalize to a common dict shape
+    mcp_servers: dict[str, Any] = {}
+    for server_name, cfg in mcp_config.get("mcpServers", {}).items():
+        if not cfg.get("enabled", True):
+            continue
+        if cfg.get("type") == "http":
+            mcp_servers[server_name] = {"type": "http", "url": cfg["url"]}
+        else:
+            mcp_servers[server_name] = {
+                "type": cfg.get("type", "stdio"),
+                "command": cfg.get("command"),
+                "args": cfg.get("args", []),
+                "env": cfg.get("env", {}),
+                "url": cfg.get("url"),
+            }
+
+    # Sync shared skills
+    project_skills = workspace / ".claude" / "skills"
+    _sync_shared_skills(project_skills)
+
+    # SDK env
+    sdk_env: dict[str, str] = {}
+    if user_data_dir_override:
+        # Local mode: use global token + isolate HOME
+        api_key = os.getenv("ANTHROPIC_AUTH_TOKEN") or os.getenv("ANTHROPIC_API_KEY")
+        if api_key:
+            sdk_env["ANTHROPIC_AUTH_TOKEN"] = api_key
+        sdk_env["HOME"] = str(user_data_dir_override.resolve())
+    else:
+        # Container mode: per-user token override
+        api_key = (
+            os.getenv(f"ANTHROPIC_AUTH_TOKEN_{user_id.upper()}")
+            or os.getenv("ANTHROPIC_AUTH_TOKEN")
+            or os.getenv("ANTHROPIC_API_KEY")
+            or ""
+        )
+        if api_key:
+            sdk_env["ANTHROPIC_AUTH_TOKEN"] = api_key
+
+    base_url = os.getenv("ANTHROPIC_BASE_URL", "")
+    if base_url:
+        sdk_env["ANTHROPIC_BASE_URL"] = base_url
+
+    model = os.getenv("MODEL", "claude-sonnet-4-6")
+    sdk_env["MODEL"] = model
+
+    system_prompt = build_system_prompt(user_id, skills, workspace, language)
+
+    return {
+        "model": model,
+        "sdk_env": sdk_env if sdk_env else None,
+        "system_prompt": system_prompt,
+        "allowed_tools": build_allowed_tools(mcp_config),
+        "disallowed_tools": list(DISABLED_TOOLS),
+        "max_turns": max_turns,
+        "mcp_servers": mcp_servers if mcp_servers else None,
+        "include_partial_messages": True,
+        "max_buffer_size": int(os.getenv("MAX_BUFFER_SIZE", str(10 * 1024 * 1024))),
+    }
+
+
 def build_container_options_dict(
     user_id: str,
     resume_session_id: str | None = None,
@@ -1161,63 +1338,27 @@ def build_container_options_dict(
     """
     mcp_config = load_mcp_config_sync()
     skills = load_skills(user_id)
-
-    # Build MCP servers dict for the container
-    mcp_servers: dict[str, dict[str, Any]] = {}
-    for server_name, cfg in mcp_config.get("mcpServers", {}).items():
-        if not cfg.get("enabled", True):
-            continue
-        mcp_servers[server_name] = {
-            "type": cfg.get("type", "stdio"),
-            "command": cfg.get("command"),
-            "args": cfg.get("args", []),
-            "env": cfg.get("env", {}),
-            "url": cfg.get("url"),
-        }
-
-    # Sync shared skills (still needed for skill discovery on host)
     workspace = user_workspace_dir(user_id)
-    project_skills = workspace / ".claude" / "skills"
-    _sync_shared_skills(project_skills)
 
-    # Build SDK env vars
-    sdk_env: dict[str, str] = {}
-    api_key = (
-        os.getenv(f"ANTHROPIC_AUTH_TOKEN_{user_id.upper()}")
-        or os.getenv("ANTHROPIC_AUTH_TOKEN")
-        or os.getenv("ANTHROPIC_API_KEY")
-        or ""
-    )
-    if api_key:
-        sdk_env["ANTHROPIC_AUTH_TOKEN"] = api_key
-    base_url = os.getenv("ANTHROPIC_BASE_URL", "")
-    if base_url:
-        sdk_env["ANTHROPIC_BASE_URL"] = base_url
-    model = os.getenv("MODEL", "claude-sonnet-4-6")
-    sdk_env["MODEL"] = model
+    cfg = _build_sdk_config(user_id, mcp_config, skills, workspace, language)
 
-    system_prompt_str = build_system_prompt(user_id, skills, workspace, language)
-
-    # Resolve container-internal paths that match host paths
+    # Resolve container-internal cwd
     cm = _get_container_manager()
-    if cm is not None:
-        container_cwd = str(cm.container_workspace_dir(user_id))
-    else:
-        container_cwd = "/workspace"
+    cwd = str(cm.container_workspace_dir(user_id)) if cm else "/workspace"
 
     return {
-        "model": model,
-        "system_prompt": system_prompt_str,
-        "allowed_tools": build_allowed_tools(mcp_config),
-        "disallowed_tools": list(DISABLED_TOOLS),
-        "max_turns": int(os.getenv("MAX_TURNS", "200")),
+        "model": cfg["model"],
+        "system_prompt": cfg["system_prompt"],
+        "allowed_tools": cfg["allowed_tools"],
+        "disallowed_tools": cfg["disallowed_tools"],
+        "max_turns": cfg["max_turns"],
         "permission_mode": "acceptEdits",
-        "mcp_servers": mcp_servers if mcp_servers else None,
-        "env": sdk_env if sdk_env else None,
-        "include_partial_messages": True,
+        "mcp_servers": cfg["mcp_servers"],
+        "env": cfg["sdk_env"],
+        "include_partial_messages": cfg["include_partial_messages"],
         "resume_session_id": resume_session_id,
-        "max_buffer_size": int(os.getenv("MAX_BUFFER_SIZE", str(10 * 1024 * 1024))),
-        "cwd": container_cwd,
+        "max_buffer_size": cfg["max_buffer_size"],
+        "cwd": cwd,
     }
 
 
@@ -1230,37 +1371,16 @@ def build_sdk_options(
     """Build ClaudeAgentOptions with full configuration."""
     mcp_config = load_mcp_config_sync()
     skills = load_skills(user_id)
-    max_turns = int(os.getenv("MAX_TURNS", "200"))
-
-    # Build MCP servers dict in SDK format (only enabled servers)
-    mcp_servers: dict[str, Any] = {}
-    for server_name, cfg in mcp_config.get("mcpServers", {}).items():
-        if not cfg.get("enabled", True):
-            continue
-        if cfg.get("type") == "stdio":
-            mcp_servers[server_name] = {
-                "type": "stdio",
-                "command": cfg.get("command", ""),
-                "args": cfg.get("args", []),
-                "env": cfg.get("env", {}),
-            }
-        elif cfg.get("type") == "http":
-            mcp_servers[server_name] = {
-                "type": "http",
-                "url": cfg["url"],
-            }
-
-    # Sync shared skills into the workspace so the Claude CLI can discover
-    # them (the CLI auto-discovers skills from <cwd>/.claude/skills).
-    # Personal skills are already stored here by the upload endpoint.
     user_dir = user_data_dir(user_id)
     workspace = user_workspace_dir(user_id)
-    project_skills = workspace / ".claude" / "skills"
-    _sync_shared_skills(project_skills)
 
-    # Ensure outputs/ directory exists for agent-generated files
-    outputs_dir = workspace / "outputs"
-    outputs_dir.mkdir(exist_ok=True)
+    # Ensure outputs/ directory exists
+    (workspace / "outputs").mkdir(exist_ok=True)
+
+    cfg = _build_sdk_config(
+        user_id, mcp_config, skills, workspace, language,
+        user_data_dir_override=user_dir,
+    )
 
     # PreToolUse hooks — intercept Write and Bash to prevent external file writes.
     # Hooks run regardless of permission_mode (unlike can_use_tool which is skipped
@@ -1274,10 +1394,8 @@ def build_sdk_options(
         file_path = str(tool_inp.get("file_path", ""))
         if not file_path:
             return {"sync": True, "continue_": True}
-        # Allow paths within user directory (workspace + memory)
         if is_path_within_user_dir(file_path, user_id):
             return {"sync": True, "continue_": True}
-        # Rewrite truly external paths to workspace
         rewritten = rewrite_path_to_workspace(file_path, workspace)
         if rewritten == file_path:
             return {"sync": True, "continue_": True}
@@ -1323,51 +1441,26 @@ def build_sdk_options(
         ],
     }
 
-    # Build custom env dict for SDK CLI subprocess
-    # IMPORTANT: The claude CLI uses ANTHROPIC_AUTH_TOKEN (not ANTHROPIC_API_KEY)
-    # when a custom ANTHROPIC_BASE_URL is set. ANTHROPIC_API_KEY only works with
-    # the default api.anthropic.com endpoint.
-    sdk_env: dict[str, str] = {}
-    api_key = os.getenv("ANTHROPIC_AUTH_TOKEN") or os.getenv("ANTHROPIC_API_KEY")
-    base_url = os.getenv("ANTHROPIC_BASE_URL")
-    model = os.getenv("MODEL", "claude-sonnet-4-6")
-    if api_key:
-        sdk_env["ANTHROPIC_AUTH_TOKEN"] = api_key
-    if base_url:
-        sdk_env["ANTHROPIC_BASE_URL"] = base_url
-    if model:
-        sdk_env["MODEL"] = model
-    sdk_env["HOME"] = str(user_dir.resolve())  # Isolate SDK data to user dir
-
-    options = ClaudeAgentOptions(
-        model=model,
+    return ClaudeAgentOptions(
+        model=cfg["model"],
         cwd=str(user_dir / "workspace"),
         system_prompt={
             "type": "preset",
             "preset": "claude_code",
-            "append": build_system_prompt(user_id, skills, workspace, language),
+            "append": cfg["system_prompt"],
         },
-        allowed_tools=build_allowed_tools(mcp_config),
-        disallowed_tools=list(DISABLED_TOOLS),
-        max_turns=max_turns,
+        allowed_tools=cfg["allowed_tools"],
+        disallowed_tools=cfg["disallowed_tools"],
+        max_turns=cfg["max_turns"],
         permission_mode="acceptEdits",
-        mcp_servers=mcp_servers if mcp_servers else None,
+        mcp_servers=cfg["mcp_servers"],
         can_use_tool=can_use_tool_callback,
         hooks=hooks,
-        include_partial_messages=True,  # Enable streaming text output
-        env=sdk_env if sdk_env else None,  # Pass env vars to CLI subprocess
-        resume=resume_session_id,  # Resume a previous CLI session (native multi-turn)
-        max_buffer_size=int(os.getenv("MAX_BUFFER_SIZE", str(10 * 1024 * 1024))),
+        include_partial_messages=cfg["include_partial_messages"],
+        env=cfg["sdk_env"],
+        resume=resume_session_id,
+        max_buffer_size=cfg["max_buffer_size"],
     )
-    logger.info(
-        "[AGENT_CONFIG] key=%s, base_url=%s, model=%s",
-        ("SET (via %s)" % ("ANTHROPIC_AUTH_TOKEN" if os.getenv("ANTHROPIC_AUTH_TOKEN") else "ANTHROPIC_API_KEY"))
-        if api_key
-        else "NOT_SET",
-        base_url or "default",
-        model,
-    )
-    return options
 
 
 def message_to_dicts(msg: Any) -> Iterator[dict[str, Any]]:
@@ -2008,99 +2101,12 @@ async def run_agent_task(
         if buffered_result and buffered_result.get("session_id"):
             _store_cli_session(session_id, buffered_result["session_id"])
 
-        # Detect files created/modified by Bash commands since the task started
-        seen_filenames: set[str] = {f["filename"] for f in generated_files}
-        outputs_dir = workspace / "outputs"
-
-        # 1. Scan outputs/ recursively for new/modified files (primary generated file location).
-        #    Subdirectory files (e.g. outputs/reports/result.docx) are now detected and
-        #    their relative path is preserved in the filename field for correct download URLs.
-        if outputs_dir.exists():
-            for f in outputs_dir.rglob("*"):
-                if not f.is_file():
-                    continue
-                if not should_include_generated_file(f.name):
-                    continue
-                rel = f.relative_to(workspace).as_posix()
-                mtime = f.stat().st_mtime
-                if rel not in workspace_snapshot or mtime > workspace_snapshot[rel]:
-                    if rel not in seen_filenames:
-                        seen_filenames.add(rel)
-                        generated_files.append(
-                            {
-                                "filename": rel,
-                                "size": f.stat().st_size,
-                                "generated_at": datetime.fromtimestamp(mtime, tz=timezone.utc).isoformat(),
-                                "download_url": f"/api/users/{user_id}/download/{rel}",
-                            }
-                        )
-                        # Persist to generated_files table for session-scoped queries
-                        _insert_generated_file(user_id, session_id, rel, f.stat().st_size)
-
-        # 2. Scan workspace root for data files that should be in outputs/
-        #    Only downloadable result files are included; scripts and logs are left in place
-        #    and not shown to the user as generated files.
-        if workspace.exists():
-            for f in workspace.iterdir():
-                if not f.is_file() or f.name.startswith("."):
-                    continue
-                rel = f.relative_to(workspace).as_posix()
-                mtime = f.stat().st_mtime
-                is_new_or_modified = rel not in workspace_snapshot or mtime > workspace_snapshot[rel]
-                if is_new_or_modified and f.name not in seen_filenames:
-                    ext = f.suffix.lower()
-                    if ext in DATA_EXTS:
-                        # Data file: move to outputs/
-                        dest = outputs_dir / f.name
-                        try:
-                            shutil.move(str(f), str(dest))
-                            seen_filenames.add(f.name)
-                            generated_files.append(
-                                {
-                                    "filename": f.name,
-                                    "size": dest.stat().st_size,
-                                    "generated_at": datetime.fromtimestamp(mtime, tz=timezone.utc).isoformat(),
-                                    "download_url": f"/api/users/{user_id}/download/outputs/{f.name}",
-                                }
-                            )
-                        except Exception as e:
-                            logger.warning("Failed to relocate data file %s to outputs/: %s", f, e)
-                    # Non-data files (scripts, logs, configs) are silently left in workspace root
-
-        # 3. Scan for files created outside workspace (user home, /tmp, server CWD)
-        #    and relocate them to workspace/outputs/
+        # Detect files created/modified by the agent since the task started
         task_end = time.time()
-        outside_dirs = [
-            Path.home(),
-            Path.home() / "outputs",  # Common mistaken path: /Users/<user>/outputs/
-            Path(__file__).parent,
-        ]
-        for scan_dir in outside_dirs:
-            if not scan_dir.exists() or not scan_dir.is_dir():
-                continue
-            for f in scan_dir.iterdir():
-                if not f.is_file() or f.name.startswith("."):
-                    continue
-                if not should_include_generated_file(f.name):
-                    continue
-                mtime = f.stat().st_mtime
-                # File created/modified during this agent task
-                if mtime >= start_time and mtime <= task_end + 5:
-                    if f.name not in seen_filenames:
-                        dest = outputs_dir / f.name
-                        try:
-                            shutil.move(str(f), str(dest))
-                            seen_filenames.add(f.name)
-                            generated_files.append(
-                                {
-                                    "filename": f.name,
-                                    "size": dest.stat().st_size,
-                                    "generated_at": datetime.fromtimestamp(mtime, tz=timezone.utc).isoformat(),
-                                    "download_url": f"/api/users/{user_id}/download/outputs/{f.name}",
-                                }
-                            )
-                        except Exception as e:
-                            logger.warning("Failed to relocate stray file %s: %s", f, e)
+        generated_files = _scan_workspace_for_generated_files(
+            workspace, user_id, session_id, workspace_snapshot,
+            start_time, task_end, generated_files,
+        )
 
         # Emit file_result message if the agent generated any files this turn.
         # Uses add_message() (append order) — file_result is emitted BEFORE
@@ -2316,88 +2322,10 @@ async def run_agent_task_container(
         # Workspace is a mounted host volume, so files created inside the
         # container are visible from the host at the same paths.
         task_end = time.time()
-        seen_filenames: set[str] = set()
-        outputs_dir = workspace / "outputs"
-
-        # 1. Scan outputs/ recursively
-        if outputs_dir.exists():
-            for f in outputs_dir.rglob("*"):
-                if not f.is_file():
-                    continue
-                if not should_include_generated_file(f.name):
-                    continue
-                rel = f.relative_to(workspace).as_posix()
-                mtime = f.stat().st_mtime
-                if rel not in workspace_snapshot or mtime > workspace_snapshot[rel]:
-                    if rel not in seen_filenames:
-                        seen_filenames.add(rel)
-                        generated_files.append(
-                            {
-                                "filename": rel,
-                                "size": f.stat().st_size,
-                                "generated_at": datetime.fromtimestamp(mtime, tz=timezone.utc).isoformat(),
-                                "download_url": f"/api/users/{user_id}/download/{rel}",
-                            }
-                        )
-                        _insert_generated_file(user_id, session_id, rel, f.stat().st_size)
-
-        # 2. Scan workspace root for data files
-        if workspace.exists():
-            for f in workspace.iterdir():
-                if not f.is_file() or f.name.startswith("."):
-                    continue
-                rel = f.relative_to(workspace).as_posix()
-                mtime = f.stat().st_mtime
-                is_new_or_modified = rel not in workspace_snapshot or mtime > workspace_snapshot[rel]
-                if is_new_or_modified and f.name not in seen_filenames:
-                    ext = f.suffix.lower()
-                    if ext in DATA_EXTS:
-                        dest = outputs_dir / f.name
-                        try:
-                            shutil.move(str(f), str(dest))
-                            seen_filenames.add(f.name)
-                            generated_files.append(
-                                {
-                                    "filename": f.name,
-                                    "size": dest.stat().st_size,
-                                    "generated_at": datetime.fromtimestamp(mtime, tz=timezone.utc).isoformat(),
-                                    "download_url": f"/api/users/{user_id}/download/outputs/{f.name}",
-                                }
-                            )
-                        except Exception as e:
-                            logger.warning("Failed to relocate data file %s to outputs/: %s", f, e)
-
-        # 3. Scan for files leaked outside workspace
-        outside_dirs = [
-            Path.home(),
-            Path.home() / "outputs",
-            Path(__file__).parent,
-        ]
-        for scan_dir in outside_dirs:
-            if not scan_dir.exists() or not scan_dir.is_dir():
-                continue
-            for f in scan_dir.iterdir():
-                if not f.is_file() or f.name.startswith("."):
-                    continue
-                if not should_include_generated_file(f.name):
-                    continue
-                mtime = f.stat().st_mtime
-                if mtime >= start_time and mtime <= task_end + 5:
-                    if f.name not in seen_filenames:
-                        dest = outputs_dir / f.name
-                        try:
-                            shutil.move(str(f), str(dest))
-                            seen_filenames.add(f.name)
-                            generated_files.append(
-                                {
-                                    "filename": f.name,
-                                    "size": dest.stat().st_size,
-                                    "generated_at": datetime.fromtimestamp(mtime, tz=timezone.utc).isoformat(),
-                                    "download_url": f"/api/users/{user_id}/download/outputs/{f.name}",
-                                }
-                            )
-                        except Exception as e:
-                            logger.warning("Failed to relocate stray file %s: %s", f, e)
+        generated_files = _scan_workspace_for_generated_files(
+            workspace, user_id, session_id, workspace_snapshot,
+            start_time, task_end, generated_files,
+        )
 
         # ── Emit file_result ──────────────────────────────────────
         generated_files = [
@@ -5376,9 +5304,9 @@ async def list_containers(
     current_user: str = Depends(require_admin),
 ) -> JSONResponse:
     """List all running user containers."""
-    cm = _get_container_manager()
-    if cm is None or not CONTAINER_MODE:
-        return JSONResponse({"error": "container mode disabled"}, status_code=501)
+    cm, err = _container_guard()
+    if err:
+        return err
     containers = cm.list_active_containers()
     return JSONResponse({"containers": containers})
 
@@ -5390,9 +5318,9 @@ async def start_container(
 ) -> JSONResponse:
     """Ensure a container is running for the user."""
     verify_path_user(user_id, current_user)
-    cm = _get_container_manager()
-    if cm is None or not CONTAINER_MODE:
-        return JSONResponse({"error": "container mode disabled"}, status_code=501)
+    cm, err = _container_guard()
+    if err:
+        return err
     try:
         url = cm.ensure_container(user_id)
         return JSONResponse({"url": url, "container": cm.container_name(user_id)})
@@ -5408,9 +5336,9 @@ async def pause_container_endpoint(
 ) -> JSONResponse:
     """Pause a user's container."""
     verify_path_user(user_id, current_user)
-    cm = _get_container_manager()
-    if cm is None or not CONTAINER_MODE:
-        return JSONResponse({"error": "container mode disabled"}, status_code=501)
+    cm, err = _container_guard()
+    if err:
+        return err
     cm.pause_container(user_id)
     return JSONResponse({"status": "ok"})
 
@@ -5422,9 +5350,9 @@ async def destroy_container_endpoint(
 ) -> JSONResponse:
     """Destroy a user's container."""
     verify_path_user(user_id, current_user)
-    cm = _get_container_manager()
-    if cm is None or not CONTAINER_MODE:
-        return JSONResponse({"error": "container mode disabled"}, status_code=501)
+    cm, err = _container_guard()
+    if err:
+        return err
     cm.destroy_container(user_id)
     return JSONResponse({"status": "ok"})
 

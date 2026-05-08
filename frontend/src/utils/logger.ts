@@ -104,8 +104,6 @@ class Logger {
   }
 }
 
-export const logger = new Logger();
-
 // Factory for context-specific loggers
 export function createLogger(prefix: string): Logger {
   return new Logger(prefix);

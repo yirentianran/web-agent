@@ -69,17 +69,10 @@ function isResultMessage(msg: unknown): msg is Message & { type: "result" } {
   );
 }
 
-export interface UseStreamingText {
-  getState: () => StreamingTextState;
-  setState: (state: StreamingTextState) => void;
-  processMessage: (msg: unknown) => void;
-  reset: () => void;
-}
-
 /**
  * Create initial streaming text state.
  */
-export function createInitialState(): StreamingTextState {
+function createInitialState(): StreamingTextState {
   return {
     accumulatedText: "",
     streamingMessageId: null,
@@ -92,7 +85,7 @@ export function createInitialState(): StreamingTextState {
  * - Accumulates text from content_block_delta stream events
  * - Clears text when message stops or non-streaming message arrives
  */
-export function processMessage(
+function processMessage(
   state: StreamingTextState,
   msg: unknown,
 ): StreamingTextState {
@@ -128,7 +121,7 @@ export function processMessage(
 /**
  * Reset streaming text state to initial values.
  */
-export function reset(): StreamingTextState {
+function reset(): StreamingTextState {
   return createInitialState();
 }
 

@@ -9,7 +9,7 @@ interface FileCardProps {
   status?: 'uploaded' | 'result' | 'error'
 }
 
-export function FileCard({ filename, size, downloadUrl, onRemove, onFileClick, status = 'uploaded' }: FileCardProps) {
+function FileCard({ filename, size, downloadUrl, onRemove, onFileClick, status = 'uploaded' }: FileCardProps) {
   const { t } = useTranslation()
   // filename may be a full relative path (e.g. "outputs/reports/report.docx").
   // Extract just the basename for display and the download attribute.
