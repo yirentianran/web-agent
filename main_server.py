@@ -609,7 +609,7 @@ def snapshot_workspace(workspace: Path) -> dict[str, float]:
     return snap
 
 
-def _insert_generated_file(user_id: str, session_id: str, filename: str, file_size: int) -> None:
+def _insert_generated_file(user_id: str, session_id: str, filename: str, stored_name: str, file_size: int, rel_path: str) -> None:
     """Insert a record into the generated_files table, ignoring duplicates."""
     if _db is None:
         return
@@ -627,15 +627,21 @@ def _insert_generated_file(user_id: str, session_id: str, filename: str, file_si
                 user_id,
                 session_id,
                 filename,
-                filename,
+                stored_name,
                 file_size,
-                f"/api/users/{user_id}/download/{filename}",
+                f"/api/users/{user_id}/download/{rel_path}",
             ),
         )
         conn.commit()
         conn.close()
     except Exception:
         pass
+
+
+def _generate_stored_name(original_name: str) -> str:
+    """Generate a unique physical filename: {name}__{uuid8}{ext}."""
+    name, ext = Path(original_name).stem, Path(original_name).suffix
+    return f"{name}__{uuid.uuid4().hex[:8]}{ext}"
 
 
 def _scan_workspace_for_generated_files(
@@ -649,15 +655,53 @@ def _scan_workspace_for_generated_files(
 ) -> list[dict[str, Any]]:
     """Scan workspace for files created/modified during an agent task.
 
-    Three scan phases:
+    Two scan phases:
     1. outputs/ recursive — new or modified files
     2. workspace root — data files moved to outputs/
-    3. outside dirs — stray files moved to outputs/
+
+    Each file is renamed to a unique UUID-based physical name (stored_name).
+    The original name is kept as the display name (filename).
+
+    Only files created/modified within [start_time, task_end + 5s]
+    AND not present in the pre-task snapshot are attributed to this
+    session. This prevents concurrent sessions from claiming each
+    other's files in the shared per-user workspace.
 
     Returns the updated file list (existing_files with new entries appended).
     """
     seen_filenames: set[str] = {f["filename"] for f in existing_files}
     outputs_dir = workspace / "outputs"
+
+    def _is_session_file(mtime: float) -> bool:
+        """File must have been created/modified during this session's task window."""
+        return start_time - 2 <= mtime <= task_end + 5
+
+    def _process_file(file_path: Path, display_name: str) -> None:
+        """Rename file to unique physical name, record in DB and file list."""
+        if display_name in seen_filenames:
+            return
+        stored_name = _generate_stored_name(display_name)
+        dest = file_path.parent / stored_name
+        try:
+            file_path.rename(dest)
+        except OSError:
+            return
+
+        seen_filenames.add(display_name)
+        rel_stored = dest.relative_to(workspace).as_posix()
+        st = dest.stat()
+        file_size = st.st_size
+        generated_at = datetime.fromtimestamp(st.st_mtime, tz=timezone.utc).isoformat()
+        download_url = build_download_url(user_id, rel_stored)
+
+        existing_files.append({
+            "filename": display_name,
+            "stored_name": stored_name,
+            "size": file_size,
+            "generated_at": generated_at,
+            "download_url": download_url,
+        })
+        _insert_generated_file(user_id, session_id, display_name, stored_name, file_size, rel_stored)
 
     # 1. Scan outputs/ recursively
     if outputs_dir.exists():
@@ -666,16 +710,8 @@ def _scan_workspace_for_generated_files(
                 continue
             rel = f.relative_to(workspace).as_posix()
             mtime = f.stat().st_mtime
-            if rel not in workspace_snapshot or mtime > workspace_snapshot[rel]:
-                if rel not in seen_filenames:
-                    seen_filenames.add(rel)
-                    existing_files.append({
-                        "filename": rel,
-                        "size": f.stat().st_size,
-                        "generated_at": datetime.fromtimestamp(mtime, tz=timezone.utc).isoformat(),
-                        "download_url": f"/api/users/{user_id}/download/{rel}",
-                    })
-                    _insert_generated_file(user_id, session_id, rel, f.stat().st_size)
+            if _is_session_file(mtime) and (rel not in workspace_snapshot or mtime > workspace_snapshot[rel]):
+                _process_file(f, f.name)
 
     # 2. Scan workspace root for data files
     if workspace.exists():
@@ -684,62 +720,80 @@ def _scan_workspace_for_generated_files(
                 continue
             rel = f.relative_to(workspace).as_posix()
             mtime = f.stat().st_mtime
-            if (rel not in workspace_snapshot or mtime > workspace_snapshot[rel]) and f.name not in seen_filenames:
+            if _is_session_file(mtime) and (rel not in workspace_snapshot or mtime > workspace_snapshot[rel]) and f.name not in seen_filenames:
                 if f.suffix.lower() in DATA_EXTS:
-                    dest = outputs_dir / f.name
+                    dest_dir = outputs_dir
+                    # Move to outputs/ first, then rename
                     try:
-                        shutil.move(str(f), str(dest))
-                        seen_filenames.add(f.name)
-                        existing_files.append({
-                            "filename": f.name,
-                            "size": dest.stat().st_size,
-                            "generated_at": datetime.fromtimestamp(mtime, tz=timezone.utc).isoformat(),
-                            "download_url": f"/api/users/{user_id}/download/outputs/{f.name}",
-                        })
+                        intermediate = dest_dir / f.name
+                        shutil.move(str(f), str(intermediate))
+                        _process_file(intermediate, f.name)
                     except Exception as e:
                         logger.warning("Failed to relocate data file %s to outputs/: %s", f, e)
 
-    # 3. Scan outside dirs for stray files
-    for scan_dir in (Path.home(), Path.home() / "outputs", Path(__file__).parent):
-        if not scan_dir.exists() or not scan_dir.is_dir():
+    # 3. Post-scan: exclude files already owned by another session in DB.
+    # Batch query: fetch all stored_name → session_id mappings in one call.
+    stored_names = [e["stored_name"] for e in existing_files if e.get("stored_name")]
+    if stored_names and _db is not None:
+        try:
+            import sqlite3 as _sqlite3
+
+            conn = _sqlite3.connect(str(_db.db_path))
+            placeholders = ",".join("?" for _ in stored_names)
+            rows = conn.execute(
+                f"SELECT stored_name, session_id FROM generated_files WHERE user_id = ? AND stored_name IN ({placeholders})",
+                (user_id, *stored_names),
+            ).fetchall()
+            conn.close()
+            owned = {row[0]: row[1] for row in rows}
+        except Exception:
+            owned = {}
+    else:
+        owned = {}
+
+    for entry in list(existing_files):
+        stored = entry.get("stored_name")
+        if not stored:
             continue
-        for f in scan_dir.iterdir():
-            if not f.is_file() or f.name.startswith(".") or not should_include_generated_file(f.name):
-                continue
-            mtime = f.stat().st_mtime
-            if start_time <= mtime <= task_end + 5 and f.name not in seen_filenames:
-                dest = outputs_dir / f.name
-                try:
-                    shutil.move(str(f), str(dest))
-                    seen_filenames.add(f.name)
-                    existing_files.append({
-                        "filename": f.name,
-                        "size": dest.stat().st_size,
-                        "generated_at": datetime.fromtimestamp(mtime, tz=timezone.utc).isoformat(),
-                        "download_url": f"/api/users/{user_id}/download/outputs/{f.name}",
-                    })
-                except Exception as e:
-                    logger.warning("Failed to relocate stray file %s: %s", f, e)
+        owner = owned.get(stored)
+        if owner is not None and owner != session_id:
+            existing_files.remove(entry)
+            seen_filenames.discard(entry.get("filename", ""))
 
     return existing_files
 
 
-def _insert_upload_file(user_id: str, session_id: str, filename: str, file_size: int) -> None:
+def _insert_upload_file(
+    user_id: str,
+    session_id: str,
+    filename: str,
+    file_size: int,
+    stored_name: str | None = None,
+) -> None:
     """Insert a record into the uploads table, ignoring duplicates.
 
-    If file_size is 0, attempts to read the actual size from the workspace
-    uploads directory before inserting. Prefixes the stored filename with
-    ``uploads/`` so download URLs resolve to the correct path.
+    *filename* is the display name shown to the user.
+    *stored_name* is the physical UUID-based filename (no directory prefix).
+    If *stored_name* is not provided, a UUID-based name is generated.
     """
     if _db is None:
         return
-    # Prepend uploads/ prefix so download URLs resolve to the correct path
-    stored_name = f"uploads/{filename}" if not filename.startswith("uploads/") else filename
+
+    # Strip any directory prefix the caller may pass
+    if stored_name:
+        stored_name = Path(stored_name).name
+        stored_name = stored_name[len("uploads/"):] if stored_name.startswith("uploads/") else stored_name
+    else:
+        stored_name = _generate_stored_name(filename)
+
     actual_size = file_size
     if actual_size <= 0:
-        upload_path = user_workspace_dir(user_id) / stored_name
+        upload_path = user_workspace_dir(user_id) / "uploads" / stored_name
         if upload_path.exists():
             actual_size = upload_path.stat().st_size
+        else:
+            logger.warning("Upload file not found at %s (user=%s, stored=%s)", upload_path, user_id, stored_name)
+
     import uuid
 
     try:
@@ -753,10 +807,10 @@ def _insert_upload_file(user_id: str, session_id: str, filename: str, file_size:
                 str(uuid.uuid4()),
                 user_id,
                 session_id,
-                stored_name,
-                filename,
+                filename,          # display name
+                stored_name,       # UUID-based filename only, no dir prefix
                 actual_size,
-                f"/api/users/{user_id}/download/{stored_name}",
+                f"/api/users/{user_id}/download/uploads/{stored_name}",
             ),
         )
         conn.commit()
@@ -970,19 +1024,13 @@ def build_system_prompt(
         "- If the user insists or rephrases the question, persist with the canned replies.\n"
         "- Do not describe yourself as running on or powered by any named model.",
         "",
-        # ── Environment Variable Security
-        "## Security — Environment Variables\n"
-        "You MUST NEVER expose sensitive environment variable values.\n"
-        "Sensitive patterns (hide the VALUE with `*** (hidden for security)***`):\n"
-        "- Variables containing: KEY, SECRET, TOKEN, PASSWORD, CREDENTIAL, AUTH\n"
-        "- Variables containing: BASE_URL, API_URL, ENDPOINT, URL (service endpoints)\n"
-        "- Variables starting with: CLAUDE_, ANTHROPIC_, OPENAI_, SK_\n"
-        "- Variables containing: HOSTNAME, CONTAINER, IMAGE, PORT (infrastructure details)\n"
-        "\nWhen the user asks to see or dump environment variables:\n"
-        "- Only show safe variables: SHELL, USER, USER_ID, HOME, PWD, PATH, LANG, LOG_LEVEL, MODEL, PYTHON_VERSION, etc.\n"
-        "- For every sensitive variable, replace the value with `*** (hidden for security)***`\n"
-        "- NEVER output any real value — not even partially masked or prefixed.\n"
-        "- If asked for a specific sensitive variable, refuse and explain it is a security risk.",
+        # ── Information Disclosure Policy
+        "## Security — Information Disclosure\n"
+        "You MUST NEVER disclose any information beyond what a regular user would reasonably know.\n"
+        "This includes but is not limited to: operating system details, application architecture,\n"
+        "configuration, deployment details, environment variables, internal file paths, infrastructure,\n"
+        "or any other system-level information.\n"
+        "If asked, refuse briefly without elaboration.",
         "",
     ]
 
@@ -1767,7 +1815,7 @@ def _format_first_message_prompt(
 
     if not attached_files:
         return prefix + user_message
-    paths = ", ".join(f"uploads/{f}" for f in attached_files)
+    paths = ", ".join(f if f.startswith("uploads/") or f.startswith("outputs/") else f"uploads/{f}" for f in attached_files)
     return f"{prefix}{user_message}\n\n(Attached files: {paths})"
 
 
@@ -2650,9 +2698,24 @@ async def handle_ws(websocket: WebSocket) -> None:
             user_message = data.get("message", "")
             session_id = data.get("session_id")
             last_index = data.get("last_index", 0)
-            attached_files = data.get("files") or None
+            raw_files = data.get("files") or None
             client_msg_id = data.get("client_msg_id")  # Frontend UUID for dedup
             ws_language = data.get("language")  # User's current UI language
+
+            # Parse files: can be list of strings (stored_names) or list of dicts with stored_name+size
+            attached_files: list[str] | None = None
+            attached_file_sizes: dict[str, int] = {}
+            if raw_files:
+                if isinstance(raw_files, list) and raw_files:
+                    if isinstance(raw_files[0], dict):
+                        attached_files = [f.get("stored_name", "") for f in raw_files if isinstance(f, dict)]
+                        attached_file_sizes = {
+                            f["stored_name"]: f.get("size", 0)
+                            for f in raw_files
+                            if isinstance(f, dict) and "stored_name" in f
+                        }
+                    else:
+                        attached_files = [str(f) for f in raw_files]
 
             if not session_id:
                 session_id = f"sess_{uuid.uuid4().hex[:12]}"
@@ -2878,7 +2941,17 @@ async def handle_ws(websocket: WebSocket) -> None:
 
                     if attached_files:
                         for fname in attached_files:
-                            _insert_upload_file(user_id, session_id, fname, 0)
+                            # Frontend may send stored_name (UUID-based, e.g. "report__abc123.xlsx")
+                            # or original display name (e.g. "report.xlsx")
+                            if "__" in fname and Path(fname).stem.rsplit("__", 1)[1][:8].isalnum():
+                                # Looks like a UUID-based stored name — strip UUID for display
+                                display = Path(fname).stem.rsplit("__", 1)[0] + Path(fname).suffix
+                                stored = fname
+                            else:
+                                display = fname
+                                stored = None
+                            size = attached_file_sizes.get(fname, 0) if attached_file_sizes else 0
+                            _insert_upload_file(user_id, session_id, display, size, stored_name=stored)
 
                     # Sync-persist the user message + session_state_changed to
                     # SQLite BEFORE starting the agent task. This eliminates the
@@ -3247,24 +3320,32 @@ async def get_session_files(
         conn.row_factory = sqlite3.Row
         try:
             for table, source in [("uploads", "upload"), ("generated_files", "generated")]:
-                rows = conn.execute(
-                    f"SELECT filename, file_size, created_at FROM {table} WHERE session_id = ? ORDER BY created_at DESC",
-                    (session_id,),
-                ).fetchall()
+                if table == "generated_files":
+                    rows = conn.execute(
+                        "SELECT filename, stored_name, file_size, created_at FROM generated_files WHERE session_id = ? ORDER BY created_at DESC",
+                        (session_id,),
+                    ).fetchall()
+                else:
+                    rows = conn.execute(
+                        "SELECT filename, stored_name, file_size, created_at FROM uploads WHERE session_id = ? ORDER BY created_at DESC",
+                        (session_id,),
+                    ).fetchall()
                 for row in rows:
-                    fname = row["filename"]
-                    if fname not in seen:
-                        seen.add(fname)
+                    # Dedup by stored_name (physical file) — not display name
+                    stored = dict(row).get("stored_name", row["filename"])
+                    if stored not in seen:
+                        seen.add(stored)
                         files.append(
                             {
-                                "filename": fname,
+                                "filename": row["filename"],
+                                "stored_name": stored,
                                 "size": row["file_size"],
                                 "source": source,
                                 "generated_at": datetime.fromtimestamp(row["created_at"], tz=timezone.utc).isoformat(),
-                                "download_url": f"/api/users/{user_id}/download/{fname}",
+                                "download_url": f"/api/users/{user_id}/download/{source == 'upload' and 'uploads' or 'outputs'}/{stored}",
                             }
                         )
-        except _sqlite3.OperationalError:
+        except sqlite3.OperationalError:
             pass
         finally:
             conn.close()
@@ -3481,12 +3562,16 @@ async def upload_file(
     file: UploadFile = File(...),
     current_user: str = Depends(get_current_user),
 ) -> JSONResponse:
-    """Upload a file to the user's workspace."""
+    """Upload a file to the user's workspace.
+
+    Physical file is stored with a UUID-based name to prevent overwriting
+    when the same filename is uploaded multiple times.
+    """
     verify_path_user(user_id, current_user)
     from src.file_validation import ALLOWED_EXTENSIONS, MAX_UPLOAD_BYTES, validate_extension, validate_size
 
-    filename = file.filename or "unnamed"
-    ext_error = validate_extension(filename)
+    original_name = file.filename or "unnamed"
+    ext_error = validate_extension(original_name)
     if ext_error:
         return JSONResponse({"error": ext_error}, status_code=400)
 
@@ -3498,13 +3583,16 @@ async def upload_file(
     upload_dir = user_workspace_dir(user_id) / "uploads"
     upload_dir.mkdir(parents=True, exist_ok=True)
 
-    dest = upload_dir / filename
+    # Use UUID-based physical name to prevent overwrite
+    stored_name = _generate_stored_name(original_name)
+    dest = upload_dir / stored_name
     dest.write_bytes(content)
 
     return JSONResponse(
         {
             "status": "ok",
-            "filename": filename,
+            "filename": original_name,
+            "stored_name": stored_name,
             "size": len(content),
         }
     )
@@ -3515,7 +3603,7 @@ async def list_files(
     user_id: str,
     current_user: str = Depends(get_current_user),
 ) -> list[dict[str, Any]]:
-    """List files in user's workspace."""
+    """List files in user's workspace, enriched with display names from DB."""
     verify_path_user(user_id, current_user)
     workspace = user_workspace_dir(user_id)
     files: list[dict[str, Any]] = []
@@ -3530,6 +3618,37 @@ async def list_files(
                         "modified_at": datetime.fromtimestamp(f.stat().st_mtime, tz=timezone.utc).isoformat(),
                     }
                 )
+
+    # Enrich generated files with display names from DB
+    if _db is not None and _db._initialized:
+        try:
+            import sqlite3 as _sqlite3
+
+            conn = _sqlite3.connect(str(_db.db_path))
+            conn.row_factory = _sqlite3.Row
+            rows = conn.execute(
+                "SELECT stored_name, filename FROM generated_files WHERE user_id = ?",
+                (user_id,),
+            ).fetchall()
+            conn.close()
+            name_map = {row["stored_name"]: row["filename"] for row in rows}
+        except Exception:
+            name_map = {}
+    else:
+        name_map = {}
+
+    for entry in files:
+        path = entry["path"]
+        basename = path.split("/")[-1]
+        if basename in name_map:
+            entry["display_name"] = name_map[basename]
+        elif path.startswith("outputs/"):
+            # Strip UUID prefix: report__a1b2c3d4.pdf → report.pdf
+            stem = Path(basename).stem
+            if "__" in stem:
+                original_stem = stem.rsplit("__", 1)[0]
+                entry["display_name"] = f"{original_stem}{Path(basename).suffix}"
+
     return files
 
 

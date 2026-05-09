@@ -7,10 +7,12 @@ interface AttachedFile {
   file: File
   status: UploadStatus
   id: string
+  storedName?: string
+  storedSize?: number
 }
 
 interface InputBarProps {
-  onSend: (message: string, files?: File[]) => void
+  onSend: (message: string, files?: File[], fileMeta?: Array<{stored_name: string; size: number}>) => void
   onStop?: () => void
   disabled?: boolean
   isRunning?: boolean
@@ -72,6 +74,14 @@ const InputBar = forwardRef<InputBarHandle, InputBarProps>(
         const headers: Record<string, string> = {}
         if (authToken) headers["Authorization"] = `Bearer ${authToken}`
         const resp = await fetch(`/api/users/${userId}/upload`, { method: 'POST', headers, body: formData })
+        if (resp.ok) {
+          const data = await resp.json()
+          if (data.stored_name) {
+            setAttachedFiles(prev => prev.map(f =>
+              f.id === af.id ? { ...f, storedName: data.stored_name, storedSize: data.size ?? af.file.size } : f
+            ))
+          }
+        }
         return resp.ok
       } catch {
         return false
@@ -125,20 +135,30 @@ const InputBar = forwardRef<InputBarHandle, InputBarProps>(
       const hasUploading = attachedFiles.some(f => f.status === 'uploading')
       if ((!trimmed && attachedFiles.length === 0) || disabled || hasUploading) return
 
+      // Collect stored names for uploaded files
+      const uploadedWithStored = attachedFiles.filter(f => f.status === 'uploaded' && f.storedName)
+
       // If there are pending or failed files, upload them first
       if (hasPending) {
-        const { uploadedFiles, allSuccess } = await uploadAllPending()
+        const { allSuccess } = await uploadAllPending()
         if (!allSuccess) {
           // Upload had failures — don't send, let user retry or remove
           return
         }
-        // Send message with successfully uploaded files
+        // Collect file metadata after upload completes
+        const fileMeta = attachedFiles
+          .filter(f => f.storedName && (f.status === 'uploaded' || f.status === 'pending'))
+          .map(f => ({ stored_name: f.storedName!, size: f.storedSize ?? f.file.size }))
+        const uploadedFileObjects = attachedFiles
+          .filter(f => f.status === 'uploaded' || f.status === 'pending')
+          .map(f => f.file)
+        const refFiles = fileMeta.length > 0 ? fileMeta.map(f => f.stored_name) : uploadedFileObjects.map(f => f.name)
         let messageContent = trimmed
-        if (uploadedFiles.length > 0 && trimmed) {
-          const refs = uploadedFiles.map(f => `@${f.name}`).join(' ')
+        if (refFiles.length > 0 && trimmed) {
+          const refs = refFiles.map(name => `@${name}`).join(' ')
           messageContent = `${refs} ${trimmed}`
         }
-        onSend(messageContent, uploadedFiles.length > 0 ? uploadedFiles : undefined)
+        onSend(messageContent, uploadedFileObjects, fileMeta.length > 0 ? fileMeta : undefined)
         setInput('')
         setAttachedFiles([])
         if (fileInputRef.current) fileInputRef.current.value = ''
@@ -146,13 +166,17 @@ const InputBar = forwardRef<InputBarHandle, InputBarProps>(
       }
 
       // All files already uploaded
-      const uploadedFiles = attachedFiles.filter(f => f.status === 'uploaded').map(f => f.file)
+      const fileMeta = uploadedWithStored
+        .map(f => ({ stored_name: f.storedName!, size: f.storedSize ?? f.file.size }))
+        .filter(f => f.stored_name)
+      const uploadedFileObjects = attachedFiles.map(f => f.file)
+      const refFiles = fileMeta.length > 0 ? fileMeta.map(f => f.stored_name) : uploadedFileObjects.map(f => f.name)
       let messageContent = trimmed
-      if (uploadedFiles.length > 0 && trimmed) {
-        const refs = uploadedFiles.map(f => `@${f.name}`).join(' ')
+      if (refFiles.length > 0 && trimmed) {
+        const refs = refFiles.map(name => `@${name}`).join(' ')
         messageContent = `${refs} ${trimmed}`
       }
-      onSend(messageContent, uploadedFiles.length > 0 ? uploadedFiles : undefined)
+      onSend(messageContent, uploadedFileObjects, fileMeta.length > 0 ? fileMeta : undefined)
       setInput('')
       setAttachedFiles([])
       if (fileInputRef.current) fileInputRef.current.value = ''

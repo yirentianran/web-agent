@@ -189,6 +189,7 @@ CREATE TABLE IF NOT EXISTS generated_files (
 
 CREATE INDEX IF NOT EXISTS idx_generated_files_user ON generated_files(user_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_generated_files_session ON generated_files(session_id);
+CREATE INDEX IF NOT EXISTS idx_generated_files_user_stored_name ON generated_files(user_id, stored_name);
 """
 
 
@@ -349,7 +350,9 @@ class Database:
                 CREATE INDEX IF NOT EXISTS idx_generated_files_user
                     ON generated_files(user_id, created_at DESC);
                 CREATE INDEX IF NOT EXISTS idx_generated_files_session
-                    ON generated_files(session_id);"""
+                    ON generated_files(session_id);
+                CREATE INDEX IF NOT EXISTS idx_generated_files_user_stored_name
+                    ON generated_files(user_id, stored_name);"""
             )
             await conn.commit()
 

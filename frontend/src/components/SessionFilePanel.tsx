@@ -68,13 +68,20 @@ export default function SessionFilePanel({
         if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
         const raw = await resp.json()
         data = raw.map((f: Record<string, unknown>) => {
-            const fullPath = f.filename as string
-            const displayName = fullPath.split('/').pop() || fullPath
+            const apiSource = (f.source as 'upload' | 'generated') || 'upload'
+            let fullPath = f.filename as string
+            // For generated files without path prefix, prepend outputs/
+            if (apiSource === 'generated' && !fullPath.startsWith('outputs/') && !fullPath.startsWith('uploads/')) {
+              fullPath = `outputs/${fullPath}`
+            }
+            const displayName = fullPath.includes('/')
+              ? fullPath.split('/').pop() || fullPath
+              : fullPath
             return {
               filename: displayName,
               path: fullPath,
               size: (f.size as number) || 0,
-              source: fullPath.startsWith('outputs/') ? 'generated' : 'upload',
+              source: apiSource,
               download_url: f.download_url as string | undefined,
               modified_at: f.generated_at as string | undefined,
             }
@@ -90,8 +97,21 @@ export default function SessionFilePanel({
           })
           .map((f: Record<string, unknown>) => {
             const name = (f.path || f.filename) as string
+            const base = name.split('/').pop() || name
+            // Use display_name from DB if available
+            let displayName = (f.display_name as string) || ''
+            if (!displayName && name.startsWith('outputs/')) {
+              // Strip UUID prefix: report__a1b2c3d4.pdf → report.pdf
+              const lastDot = base.lastIndexOf('.')
+              const stem = lastDot > 0 ? base.slice(0, lastDot) : base
+              const ext = lastDot > 0 ? base.slice(lastDot) : ''
+              const idx = stem.lastIndexOf('__')
+              if (idx > 0) {
+                displayName = stem.slice(0, idx) + ext
+              }
+            }
             return {
-              filename: name.split('/').pop() || name,
+              filename: displayName || base,
               path: name,
               size: (f.size as number) || 0,
               source: name.startsWith('outputs/') ? 'generated' : 'upload',
@@ -239,7 +259,7 @@ function FileGroup({
                 )}
                 <a
                   className="sfp-item-dl"
-                  href={`/api/users/${userId}/download/${encodeURIComponent(f.path)}?token=${encodeURIComponent(authToken || '')}`}
+                  href={f.download_url ? `${f.download_url}?token=${encodeURIComponent(authToken || '')}` : `/api/users/${userId}/download/${encodeURIComponent(f.path)}?token=${encodeURIComponent(authToken || '')}`}
                   download
                   title={t('common.download')}
                 >

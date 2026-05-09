@@ -19,10 +19,10 @@ function FileCard({ filename, size, downloadUrl, onRemove, onFileClick, status =
   const ext = basename.includes('.') ? basename.split('.').pop()! : ''
   return (
     <div className={`file-card file-card-${status}`}>
-      <div className="file-card-icon" onClick={() => onFileClick?.(filename)} style={{ cursor: onFileClick ? 'pointer' : 'default' }}>
+      <div className="file-card-icon" onClick={() => onFileClick?.(basename)} style={{ cursor: onFileClick ? 'pointer' : 'default' }}>
         <span className="file-ext">{ext}</span>
       </div>
-      <div className="file-card-info" onClick={() => onFileClick?.(filename)} style={{ cursor: onFileClick ? 'pointer' : 'default' }}>
+      <div className="file-card-info" onClick={() => onFileClick?.(basename)} style={{ cursor: onFileClick ? 'pointer' : 'default' }}>
         <span className="file-card-name" title={filename}>{basename}</span>
         {size !== undefined && (
           <span className="file-card-size">{formatBytes(size)}</span>
@@ -53,11 +53,19 @@ interface FileCardListProps {
 
 export function FileCardList({ files, onRemove, onFileClick, status }: FileCardListProps) {
   if (files.length === 0) return null
+
+  // Deduplicate files by filename, keeping the last occurrence (which may have more complete data)
+  const seen = new Map<string, typeof files[number]>()
+  for (const f of files) {
+    seen.set(f.filename, f)
+  }
+  const uniqueFiles = Array.from(seen.values())
+
   return (
     <div className="file-card-list">
-      {files.map((f, i) => (
+      {uniqueFiles.map((f, i) => (
         <FileCard
-          key={f.filename + i}
+          key={`${f.filename}-${i}`}
           filename={f.filename}
           size={f.size}
           downloadUrl={f.downloadUrl}

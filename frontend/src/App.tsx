@@ -1265,7 +1265,7 @@ function MainApp() {
 
 
   const handleSend = useCallback(
-    async (message: string, files?: File[]) => {
+    async (message: string, files?: File[], fileMeta?: Array<{stored_name: string; size: number}>) => {
       let sessionId = urlSessionIdRef.current;
 
       // Auto-create session if none exists
@@ -1300,10 +1300,9 @@ function MainApp() {
       // When first such message arrives, clear old messages.
       clearThresholdRef.current = lastBackendIndex;
       replayStartedRef.current = false;
-      const fileMetadata = files?.map((f) => ({
-        filename: f.name,
-        size: f.size,
-      }));
+      const fileMetadata: Array<{ filename?: string; stored_name?: string; size: number }> | undefined =
+        fileMeta?.map((f) => ({ stored_name: f.stored_name, size: f.size })) ||
+        files?.map((f) => ({ filename: f.name, size: f.size }));
       const clientMsgId = generateUUID();
       const optimisticMsg: Message = {
         type: "user",
@@ -1358,7 +1357,7 @@ function MainApp() {
         message,
         session_id: sessionId ?? undefined,
         last_index: lastBackendIndex + 1,
-        files: files?.map((f) => f.name),
+        files: fileMeta?.map((f) => f.stored_name) || files?.map((f) => f.name),
         client_msg_id: clientMsgId,
         language: currentLanguage,
       });
