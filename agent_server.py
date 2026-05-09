@@ -81,10 +81,14 @@ async def health() -> JSONResponse:
 # ── Hook helpers ─────────────────────────────────────────────────────
 
 
+_INVALID_FILENAMES = {"null", "undefined", "none", ""}
+
+
 def _apply_write_path_hook(tool_input: dict, container_paths: ContainerPaths) -> dict:
     file_path = str(tool_input.get("file_path", ""))
-    if not file_path:
-        return tool_input
+    if not file_path or file_path.lower() in _INVALID_FILENAMES:
+        logger.warning("PreToolUse[Write]: blocked invalid file_path '%s'", file_path)
+        return {**tool_input, "file_path": "__blocked_invalid_path__"}
     if is_path_within_user_dir(file_path, container_paths):
         return tool_input
     rewritten = rewrite_path_to_workspace(file_path, container_paths)

@@ -11,7 +11,7 @@ export interface WSOutgoingMessage {
   message?: string;
   session_id?: string;
   last_index?: number;
-  files?: string[];
+  files?: (string | { stored_name: string; size: number })[];
   answers?: Record<string, string>;
   client_msg_id?: string;
   language?: string;

@@ -1233,7 +1233,7 @@ function MainApp() {
       if (!sessionId) return;
 
       const newClientMsgId = generateUUID();
-      const files = (failedMessage.data as Array<{ filename: string; size?: number }> | undefined) || [];
+      const files = (failedMessage.data as Array<{ filename?: string; stored_name?: string; size?: number }> | undefined) || [];
 
       setMessages((prev) =>
         prev.map((m) =>
@@ -1255,7 +1255,10 @@ function MainApp() {
         message: failedMessage.content,
         session_id: sessionId,
         last_index: maxMsgIndexRef.current + 1,
-        files: files.map((f) => f.filename),
+        files: files.map((f) => ({
+          stored_name: f.stored_name || f.filename || "",
+          size: f.size ?? 0,
+        })),
         client_msg_id: newClientMsgId,
         language: localStorage.getItem('i18nextLng') || 'zh',
       });
@@ -1357,7 +1360,8 @@ function MainApp() {
         message,
         session_id: sessionId ?? undefined,
         last_index: lastBackendIndex + 1,
-        files: fileMeta?.map((f) => f.stored_name) || files?.map((f) => f.name),
+        files: fileMeta?.map((f) => ({ stored_name: f.stored_name, size: f.size }))
+          || files?.map((f) => ({ stored_name: f.name, size: f.size })),
         client_msg_id: clientMsgId,
         language: currentLanguage,
       });

@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next'
 interface FileInfo {
   filename: string
   path: string
+  stored_name: string
   size: number
   source: 'upload' | 'generated'
   modified_at?: string
@@ -80,6 +81,7 @@ export default function SessionFilePanel({
             return {
               filename: displayName,
               path: fullPath,
+              stored_name: (f.stored_name as string) || fullPath,
               size: (f.size as number) || 0,
               source: apiSource,
               download_url: f.download_url as string | undefined,
@@ -90,32 +92,23 @@ export default function SessionFilePanel({
         const resp = await fetch(`/api/users/${userId}/files`, { headers })
         if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
         const raw = await resp.json()
-        data = raw
-          .filter((f: Record<string, unknown>) => {
-            const name = (f.path || f.filename) as string
-            return name.startsWith('uploads/') || name.startsWith('outputs/')
-          })
-          .map((f: Record<string, unknown>) => {
-            const name = (f.path || f.filename) as string
-            const base = name.split('/').pop() || name
-            // Use display_name from DB if available
-            let displayName = (f.display_name as string) || ''
-            if (!displayName && name.startsWith('outputs/')) {
-              // Strip UUID prefix: report__a1b2c3d4.pdf → report.pdf
-              const lastDot = base.lastIndexOf('.')
-              const stem = lastDot > 0 ? base.slice(0, lastDot) : base
-              const ext = lastDot > 0 ? base.slice(lastDot) : ''
-              const idx = stem.lastIndexOf('__')
-              if (idx > 0) {
-                displayName = stem.slice(0, idx) + ext
-              }
+        data = raw.map((f: Record<string, unknown>) => {
+            const apiSource = (f.source as 'upload' | 'generated') || 'upload'
+            let fullPath = f.filename as string
+            if (apiSource === 'generated' && !fullPath.startsWith('outputs/') && !fullPath.startsWith('uploads/')) {
+              fullPath = `outputs/${fullPath}`
             }
+            const displayName = fullPath.includes('/')
+              ? fullPath.split('/').pop() || fullPath
+              : fullPath
             return {
-              filename: displayName || base,
-              path: name,
+              filename: displayName,
+              path: fullPath,
+              stored_name: (f.stored_name as string) || fullPath,
               size: (f.size as number) || 0,
-              source: name.startsWith('outputs/') ? 'generated' : 'upload',
-              modified_at: f.modified_at as string | undefined,
+              source: apiSource,
+              download_url: f.download_url as string | undefined,
+              modified_at: f.generated_at as string | undefined,
             }
           })
       }
@@ -139,7 +132,7 @@ export default function SessionFilePanel({
 
   const handleDelete = async (file: FileInfo) => {
     if (!confirm(t('filePanel.confirmDelete', { filename: file.filename }))) return
-    setDeleting(file.path)
+    setDeleting(file.stored_name)
     try {
       const resp = await fetch(`/api/users/${userId}/files/${encodeURIComponent(file.path)}`, {
         method: 'DELETE',
@@ -242,7 +235,7 @@ function FileGroup({
             <div className="sfp-group-empty">{title === t('filePanel.uploadsGroup') ? t('filePanel.noUploads') : t('filePanel.noGenerated')}</div>
           ) : (
             files.map(f => (
-              <div key={f.path} className="sfp-item">
+              <div key={f.stored_name} className="sfp-item">
                 <button
                   className="sfp-item-name"
                   onClick={() => onFileClick(f.filename)}
@@ -268,11 +261,11 @@ function FileGroup({
                 <button
                   className="sfp-item-del"
                   onClick={() => onDelete(f)}
-                  disabled={deleting === f.path}
+                  disabled={deleting === f.stored_name}
                   type="button"
                   title={t('common.delete')}
                 >
-                  {deleting === f.path ? '...' : '\u2715'}
+                  {deleting === f.stored_name ? '...' : '\u2715'}
                 </button>
               </div>
             ))

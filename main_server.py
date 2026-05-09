@@ -532,7 +532,8 @@ def build_download_url(user_id: str, file_path: str, *, directory: str | None = 
 IGNORED_FILE_EXTS = {".log", ".pyc", ".pyo", ".pid", ".lock"}
 
 # Filenames that indicate a programming error, not a real generated file
-INVALID_FILENAMES = {"null", "undefined"}
+INVALID_FILENAMES = {"null", "undefined", "none", ""}
+INVALID_FILENAME_STEMS = {"null", "undefined", "none"}
 
 # Allowed extensions for user-facing generated file results (data documents, media, archives)
 DATA_EXTS = {
@@ -581,7 +582,7 @@ def should_include_generated_file(filename: str) -> bool:
         return False
     # Also reject when the stem (without extension) is invalid
     stem_lower = Path(filename).stem.lower()
-    if stem_lower in INVALID_FILENAMES:
+    if stem_lower in INVALID_FILENAME_STEMS:
         return False
     ext = Path(filename).suffix.lower()
     if not ext:
@@ -787,12 +788,17 @@ def _insert_upload_file(
         stored_name = _generate_stored_name(filename)
 
     actual_size = file_size
+    logger.debug("[upload] _insert_upload_file: user=%s, session=%s, filename=%r, stored_name=%r, file_size=%d", user_id, session_id, filename, stored_name, file_size)
     if actual_size <= 0:
         upload_path = user_workspace_dir(user_id) / "uploads" / stored_name
+        logger.debug("[upload] size=0, attempting disk fallback: path=%s, exists=%s", upload_path, upload_path.exists())
         if upload_path.exists():
             actual_size = upload_path.stat().st_size
+            logger.debug("[upload] disk fallback succeeded: size=%d", actual_size)
         else:
             logger.warning("Upload file not found at %s (user=%s, stored=%s)", upload_path, user_id, stored_name)
+
+    logger.info("[upload] final record: filename=%r, stored=%r, file_size=%d, session=%s", filename, stored_name, actual_size, session_id)
 
     import uuid
 
@@ -1454,8 +1460,18 @@ def build_sdk_options(
     ) -> dict:
         tool_inp = hook_input.get("tool_input", {})
         file_path = str(tool_inp.get("file_path", ""))
-        if not file_path:
-            return {"sync": True, "continue_": True}
+        # Block invalid filenames (null/None/undefined — programming errors from model)
+        if not file_path or file_path.lower() in INVALID_FILENAMES:
+            logger.warning("PreToolUse[Write]: blocked invalid file_path '%s'", file_path)
+            return {
+                "sync": True,
+                "continue_": True,
+                "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "decision": "reject",
+                    "reason": f"Invalid file path: '{file_path}'. Please provide a real filename.",
+                },
+            }
         if is_path_within_user_dir(file_path, user_id):
             return {"sync": True, "continue_": True}
         rewritten = rewrite_path_to_workspace(file_path, workspace)
@@ -2706,6 +2722,7 @@ async def handle_ws(websocket: WebSocket) -> None:
             attached_files: list[str] | None = None
             attached_file_sizes: dict[str, int] = {}
             if raw_files:
+                logger.debug("[upload] raw_files type=%s, count=%d, first_item_type=%s", type(raw_files).__name__, len(raw_files) if isinstance(raw_files, list) else 0, type(raw_files[0]).__name__ if isinstance(raw_files, list) and raw_files else "n/a")
                 if isinstance(raw_files, list) and raw_files:
                     if isinstance(raw_files[0], dict):
                         attached_files = [f.get("stored_name", "") for f in raw_files if isinstance(f, dict)]
@@ -2714,8 +2731,10 @@ async def handle_ws(websocket: WebSocket) -> None:
                             for f in raw_files
                             if isinstance(f, dict) and "stored_name" in f
                         }
+                        logger.debug("[upload] parsed dict mode: attached_files=%s, sizes=%s", attached_files, attached_file_sizes)
                     else:
                         attached_files = [str(f) for f in raw_files]
+                        logger.debug("[upload] parsed string mode: attached_files=%s (no sizes included)", attached_files)
 
             if not session_id:
                 session_id = f"sess_{uuid.uuid4().hex[:12]}"
@@ -2940,6 +2959,7 @@ async def handle_ws(websocket: WebSocket) -> None:
                     )
 
                     if attached_files:
+                        logger.debug("[upload] processing %d attached_files: %s, sizes_map=%s", len(attached_files), attached_files, attached_file_sizes)
                         for fname in attached_files:
                             # Frontend may send stored_name (UUID-based, e.g. "report__abc123.xlsx")
                             # or original display name (e.g. "report.xlsx")
@@ -3588,6 +3608,8 @@ async def upload_file(
     dest = upload_dir / stored_name
     dest.write_bytes(content)
 
+    logger.info("[upload] HTTP upload: user=%s, original=%r, stored=%r, size=%d", user_id, original_name, stored_name, len(content))
+
     return JSONResponse(
         {
             "status": "ok",
@@ -3603,51 +3625,40 @@ async def list_files(
     user_id: str,
     current_user: str = Depends(get_current_user),
 ) -> list[dict[str, Any]]:
-    """List files in user's workspace, enriched with display names from DB."""
+    """List all files (uploads + generated) across all sessions from the database."""
     verify_path_user(user_id, current_user)
-    workspace = user_workspace_dir(user_id)
     files: list[dict[str, Any]] = []
-    if workspace.exists():
-        for f in workspace.rglob("*"):
-            if f.is_file():
-                rel = f.relative_to(workspace)
-                files.append(
-                    {
-                        "path": str(rel),
-                        "size": f.stat().st_size,
-                        "modified_at": datetime.fromtimestamp(f.stat().st_mtime, tz=timezone.utc).isoformat(),
-                    }
-                )
+    seen: set[str] = set()
 
-    # Enrich generated files with display names from DB
     if _db is not None and _db._initialized:
+        import sqlite3
+
+        conn = sqlite3.connect(str(_db.db_path))
+        conn.row_factory = sqlite3.Row
         try:
-            import sqlite3 as _sqlite3
-
-            conn = _sqlite3.connect(str(_db.db_path))
-            conn.row_factory = _sqlite3.Row
-            rows = conn.execute(
-                "SELECT stored_name, filename FROM generated_files WHERE user_id = ?",
-                (user_id,),
-            ).fetchall()
+            for table, source in [("uploads", "upload"), ("generated_files", "generated")]:
+                rows = conn.execute(
+                    f"SELECT filename, stored_name, file_size, created_at FROM {table} WHERE user_id = ? ORDER BY created_at DESC",
+                    (user_id,),
+                ).fetchall()
+                for row in rows:
+                    stored = dict(row).get("stored_name", row["filename"])
+                    if stored not in seen:
+                        seen.add(stored)
+                        files.append(
+                            {
+                                "filename": row["filename"],
+                                "stored_name": stored,
+                                "size": row["file_size"],
+                                "source": source,
+                                "generated_at": datetime.fromtimestamp(row["created_at"], tz=timezone.utc).isoformat(),
+                                "download_url": f"/api/users/{user_id}/download/{source == 'upload' and 'uploads' or 'outputs'}/{stored}",
+                            }
+                        )
+        except sqlite3.OperationalError:
+            pass
+        finally:
             conn.close()
-            name_map = {row["stored_name"]: row["filename"] for row in rows}
-        except Exception:
-            name_map = {}
-    else:
-        name_map = {}
-
-    for entry in files:
-        path = entry["path"]
-        basename = path.split("/")[-1]
-        if basename in name_map:
-            entry["display_name"] = name_map[basename]
-        elif path.startswith("outputs/"):
-            # Strip UUID prefix: report__a1b2c3d4.pdf → report.pdf
-            stem = Path(basename).stem
-            if "__" in stem:
-                original_stem = stem.rsplit("__", 1)[0]
-                entry["display_name"] = f"{original_stem}{Path(basename).suffix}"
 
     return files
 
