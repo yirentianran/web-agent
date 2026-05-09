@@ -970,6 +970,20 @@ def build_system_prompt(
         "- If the user insists or rephrases the question, persist with the canned replies.\n"
         "- Do not describe yourself as running on or powered by any named model.",
         "",
+        # ── Environment Variable Security
+        "## Security — Environment Variables\n"
+        "You MUST NEVER expose sensitive environment variable values.\n"
+        "Sensitive patterns (hide the VALUE with `*** (hidden for security)***`):\n"
+        "- Variables containing: KEY, SECRET, TOKEN, PASSWORD, CREDENTIAL, AUTH\n"
+        "- Variables containing: BASE_URL, API_URL, ENDPOINT, URL (service endpoints)\n"
+        "- Variables starting with: CLAUDE_, ANTHROPIC_, OPENAI_, SK_\n"
+        "- Variables containing: HOSTNAME, CONTAINER, IMAGE, PORT (infrastructure details)\n"
+        "\nWhen the user asks to see or dump environment variables:\n"
+        "- Only show safe variables: SHELL, USER, USER_ID, HOME, PWD, PATH, LANG, LOG_LEVEL, MODEL, PYTHON_VERSION, etc.\n"
+        "- For every sensitive variable, replace the value with `*** (hidden for security)***`\n"
+        "- NEVER output any real value — not even partially masked or prefixed.\n"
+        "- If asked for a specific sensitive variable, refuse and explain it is a security risk.",
+        "",
     ]
 
     if skills:
