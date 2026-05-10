@@ -1482,6 +1482,8 @@ def build_sdk_options(
         _tool_use_id: str | None,
         _context: HookContext,
     ) -> dict:
+        from src.security_filter import FileAccessFilter
+
         tool_inp = hook_input.get("tool_input", {})
         file_path = str(tool_inp.get("file_path", ""))
         # Block invalid filenames (null/None/undefined — programming errors from model)
@@ -1494,6 +1496,19 @@ def build_sdk_options(
                     "hookEventName": "PreToolUse",
                     "decision": "reject",
                     "reason": f"Invalid file path: '{file_path}'. Please provide a real filename.",
+                },
+            }
+        # Layer 2: Block writes to sensitive files
+        allowed, reason = FileAccessFilter.check(file_path)
+        if not allowed:
+            logger.debug("PreToolUse[Write]: blocked sensitive file '%s'", file_path)
+            return {
+                "sync": True,
+                "continue_": True,
+                "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "decision": "reject",
+                    "reason": "This operation is not permitted.",
                 },
             }
         if is_path_within_user_dir(file_path, user_id):
@@ -1518,9 +1533,24 @@ def build_sdk_options(
         _tool_use_id: str | None,
         _context: HookContext,
     ) -> dict:
+        from src.security_filter import BashCommandFilter
+
         cmd = str(hook_input.get("tool_input", {}).get("command", ""))
         if not cmd:
             return {"sync": True, "continue_": True}
+        # Layer 2: Block info-leak commands
+        allowed, reason = BashCommandFilter.check(cmd)
+        if not allowed:
+            logger.debug("PreToolUse[Bash]: blocked info-leak command '%s'", cmd[:120])
+            return {
+                "sync": True,
+                "continue_": True,
+                "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "decision": "reject",
+                    "reason": "This operation is not permitted.",
+                },
+            }
         rewritten = _rewrite_bash_command(cmd, workspace)
         if rewritten == cmd:
             return {"sync": True, "continue_": True}
@@ -2553,12 +2583,30 @@ async def run_agent_task_container(
 # ── WebSocket endpoint ───────────────────────────────────────────
 
 
+def _filter_stream_event(data: dict, OutputFilter: type) -> dict:
+    """Filter sensitive content from stream_event content_block_delta messages."""
+    payload = data.get("delta", {})
+    if payload.get("type") == "content_block_delta" and "text" in payload:
+        payload = {**payload, "text": OutputFilter.scan(payload["text"])}
+        data = {**data, "delta": payload}
+    return data
+
+
 async def _safe_ws_send(websocket: WebSocket, data: dict) -> bool:
     """Send a JSON message over WebSocket, returning False if the connection
     is already closed. Prevents RuntimeError from crashing the subscribe loop."""
     # Layer 3: Filter sensitive content before sending to user.
-    if data.get("type") in ("assistant", "tool_result") and data.get("content"):
+    msg_type = data.get("type", "")
+    if msg_type in ("assistant", "tool_result") and data.get("content"):
         from src.security_filter import OutputFilter
+
+        data = {**data, "content": OutputFilter.scan(data["content"])}
+    elif msg_type == "stream_event":
+        # stream_event messages contain content_block_delta with raw text
+        # deltas that could leak sensitive info. Filter text-type deltas.
+        from src.security_filter import OutputFilter
+
+        data = _filter_stream_event(data, OutputFilter)
 
         data = {**data, "content": OutputFilter.scan(data["content"])}
     # Check client_state first to avoid sending on a closed connection.
