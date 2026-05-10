@@ -4054,6 +4054,7 @@ async def upload_skill_files(
             json.dumps(
                 {
                     "source": "upload",
+                    "owner": current_user,
                     "created_at": datetime.now(timezone.utc).isoformat(),
                     "zip_filename": file.filename,
                 },
@@ -4095,6 +4096,7 @@ async def upload_shared_skill(
             json.dumps(
                 {
                     "source": "upload",
+                    "owner": current_user,
                     "created_at": datetime.now(timezone.utc).isoformat(),
                     "zip_filename": file.filename,
                 },
