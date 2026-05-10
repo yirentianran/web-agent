@@ -16,7 +16,6 @@ from dotenv import load_dotenv
 load_dotenv(override=True)  # Load .env file before any env var access, override shell env
 
 import asyncio
-import httpx
 import io
 import json
 import logging
@@ -27,19 +26,22 @@ import shutil
 import time
 import uuid
 import zipfile
-from datetime import datetime, timezone
+from collections.abc import Iterator
+from datetime import UTC, datetime
+from io import BytesIO
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, Iterator
+from typing import TYPE_CHECKING, Any
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File, HTTPException, Header, Depends
+import httpx
+from fastapi import Depends, FastAPI, File, Header, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from src.constants import BUILTIN_TOOLS, DISABLED_TOOLS
-from src.auth import create_token, verify_token, get_current_user, verify_path_user
 from src.admin_auth import require_admin
+from src.auth import create_token, get_current_user, verify_path_user, verify_token
+from src.constants import BUILTIN_TOOLS, DISABLED_TOOLS
 from src.message_buffer import HEARTBEAT_INTERVAL, MessageBuffer, make_heartbeat
 from src.models import (
     McpServerConfig,
@@ -313,21 +315,19 @@ from claude_agent_sdk.types import (
     HookContext,
     HookInput,
     HookMatcher,
+    PermissionResult,
     PermissionResultAllow,
     PermissionResultDeny,
-    PermissionResult,
     ResultMessage,
     StreamEvent,
     SystemMessage,
     TaskNotificationMessage,
     TaskProgressMessage,
     TextBlock,
-    ThinkingBlock,
     ToolPermissionContext,
-    ToolResultBlock,
-    ToolUseBlock,
     UserMessage,
 )
+
 from src.block_processor import process_content_blocks
 from src.container_bridge import ContainerBridge, bridge_answer_futures
 
@@ -694,7 +694,7 @@ def _scan_workspace_for_generated_files(
         rel_stored = dest.relative_to(workspace).as_posix()
         st = dest.stat()
         file_size = st.st_size
-        generated_at = datetime.fromtimestamp(st.st_mtime, tz=timezone.utc).isoformat()
+        generated_at = datetime.fromtimestamp(st.st_mtime, tz=UTC).isoformat()
         download_url = build_download_url(user_id, rel_stored)
 
         existing_files.append(
@@ -1757,7 +1757,7 @@ async def _can_use_tool_for_session(
                 behavior="allow",
                 updated_input={"answers": answer},
             )
-        except asyncio.TimeoutError:
+        except TimeoutError:
             return PermissionResultAllow(
                 behavior="allow",
                 updated_input={"answers": {"error": "timeout"}},
@@ -1902,9 +1902,9 @@ def _format_first_message_prompt(
     # Natural language priming activates the target language's generation
     # pathway more effectively than a bracketed metadata tag.
     if language == "zh":
-        prefix = f"请用中文回复，包括所有思考内容、推理过程和最终答复。\n\n"
+        prefix = "请用中文回复，包括所有思考内容、推理过程和最终答复。\n\n"
     elif language == "en":
-        prefix = f"Please respond in English, including all thinking blocks, reasoning, and final replies.\n\n"
+        prefix = "Please respond in English, including all thinking blocks, reasoning, and final replies.\n\n"
     else:
         prefix = ""
 
@@ -2264,7 +2264,7 @@ async def run_agent_task(
                             {
                                 "filename": filename,
                                 "size": size,
-                                "generated_at": datetime.now(timezone.utc).isoformat(),
+                                "generated_at": datetime.now(UTC).isoformat(),
                                 "download_url": build_download_url(user_id, file_path, directory="outputs"),
                             }
                         )
@@ -2339,7 +2339,7 @@ async def run_agent_task(
         duration_ms = (time.time() - start_time) * 1000
         agent_log.end_session(session_id, status="completed")
 
-    except asyncio.TimeoutError:
+    except TimeoutError:
         buffer.add_message(
             session_id,
             {
@@ -2529,7 +2529,7 @@ async def run_agent_task_container(
         buffer.mark_done(session_id)
         agent_log.end_session(session_id, status="completed")
 
-    except asyncio.TimeoutError:
+    except TimeoutError:
         logger.error("Container task %s: timeout", session_id)
         buffer.add_message(
             session_id,
@@ -2663,7 +2663,7 @@ async def _safe_ws_send(websocket: WebSocket, data: dict) -> bool:
 @app.websocket("/ws")
 async def handle_ws(websocket: WebSocket) -> None:
     """Browser ↔ Agent WebSocket. Direct SDK integration (Phase 1)."""
-    from src.auth import ENFORCE_AUTH, require_user_match, verify_token
+    from src.auth import ENFORCE_AUTH
 
     token = websocket.query_params.get("token")
     _verified_user_id: str | None = None
@@ -3305,7 +3305,7 @@ async def handle_ws(websocket: WebSocket) -> None:
 
     except WebSocketDisconnect:
         logger.debug("WebSocket disconnected for user %s", user_id)
-    except Exception as e:
+    except Exception:
         logger.exception("WebSocket error")
         # Don't try to send error message — the connection is likely already closed
     finally:
@@ -3486,7 +3486,7 @@ async def get_session_files(
                                 "stored_name": stored,
                                 "size": row["file_size"],
                                 "source": source,
-                                "generated_at": datetime.fromtimestamp(row["created_at"], tz=timezone.utc).isoformat(),
+                                "generated_at": datetime.fromtimestamp(row["created_at"], tz=UTC).isoformat(),
                                 "download_url": f"/api/users/{user_id}/download/{source == 'upload' and 'uploads' or 'outputs'}/{stored}",
                             }
                         )
@@ -3543,7 +3543,7 @@ async def get_all_generated_files(
                 {
                     "filename": rel,
                     "size": stat.st_size,
-                    "generated_at": datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat(),
+                    "generated_at": datetime.fromtimestamp(stat.st_mtime, tz=UTC).isoformat(),
                     "download_url": f"/api/users/{user_id}/download/{rel}",
                 }
             )
@@ -3623,7 +3623,7 @@ async def cancel_session(
         # already correct from buffer.cancel() above.
         try:
             await asyncio.wait_for(task, timeout=5.0)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             logger.warning(
                 "cancel_session: task %s did not finish within timeout — buffer already marked cancelled",
                 task_key,
@@ -3713,7 +3713,7 @@ async def upload_file(
     when the same filename is uploaded multiple times.
     """
     verify_path_user(user_id, current_user)
-    from src.file_validation import ALLOWED_EXTENSIONS, MAX_UPLOAD_BYTES, validate_extension, validate_size
+    from src.file_validation import validate_extension, validate_size
 
     original_name = file.filename or "unnamed"
     ext_error = validate_extension(original_name)
@@ -3782,7 +3782,7 @@ async def list_files(
                                 "stored_name": stored,
                                 "size": row["file_size"],
                                 "source": source,
-                                "generated_at": datetime.fromtimestamp(row["created_at"], tz=timezone.utc).isoformat(),
+                                "generated_at": datetime.fromtimestamp(row["created_at"], tz=UTC).isoformat(),
                                 "download_url": f"/api/users/{user_id}/download/{source == 'upload' and 'uploads' or 'outputs'}/{stored}",
                             }
                         )
@@ -4069,7 +4069,7 @@ async def upload_skill_files(
                 {
                     "source": "upload",
                     "owner": current_user,
-                    "created_at": datetime.now(timezone.utc).isoformat(),
+                    "created_at": datetime.now(UTC).isoformat(),
                     "zip_filename": file.filename,
                 },
                 indent=2,
@@ -4111,7 +4111,7 @@ async def upload_shared_skill(
                 {
                     "source": "upload",
                     "owner": current_user,
-                    "created_at": datetime.now(timezone.utc).isoformat(),
+                    "created_at": datetime.now(UTC).isoformat(),
                     "zip_filename": file.filename,
                 },
                 indent=2,
@@ -4119,6 +4119,59 @@ async def upload_shared_skill(
         )
 
     return {"status": "ok", "skill_name": skill_name, "files": extracted}
+
+
+@app.get("/api/skills/download/{source}/{skill_name}")
+async def download_skill(
+    source: str,
+    skill_name: str,
+    owner: str | None = None,
+    authorization: str | None = Header(None),
+    current_user: str = Depends(get_current_user),
+):
+    """Download a skill as a ZIP archive.
+
+    Permissions:
+    - shared: admin only
+    - personal (own): regular user
+    - personal (anyone): admin
+    """
+    from src.admin_auth import is_admin_request
+
+    if source not in ("shared", "personal"):
+        return JSONResponse({"error": "invalid source, must be 'shared' or 'personal'"}, status_code=400)
+
+    admin = is_admin_request(authorization)
+
+    if source == "shared":
+        if not admin:
+            return JSONResponse({"error": "forbidden: admin required for shared skills"}, status_code=403)
+        skill_dir = DATA_ROOT / "shared-skills" / skill_name
+    else:
+        if not owner:
+            return JSONResponse({"error": "owner query param required for personal skills"}, status_code=400)
+        skill_dir = DATA_ROOT / "users" / owner / "workspace" / ".claude" / "skills" / skill_name
+
+        if current_user != owner and not admin:
+            return JSONResponse({"error": "forbidden"}, status_code=403)
+
+    if not skill_dir.exists() or not skill_dir.is_dir():
+        return JSONResponse({"error": "skill not found"}, status_code=404)
+
+    # Build ZIP in memory
+    buf = BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for file_path in skill_dir.rglob("*"):
+            if file_path.is_file():
+                arcname = f"{skill_name}/{file_path.relative_to(skill_dir)}"
+                zf.write(file_path, arcname)
+    buf.seek(0)
+
+    return StreamingResponse(
+        buf,
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{skill_name}.zip"'},
+    )
 
 
 def _validate_skill_name(skill_name: str, parent_dir: Path) -> None:
@@ -4241,7 +4294,7 @@ async def promote_skill_to_shared(
         except (json.JSONDecodeError, OSError):
             pass
     meta["promoted_by"] = user_id
-    meta["promoted_at"] = datetime.now(timezone.utc).isoformat()
+    meta["promoted_at"] = datetime.now(UTC).isoformat()
     meta["source"] = meta.get("source", "promoted")
     meta_path.write_text(json.dumps(meta, indent=2))
 
@@ -4817,7 +4870,7 @@ def _build_evolution_sdk_options(
     version_dir: Path,
     system_prompt: str,
     model: str,
-) -> "ClaudeAgentOptions":
+) -> ClaudeAgentOptions:
     """Build ClaudeAgentOptions for an evolution agent session.
 
     Similar to build_sdk_options but with:
@@ -5325,7 +5378,7 @@ async def _check_stdio_mcp(cfg: dict[str, Any]) -> tuple[str, str | None, list[s
 async def _sync_tools_to_db(
     server_name: str,
     discovered_tools: list[str],
-    mcp_store: "MCPServerStore",
+    mcp_store: MCPServerStore,
 ) -> bool:
     """Persist discovered tools to DB if they differ from stored tools.
 
