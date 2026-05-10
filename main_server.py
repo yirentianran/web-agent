@@ -3854,38 +3854,67 @@ async def delete_file(
 
 @app.get("/api/shared-skills", response_model=list[SkillInfo])
 async def list_shared_skills() -> list[SkillInfo]:
-    """List all shared (public) skills."""
-    skills_dir = DATA_ROOT / "shared-skills"
-    if not skills_dir.exists():
-        return []
-    results = []
-    for d in sorted(skills_dir.iterdir()):
-        if not d.is_dir():
-            continue
-        created_at, created_by, owner = _read_skill_meta(d)
-        skill_file = d / "SKILL.md"
-        if skill_file.exists():
-            content = skill_file.read_text()
-            frontmatter = parse_skill_frontmatter(content)
-            description = frontmatter.get("description") or ""
-            valid = True
-        else:
-            content = ""
-            description = "⚠ SKILL.md missing — this skill is invalid"
-            valid = False
-        results.append(
-            SkillInfo(
-                name=d.name,
-                source=SkillSource.SHARED,
-                content=content,
-                description=description,
-                path=str(d),
-                created_at=created_at,
-                created_by=created_by,
-                owner=owner,
-                valid=valid,
-            )
-        )
+    """List all shared (public) skills from the database."""
+    results: list[SkillInfo] = []
+
+    if _db is not None and _db._initialized:
+        import sqlite3
+        from datetime import datetime, timezone
+
+        conn = sqlite3.connect(str(_db.db_path))
+        conn.row_factory = sqlite3.Row
+        try:
+            rows = conn.execute(
+                "SELECT skill_name, owner_id, description, path, created_at"
+                " FROM skills WHERE source = 'shared'"
+                " AND status != 'deprecated' ORDER BY created_at DESC",
+            ).fetchall()
+            for row in rows:
+                rd = dict(row)
+                skill_path = Path(rd.get("path", ""))
+                skill_name = rd["skill_name"]
+                created_at = ""
+                if rd.get("created_at"):
+                    try:
+                        created_at = datetime.fromtimestamp(rd["created_at"], tz=timezone.utc).isoformat()
+                    except (ValueError, OSError):
+                        pass
+
+                content = ""
+                created_by = ""
+                if skill_path.exists():
+                    skill_md = skill_path / "SKILL.md"
+                    if skill_md.exists():
+                        content = skill_md.read_text()
+                        frontmatter = parse_skill_frontmatter(content)
+                        description = frontmatter.get("description") or rd.get("description", "")
+                    else:
+                        description = rd.get("description", "")
+                    created_at_meta, created_by_meta, _ = _read_skill_meta(skill_path)
+                    if not created_at:
+                        created_at = created_at_meta
+                    created_by = created_by_meta
+                    valid = True
+                else:
+                    description = rd.get("description", "")
+                    valid = False
+
+                results.append(
+                    SkillInfo(
+                        name=skill_name,
+                        source=SkillSource.SHARED,
+                        owner=rd.get("owner_id", ""),
+                        description=description,
+                        content=content,
+                        path=str(skill_path),
+                        created_at=created_at,
+                        created_by=created_by,
+                        valid=valid,
+                    )
+                )
+        finally:
+            conn.close()
+
     return results
 
 
