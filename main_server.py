@@ -1483,7 +1483,7 @@ def build_container_options_dict(
     }
 
 
-def build_sdk_options(
+async def build_sdk_options(
     user_id: str,
     can_use_tool_callback=None,
     resume_session_id: str | None = None,
@@ -1492,6 +1492,19 @@ def build_sdk_options(
     """Build ClaudeAgentOptions with full configuration."""
     mcp_config = load_mcp_config_sync()
     skills = load_skills(user_id)
+
+    # Record skill usage in DB (fire-and-forget, never blocks agent)
+    if _skill_manager is not None:
+        for skill_name in skills:
+            asyncio.create_task(
+                _skill_manager.record_usage(
+                    skill_name=skill_name,
+                    user_id=user_id,
+                    session_id="",
+                    action="load",
+                )
+            )
+
     user_dir = user_data_dir(user_id)
     workspace = user_workspace_dir(user_id)
 
@@ -2167,7 +2180,7 @@ async def run_agent_task(
     # JSONL, but multi-turn conversations span multiple CLI sessions (each
     # turn creates a new subprocess with a new UUID). The stored UUID gets
     # overwritten each turn, so resume would load incomplete context.
-    options = build_sdk_options(
+    options = await build_sdk_options(
         user_id,
         can_use_tool_callback=can_use_tool_cb,
         resume_session_id=None,  # never use --resume for continuation

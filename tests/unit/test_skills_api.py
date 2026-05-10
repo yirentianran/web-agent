@@ -163,3 +163,24 @@ async def test_skill_not_found(db, client):
     assert resp.status_code == 200
     data = resp.json()
     assert data["total"] == 0
+
+
+@pytest.mark.asyncio
+async def test_record_usage_fire_and_forget(db, client):
+    """record_usage never raises even for nonexistent skills."""
+    mgr = main_server._skill_manager
+    await mgr.register_skill("nonexistent-skill", source="shared", owner_id="")
+    await mgr.record_usage("nonexistent-skill", user_id="u1", session_id="s1")
+    # Verify it was recorded
+    stats = await mgr.get_usage_stats("nonexistent-skill")
+    assert stats["total_uses"] == 1
+
+
+@pytest.mark.asyncio
+async def test_record_usage_with_bad_data(db, client):
+    """record_usage handles edge case data."""
+    mgr = main_server._skill_manager
+    await mgr.register_skill("test-skill", source="shared", owner_id="")
+    await mgr.record_usage("test-skill", version_number=-1, action="invalid")
+    stats = await mgr.get_usage_stats("test-skill")
+    assert stats["total_uses"] == 1
