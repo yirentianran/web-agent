@@ -2027,6 +2027,43 @@ async def _auto_generate_title(
         logger.warning("[AUTO_TITLE] Failed for session=%s", session_id, exc_info=True)
 
 
+async def _emit_file_result(
+    user_id: str,
+    session_id: str,
+    workspace: Path,
+    generated_files: list[dict[str, Any]],
+    buffer,
+) -> None:
+    """Filter, finalize, and emit file_result for a completed task.
+
+    Shared by both local mode (``run_agent_task``) and container mode
+    (``run_agent_task_container``) so the two paths stay in sync.
+    """
+    generated_files = [
+        f for f in generated_files
+        if f.get("filename") and should_include_generated_file(f["filename"])
+    ]
+    if generated_files:
+        for f in generated_files:
+            if "download_url" not in f:
+                f["download_url"] = build_download_url(user_id, f["filename"], directory="outputs")
+        buffer.remove_messages_by_type(session_id, "file_result", user_id=user_id)
+        buffer.add_message(
+            session_id,
+            {
+                "type": "file_result",
+                "content": "",
+                "session_id": session_id,
+                "user_id": user_id,
+                "data": generated_files,
+            },
+            user_id,
+        )
+
+
+# ── Agent task (local mode) ──────────────────────────────────────
+
+
 async def run_agent_task(
     user_id: str,
     session_id: str,
@@ -2240,34 +2277,11 @@ async def run_agent_task(
             start_time, task_end, generated_files,
         )
 
-        # Emit file_result message if the agent generated any files this turn.
-        # Uses add_message() (append order) — file_result is emitted BEFORE
-        # session_state_changed:completed, so it appears before "Session completed"
-        # in both live streaming and DB replay.
-        # Filter out infrastructure files (logs, caches, etc.) and invalid filenames
-        generated_files = [
-            f for f in generated_files if f.get("filename") and should_include_generated_file(f["filename"])
-        ]
-        if generated_files:
-            # Ensure all file entries have download_url
-            for f in generated_files:
-                if "download_url" not in f:
-                    f["download_url"] = build_download_url(user_id, f["filename"], directory="outputs")
-            # Remove previous file_result messages — only the latest
-            # should exist per session, avoiding duplicate bubbles in
-            # multi-turn conversations.
-            buffer.remove_messages_by_type(session_id, "file_result", user_id=user_id)
-            buffer.add_message(
-                session_id,
-                {
-                    "type": "file_result",
-                    "content": "",
-                    "session_id": session_id,
-                    "user_id": user_id,
-                    "data": generated_files,
-                },
-                user_id,
-            )
+        # Emit "file_result", then title, then completion state.
+        # file_result is emitted BEFORE session_state_changed:completed so
+        # it appears before "Session completed" in both live streaming and
+        # DB replay.
+        await _emit_file_result(user_id, session_id, workspace, generated_files, buffer)
 
         logger.info(
             "Agent task %s: completed with %d messages in %.1fs",
@@ -2459,26 +2473,8 @@ async def run_agent_task_container(
             start_time, task_end, generated_files,
         )
 
-        # ── Emit file_result ──────────────────────────────────────
-        generated_files = [
-            f for f in generated_files if f.get("filename") and should_include_generated_file(f["filename"])
-        ]
-        if generated_files:
-            for f in generated_files:
-                if "download_url" not in f:
-                    f["download_url"] = build_download_url(user_id, f["filename"], directory="outputs")
-            buffer.remove_messages_by_type(session_id, "file_result", user_id=user_id)
-            buffer.add_message(
-                session_id,
-                {
-                    "type": "file_result",
-                    "content": "",
-                    "session_id": session_id,
-                    "user_id": user_id,
-                    "data": generated_files,
-                },
-                user_id,
-            )
+        # Emit file_result, then title, then completion state.
+        await _emit_file_result(user_id, session_id, workspace, generated_files, buffer)
 
         logger.info(
             "Container task %s: completed in %.1fs",

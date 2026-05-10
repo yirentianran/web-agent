@@ -1441,27 +1441,44 @@ class TestFileResultDelivery:
 
     def test_source_completed_file_result_before_mark_done(self) -> None:
         """In the completed path of run_agent_task, the source code must
-        call add_message(file_result) BEFORE mark_done()."""
-        import inspect
-        source = inspect.getsource(main_server.run_agent_task)
-        lines = source.split('\n')
+        call add_message(file_result) BEFORE mark_done().
 
-        # Find the completed block (mark_done area)
+        After extraction of _emit_file_result, the "file_result" string
+        lives in the helper — verify the helper is called before mark_done
+        in run_agent_task, and that the helper itself contains file_result
+        before any mark_done.
+        """
+        import inspect
+
+        task_src = inspect.getsource(main_server.run_agent_task)
+        emit_src = inspect.getsource(main_server._emit_file_result)  # type: ignore[attr-defined]
+
+        task_lines = task_src.split('\n')
+        emit_lines = emit_src.split('\n')
+
+        # Verify _emit_file_result contains "file_result"
+        has_file_result_in_emit = any(
+            ('"file_result"' in l or "'file_result'" in l)
+            for l in emit_lines if not l.strip().startswith('#')
+        )
+        assert has_file_result_in_emit, "file_result not found in _emit_file_result"
+
+        # Verify run_agent_task calls _emit_file_result before mark_done
+        emit_call_line = None
         mark_done_line = None
-        file_result_line = None
-        for i, line in enumerate(lines):
+        for i, line in enumerate(task_lines):
             stripped = line.strip()
             if stripped.startswith('#'):
                 continue
+            if '_emit_file_result' in stripped:
+                emit_call_line = i
             if 'buffer.mark_done' in stripped:
                 mark_done_line = i
-            if '"file_result"' in stripped or "'file_result'" in stripped:
-                file_result_line = i
 
-        assert file_result_line is not None, "file_result not found in completed path"
-        assert mark_done_line is not None, "mark_done not found in completed path"
-        assert file_result_line < mark_done_line, (
-            f"BUG: file_result at line {file_result_line} appears after "
+        assert emit_call_line is not None, "_emit_file_result call not found in run_agent_task"
+        assert mark_done_line is not None, "mark_done not found in run_agent_task"
+        assert emit_call_line < mark_done_line, (
+            f"BUG: _emit_file_result at line {emit_call_line} appears after "
             f"mark_done at line {mark_done_line}"
         )
 
