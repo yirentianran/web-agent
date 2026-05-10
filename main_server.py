@@ -2608,7 +2608,6 @@ async def _safe_ws_send(websocket: WebSocket, data: dict) -> bool:
 
         data = _filter_stream_event(data, OutputFilter)
 
-        data = {**data, "content": OutputFilter.scan(data["content"])}
     # Check client_state first to avoid sending on a closed connection.
     # This prevents the "Unexpected ASGI message 'websocket.send'" error
     # that occurs when the WebSocket is closed during agent task cleanup.
