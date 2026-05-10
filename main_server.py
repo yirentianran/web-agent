@@ -3942,12 +3942,12 @@ async def list_user_skills(
             skill_md = d / "SKILL.md"
             if not skill_md.exists():
                 continue
-            created_at, created_by, owner = _read_skill_meta(d)
+            created_at, created_by, _ = _read_skill_meta(d)
             results.append(
                 SkillInfo(
                     name=d.name,
                     source=SkillSource.PERSONAL,
-                    owner=owner,
+                    owner=owner_id,  # directory name is the authoritative owner
                     description="",
                     content=skill_md.read_text(),
                     path=str(d),
