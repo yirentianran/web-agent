@@ -610,7 +610,9 @@ def snapshot_workspace(workspace: Path) -> dict[str, float]:
     return snap
 
 
-def _insert_generated_file(user_id: str, session_id: str, filename: str, stored_name: str, file_size: int, rel_path: str) -> None:
+def _insert_generated_file(
+    user_id: str, session_id: str, filename: str, stored_name: str, file_size: int, rel_path: str
+) -> None:
     """Insert a record into the generated_files table, ignoring duplicates."""
     if _db is None:
         return
@@ -695,13 +697,15 @@ def _scan_workspace_for_generated_files(
         generated_at = datetime.fromtimestamp(st.st_mtime, tz=timezone.utc).isoformat()
         download_url = build_download_url(user_id, rel_stored)
 
-        existing_files.append({
-            "filename": display_name,
-            "stored_name": stored_name,
-            "size": file_size,
-            "generated_at": generated_at,
-            "download_url": download_url,
-        })
+        existing_files.append(
+            {
+                "filename": display_name,
+                "stored_name": stored_name,
+                "size": file_size,
+                "generated_at": generated_at,
+                "download_url": download_url,
+            }
+        )
         _insert_generated_file(user_id, session_id, display_name, stored_name, file_size, rel_stored)
 
     # 1. Scan outputs/ recursively
@@ -721,7 +725,11 @@ def _scan_workspace_for_generated_files(
                 continue
             rel = f.relative_to(workspace).as_posix()
             mtime = f.stat().st_mtime
-            if _is_session_file(mtime) and (rel not in workspace_snapshot or mtime > workspace_snapshot[rel]) and f.name not in seen_filenames:
+            if (
+                _is_session_file(mtime)
+                and (rel not in workspace_snapshot or mtime > workspace_snapshot[rel])
+                and f.name not in seen_filenames
+            ):
                 if f.suffix.lower() in DATA_EXTS:
                     dest_dir = outputs_dir
                     # Move to outputs/ first, then rename
@@ -783,12 +791,19 @@ def _insert_upload_file(
     # Strip any directory prefix the caller may pass
     if stored_name:
         stored_name = Path(stored_name).name
-        stored_name = stored_name[len("uploads/"):] if stored_name.startswith("uploads/") else stored_name
+        stored_name = stored_name[len("uploads/") :] if stored_name.startswith("uploads/") else stored_name
     else:
         stored_name = _generate_stored_name(filename)
 
     actual_size = file_size
-    logger.debug("[upload] _insert_upload_file: user=%s, session=%s, filename=%r, stored_name=%r, file_size=%d", user_id, session_id, filename, stored_name, file_size)
+    logger.debug(
+        "[upload] _insert_upload_file: user=%s, session=%s, filename=%r, stored_name=%r, file_size=%d",
+        user_id,
+        session_id,
+        filename,
+        stored_name,
+        file_size,
+    )
     if actual_size <= 0:
         upload_path = user_workspace_dir(user_id) / "uploads" / stored_name
         logger.debug("[upload] size=0, attempting disk fallback: path=%s, exists=%s", upload_path, upload_path.exists())
@@ -798,7 +813,13 @@ def _insert_upload_file(
         else:
             logger.warning("Upload file not found at %s (user=%s, stored=%s)", upload_path, user_id, stored_name)
 
-    logger.info("[upload] final record: filename=%r, stored=%r, file_size=%d, session=%s", filename, stored_name, actual_size, session_id)
+    logger.info(
+        "[upload] final record: filename=%r, stored=%r, file_size=%d, session=%s",
+        filename,
+        stored_name,
+        actual_size,
+        session_id,
+    )
 
     import uuid
 
@@ -813,8 +834,8 @@ def _insert_upload_file(
                 str(uuid.uuid4()),
                 user_id,
                 session_id,
-                filename,          # display name
-                stored_name,       # UUID-based filename only, no dir prefix
+                filename,  # display name
+                stored_name,  # UUID-based filename only, no dir prefix
                 actual_size,
                 f"/api/users/{user_id}/download/uploads/{stored_name}",
             ),
@@ -1470,7 +1491,11 @@ def build_sdk_options(
     (workspace / "outputs").mkdir(exist_ok=True)
 
     cfg = _build_sdk_config(
-        user_id, mcp_config, skills, workspace, language,
+        user_id,
+        mcp_config,
+        skills,
+        workspace,
+        language,
         user_data_dir_override=user_dir,
     )
 
@@ -1885,7 +1910,9 @@ def _format_first_message_prompt(
 
     if not attached_files:
         return prefix + user_message
-    paths = ", ".join(f if f.startswith("uploads/") or f.startswith("outputs/") else f"uploads/{f}" for f in attached_files)
+    paths = ", ".join(
+        f if f.startswith("uploads/") or f.startswith("outputs/") else f"uploads/{f}" for f in attached_files
+    )
     return f"{prefix}{user_message}\n\n(Attached files: {paths})"
 
 
@@ -1954,9 +1981,7 @@ async def _generate_title_via_llm(conversation_text: str, language: str | None =
                     "model": model,
                     "max_tokens": 80,
                     "system": system_prompt,
-                    "messages": [
-                        {"role": "user", "content": user_prompt}
-                    ],
+                    "messages": [{"role": "user", "content": user_prompt}],
                 },
             )
             if resp.status_code == 200:
@@ -1965,9 +1990,7 @@ async def _generate_title_via_llm(conversation_text: str, language: str | None =
                 if isinstance(content, list):
                     result = process_content_blocks(content, lambda _: None)
                     # Strip thinking tags — we only want the actual text response for the title
-                    result = re.sub(
-                        r"\[thinking\].*?\[/thinking\]", "", result, flags=re.DOTALL
-                    ).strip()
+                    result = re.sub(r"\[thinking\].*?\[/thinking\]", "", result, flags=re.DOTALL).strip()
                     if result:
                         logger.debug("[AUTO_TITLE] Extracted title: %s", result[:60])
                         return result[:100]
@@ -2039,10 +2062,7 @@ async def _emit_file_result(
     Shared by both local mode (``run_agent_task``) and container mode
     (``run_agent_task_container``) so the two paths stay in sync.
     """
-    generated_files = [
-        f for f in generated_files
-        if f.get("filename") and should_include_generated_file(f["filename"])
-    ]
+    generated_files = [f for f in generated_files if f.get("filename") and should_include_generated_file(f["filename"])]
     if generated_files:
         for f in generated_files:
             if "download_url" not in f:
@@ -2166,7 +2186,8 @@ async def run_agent_task(
                 lang_name = "中文" if language == "zh" else "English"
                 full_prompt = (
                     f"IMPORTANT: Your reply below, including all thinking blocks, must be in {lang_name}. "
-                    f"Do not use {'英文' if language == 'zh' else 'Chinese'} in any part of your response.\n\n" + full_prompt
+                    f"Do not use {'英文' if language == 'zh' else 'Chinese'} in any part of your response.\n\n"
+                    + full_prompt
                 )
 
             async def prompt_stream():
@@ -2273,8 +2294,13 @@ async def run_agent_task(
         # Detect files created/modified by the agent since the task started
         task_end = time.time()
         generated_files = _scan_workspace_for_generated_files(
-            workspace, user_id, session_id, workspace_snapshot,
-            start_time, task_end, generated_files,
+            workspace,
+            user_id,
+            session_id,
+            workspace_snapshot,
+            start_time,
+            task_end,
+            generated_files,
         )
 
         # Emit "file_result", then title, then completion state.
@@ -2469,8 +2495,13 @@ async def run_agent_task_container(
         # container are visible from the host at the same paths.
         task_end = time.time()
         generated_files = _scan_workspace_for_generated_files(
-            workspace, user_id, session_id, workspace_snapshot,
-            start_time, task_end, generated_files,
+            workspace,
+            user_id,
+            session_id,
+            workspace_snapshot,
+            start_time,
+            task_end,
+            generated_files,
         )
 
         # Emit file_result, then title, then completion state.
@@ -2794,7 +2825,12 @@ async def handle_ws(websocket: WebSocket) -> None:
             attached_files: list[str] | None = None
             attached_file_sizes: dict[str, int] = {}
             if raw_files:
-                logger.debug("[upload] raw_files type=%s, count=%d, first_item_type=%s", type(raw_files).__name__, len(raw_files) if isinstance(raw_files, list) else 0, type(raw_files[0]).__name__ if isinstance(raw_files, list) and raw_files else "n/a")
+                logger.debug(
+                    "[upload] raw_files type=%s, count=%d, first_item_type=%s",
+                    type(raw_files).__name__,
+                    len(raw_files) if isinstance(raw_files, list) else 0,
+                    type(raw_files[0]).__name__ if isinstance(raw_files, list) and raw_files else "n/a",
+                )
                 if isinstance(raw_files, list) and raw_files:
                     if isinstance(raw_files[0], dict):
                         attached_files = [f.get("stored_name", "") for f in raw_files if isinstance(f, dict)]
@@ -2803,10 +2839,16 @@ async def handle_ws(websocket: WebSocket) -> None:
                             for f in raw_files
                             if isinstance(f, dict) and "stored_name" in f
                         }
-                        logger.debug("[upload] parsed dict mode: attached_files=%s, sizes=%s", attached_files, attached_file_sizes)
+                        logger.debug(
+                            "[upload] parsed dict mode: attached_files=%s, sizes=%s",
+                            attached_files,
+                            attached_file_sizes,
+                        )
                     else:
                         attached_files = [str(f) for f in raw_files]
-                        logger.debug("[upload] parsed string mode: attached_files=%s (no sizes included)", attached_files)
+                        logger.debug(
+                            "[upload] parsed string mode: attached_files=%s (no sizes included)", attached_files
+                        )
 
             if not session_id:
                 session_id = f"sess_{uuid.uuid4().hex[:12]}"
@@ -3031,7 +3073,12 @@ async def handle_ws(websocket: WebSocket) -> None:
                     )
 
                     if attached_files:
-                        logger.debug("[upload] processing %d attached_files: %s, sizes_map=%s", len(attached_files), attached_files, attached_file_sizes)
+                        logger.debug(
+                            "[upload] processing %d attached_files: %s, sizes_map=%s",
+                            len(attached_files),
+                            attached_files,
+                            attached_file_sizes,
+                        )
                         for fname in attached_files:
                             # Frontend may send stored_name (UUID-based, e.g. "report__abc123.xlsx")
                             # or original display name (e.g. "report.xlsx")
@@ -3049,11 +3096,17 @@ async def handle_ws(websocket: WebSocket) -> None:
                     # SQLite BEFORE starting the agent task. This eliminates the
                     # race where a page refresh arrives before the async drain
                     # loop writes these messages, causing inconsistent state.
-                    buffer.sync_write_messages(session_id, [user_msg_buf, {
-                        "type": "system",
-                        "subtype": "session_state_changed",
-                        "state": "running",
-                    }])
+                    buffer.sync_write_messages(
+                        session_id,
+                        [
+                            user_msg_buf,
+                            {
+                                "type": "system",
+                                "subtype": "session_state_changed",
+                                "state": "running",
+                            },
+                        ],
+                    )
 
                     # Route to container or direct SDK based on mode
                     target_func = run_agent_task_container if CONTAINER_MODE else run_agent_task
@@ -3680,7 +3733,13 @@ async def upload_file(
     dest = upload_dir / stored_name
     dest.write_bytes(content)
 
-    logger.info("[upload] HTTP upload: user=%s, original=%r, stored=%r, size=%d", user_id, original_name, stored_name, len(content))
+    logger.info(
+        "[upload] HTTP upload: user=%s, original=%r, stored=%r, size=%d",
+        user_id,
+        original_name,
+        stored_name,
+        len(content),
+    )
 
     return JSONResponse(
         {
@@ -3782,7 +3841,7 @@ async def list_shared_skills() -> list[SkillInfo]:
     for d in sorted(skills_dir.iterdir()):
         if not d.is_dir():
             continue
-        created_at, created_by = _read_skill_meta(d)
+        created_at, created_by, owner = _read_skill_meta(d)
         skill_file = d / "SKILL.md"
         if skill_file.exists():
             content = skill_file.read_text()
@@ -3802,22 +3861,23 @@ async def list_shared_skills() -> list[SkillInfo]:
                 path=str(d),
                 created_at=created_at,
                 created_by=created_by,
+                owner=owner,
                 valid=valid,
             )
         )
     return results
 
 
-def _read_skill_meta(skill_dir: Path) -> tuple[str, str]:
-    """Read skill-meta.json, return (created_at, created_by). Defaults if missing."""
+def _read_skill_meta(skill_dir: Path) -> tuple[str, str, str]:
+    """Read skill-meta.json, return (created_at, created_by, owner). Defaults if missing."""
     meta_path = skill_dir / "skill-meta.json"
     if meta_path.exists():
         try:
             meta = json.loads(meta_path.read_text())
-            return meta.get("created_at", ""), meta.get("source", "")
+            return meta.get("created_at", ""), meta.get("source", ""), meta.get("owner", "")
         except (json.JSONDecodeError, OSError):
             pass
-    return "", ""
+    return "", "", ""
 
 
 @app.get("/api/users/{user_id}/skills", response_model=list[SkillInfo])
@@ -3838,7 +3898,7 @@ async def list_user_skills(
         if not d.is_dir() or d.is_symlink() or (d / ".shared_skill_source").exists():
             continue  # skip symlinks and Windows-copied shared skills
         skill_file = d / "SKILL.md"
-        created_at, created_by = _read_skill_meta(d)
+        created_at, created_by, owner = _read_skill_meta(d)
         if skill_file.exists():
             content = skill_file.read_text()
             frontmatter = parse_skill_frontmatter(content)
@@ -3857,6 +3917,7 @@ async def list_user_skills(
                 path=str(d),
                 created_at=created_at,
                 created_by=created_by,
+                owner=owner,
                 valid=valid,
             )
         )
