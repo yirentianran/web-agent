@@ -70,13 +70,13 @@ class SkillSource(str, Enum):
 class SkillInfo(BaseModel):
     name: str
     source: SkillSource
+    owner: str = ""  # user_id who owns/uploaded the skill
     description: str = ""
     content: str = ""
     path: str = ""
     created_at: str = ""  # ISO 8601 timestamp
     created_by: str = ""  # "upload" | "skill-creator"
     valid: bool = True  # False when SKILL.md is missing or unparseable
-
 
 
 # ── Memory Models ───────────────────────────────────────────────────
