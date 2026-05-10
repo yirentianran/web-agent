@@ -525,17 +525,35 @@ async def test_record_usage_and_stats(db):
     assert stats["version_breakdown"][0]["version"] == 2
 
 @pytest.mark.asyncio
-async def test_version_lifecycle(db):
+async def test_version_lifecycle(db, tmp_path):
     mgr = SkillManager(db=db)
-    await mgr.register_skill("test-skill", source="shared", owner_id="")
-    await mgr.record_version("test-skill", 1, "Initial version", created_by="upload")
-    await mgr.record_version("test-skill", 2, "Updated", created_by="agent")
+    # Create skill directory with SKILL.md
+    skill_dir = tmp_path / "test-skill"
+    skill_dir.mkdir()
+    (skill_dir / "SKILL.md").write_text("# Initial version")
+
+    await mgr.register_skill("test-skill", source="shared", owner_id="", path=str(skill_dir))
+
+    # Create version 1 directory
+    v1_dir = tmp_path / "test-skill@v1"
+    v1_dir.mkdir()
+    (v1_dir / "SKILL.md").write_text("# Version 1")
+    await mgr.record_version("test-skill", 1, path=str(v1_dir), change_summary="Initial", created_by="upload")
+
+    # Create version 2 directory
+    v2_dir = tmp_path / "test-skill@v2"
+    v2_dir.mkdir()
+    (v2_dir / "SKILL.md").write_text("# Version 2")
+    await mgr.record_version("test-skill", 2, path=str(v2_dir), change_summary="Updated", created_by="agent")
+
     versions = await mgr.list_versions("test-skill")
     assert len(versions) == 2
     assert versions[0]["version_number"] == 2
+
     result = await mgr.activate_version("test-skill", 2)
     assert result is not None
     assert result["activated"] is True
+    assert (skill_dir / "SKILL.md").read_text() == "# Version 2"
     skill = await mgr.get_skill("test-skill")
     assert skill["version"] == "v2"
 ```
