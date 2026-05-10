@@ -77,11 +77,11 @@ export default function SkillsPanel({ authToken, userId, userRole, onClose, embe
     }
   }, [api, fetchSkills, tab])
 
-  const handlePromote = useCallback(async (name: string) => {
+  const handlePromote = useCallback(async (name: string, owner: string) => {
     if (!confirm(`Promote "${name}" to shared? This makes it available to all users.`)) return
     setPromoting(name)
     try {
-      await api.promote(name)
+      await api.promote(name, owner)
       await fetchSkills()
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to promote skill')
@@ -184,7 +184,7 @@ interface SkillListProps {
   isPersonal: boolean
   onDelete: (name: string) => void
   onView: (skill: Skill) => void
-  onPromote: (name: string) => void
+  onPromote: (name: string, owner: string) => void
   promoting: string | null
 }
 
@@ -205,7 +205,7 @@ function SkillList({ skills, isPersonal, onDelete, onView, onPromote, promoting 
               <button className="skill-view-btn" onClick={() => onView(skill)} type="button">View</button>
             )}
             {isPersonal && skill.valid && (
-              <button className="skill-promote-btn" onClick={() => onPromote(skill.name)} type="button" disabled={promoting === skill.name}>
+              <button className="skill-promote-btn" onClick={() => onPromote(skill.name, skill.owner)} type="button" disabled={promoting === skill.name}>
                 {promoting === skill.name ? 'Promoting...' : 'Promote'}
               </button>
             )}

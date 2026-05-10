@@ -47,8 +47,8 @@ export function useSkillsApi(authToken: string | null, userId: string) {
       })
       return handleUploadResponse(resp)
     },
-    promote: (name: string): Promise<{ status: string; skill_name: string; message: string }> =>
-      fetchJSON(`/api/users/${userId}/skills/${encodeURIComponent(name)}/promote`, { method: 'POST' }),
+    promote: (name: string, owner: string): Promise<{ status: string; skill_name: string; message: string }> =>
+      fetchJSON(`/api/users/${encodeURIComponent(owner)}/skills/${encodeURIComponent(name)}/promote`, { method: 'POST' }),
     downloadSkill: async (source: 'shared' | 'personal', skillName: string, owner?: string): Promise<void> => {
       const params = new URLSearchParams()
       if (owner) params.set('owner', owner)

@@ -76,11 +76,11 @@ export default function SkillsPage({ authToken, userId, userRole, onBack }: Skil
     }
   }, [api, fetchSkills, tab])
 
-  const handlePromote = useCallback(async (name: string) => {
+  const handlePromote = useCallback(async (name: string, owner: string) => {
     if (!confirm(t('skills.confirmPromote', { name }))) return
     setPromoting(name)
     try {
-      await api.promote(name)
+      await api.promote(name, owner)
       await fetchSkills()
     } catch (e) {
       setError(e instanceof Error ? e.message : t('skills.promoteFailed'))
@@ -175,7 +175,7 @@ export default function SkillsPage({ authToken, userId, userRole, onBack }: Skil
                   <button className="skill-view-btn" onClick={() => setViewingSkill(skill)} type="button">{t('common.view')}</button>
                 )}
                 {isAdmin && isPersonal && skill.valid && (
-                  <button className="skill-promote-btn" onClick={() => handlePromote(skill.name)} type="button" disabled={promoting === skill.name}>
+                  <button className="skill-promote-btn" onClick={() => handlePromote(skill.name, skill.owner)} type="button" disabled={promoting === skill.name}>
                     {promoting === skill.name ? t('common.promoting') : t('common.promote')}
                   </button>
                 )}
