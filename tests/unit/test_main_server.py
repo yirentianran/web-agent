@@ -47,6 +47,12 @@ from fastapi.testclient import TestClient
 
 import main_server
 
+# Override auth enforcement (load_dotenv in main_server reads .env which sets ENFORCE_AUTH=true)
+import src.auth
+import src.admin_auth
+src.auth.ENFORCE_AUTH = False
+src.admin_auth.ENFORCE_AUTH = False
+
 
 @pytest.fixture(autouse=True)
 def _patch_data_root(tmp_path: Path) -> None:
@@ -602,6 +608,48 @@ class TestSkillsAPI:
         resp = client.get("/api/users/alice/skills")
         skills = resp.json()
         assert not any(s["name"] == "to-delete" for s in skills)
+
+
+class TestSkillDownload:
+    def test_download_personal_skill_as_owner(self, client: TestClient) -> None:
+        """Owner can download their own personal skill."""
+        skill_dir = main_server.DATA_ROOT / "users" / "alice" / "workspace" / ".claude" / "skills" / "download-test"
+        skill_dir.mkdir(parents=True, exist_ok=True)
+        (skill_dir / "SKILL.md").write_text("# Test")
+        (skill_dir / "skill-meta.json").write_text('{"created_at": "", "source": "upload", "owner": "alice"}')
+        resp = client.get("/api/skills/download/personal/download-test?owner=alice")
+        assert resp.status_code == 200
+        assert resp.headers["content-type"] == "application/zip"
+
+    def test_download_shared_skill(self, client: TestClient) -> None:
+        """Admin (dev mode) can download shared skills."""
+        import zipfile as zf_module
+        from io import BytesIO
+
+        shared_dir = main_server.DATA_ROOT / "shared-skills" / "test-shared-skill"
+        shared_dir.mkdir(parents=True, exist_ok=True)
+        (shared_dir / "SKILL.md").write_text("# Shared Skill")
+        (shared_dir / "skill-meta.json").write_text('{"created_at": "", "source": "upload", "owner": "admin"}')
+        resp = client.get("/api/skills/download/shared/test-shared-skill")
+        assert resp.status_code == 200
+        assert resp.headers["content-type"] == "application/zip"
+        buf = BytesIO(resp.content)
+        with zf_module.ZipFile(buf) as zf:
+            names = zf.namelist()
+            assert any("SKILL.md" in n for n in names)
+
+    def test_download_nonexistent_skill(self, client: TestClient) -> None:
+        resp = client.get("/api/skills/download/personal/no-such-skill?owner=alice")
+        assert resp.status_code == 404
+
+    def test_download_invalid_source(self, client: TestClient) -> None:
+        resp = client.get("/api/skills/download/invalid/skill?owner=alice")
+        assert resp.status_code == 400
+
+    def test_download_personal_skill_missing_owner(self, client: TestClient) -> None:
+        """Personal skill download requires owner param."""
+        resp = client.get("/api/skills/download/personal/some-skill")
+        assert resp.status_code == 400
 
 
 # ── Memory API ─────────────────────────────────────────────────────
