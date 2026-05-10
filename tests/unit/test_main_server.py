@@ -2025,6 +2025,9 @@ class TestStreamingOutput:
 # ── Safe WebSocket Send ──────────────────────────────────────────
 
 
+from starlette.websockets import WebSocketState
+
+
 class TestSafeWsSend:
     """_safe_ws_send() should catch RuntimeError from closed WebSocket
     connections and return False instead of crashing the subscribe loop."""
@@ -2033,6 +2036,7 @@ class TestSafeWsSend:
     async def test_returns_false_on_runtime_error(self) -> None:
         """When WebSocket is closed, _safe_ws_send returns False without raising."""
         mock_ws = MagicMock()
+        mock_ws.client_state = WebSocketState.CONNECTED
         mock_ws.send_text = AsyncMock(
             side_effect=RuntimeError(
                 "Unexpected ASGI message 'websocket.send', after sending 'websocket.close'"
@@ -2047,6 +2051,7 @@ class TestSafeWsSend:
     async def test_returns_true_on_success(self) -> None:
         """When WebSocket is open, _safe_ws_send returns True."""
         mock_ws = MagicMock()
+        mock_ws.client_state = WebSocketState.CONNECTED
         mock_ws.send_text = AsyncMock()
 
         result = await _safe_ws_send(mock_ws, {"type": "heartbeat", "data": "test"})
@@ -2056,18 +2061,21 @@ class TestSafeWsSend:
         assert '"type": "heartbeat"' in call_arg or '"type":"heartbeat"' in call_arg
 
     @pytest.mark.asyncio
-    async def test_returns_false_on_generic_exception(self) -> None:
-        """Any unexpected exception should return False without propagating."""
+    async def test_returns_false_when_disconnected(self) -> None:
+        """When WebSocket is already disconnected, _safe_ws_send returns False without attempting send."""
         mock_ws = MagicMock()
-        mock_ws.send_text = AsyncMock(side_effect=ConnectionError("lost connection"))
+        mock_ws.client_state = WebSocketState.DISCONNECTED
+        mock_ws.send_text = AsyncMock()
 
-        result = await _safe_ws_send(mock_ws, {"type": "ping"})
+        result = await _safe_ws_send(mock_ws, {"type": "heartbeat"})
         assert result is False
+        mock_ws.send_text.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_reraises_cancelled_error(self) -> None:
         """asyncio.CancelledError must propagate — do not swallow it."""
         mock_ws = MagicMock()
+        mock_ws.client_state = WebSocketState.CONNECTED
         mock_ws.send_text = AsyncMock(side_effect=asyncio.CancelledError())
 
         with pytest.raises(asyncio.CancelledError):

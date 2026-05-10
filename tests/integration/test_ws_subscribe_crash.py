@@ -10,6 +10,9 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 
+from starlette.websockets import WebSocketState
+
+
 class TestWsSubscribeCrash:
     """When the WebSocket closes while the agent task runs, the subscribe
     loop should exit gracefully without crashing, and the agent task should
@@ -21,6 +24,7 @@ class TestWsSubscribeCrash:
         from main_server import _safe_ws_send
 
         mock_ws = MagicMock()
+        mock_ws.client_state = WebSocketState.CONNECTED
         mock_ws.send_text = AsyncMock(
             side_effect=RuntimeError("websocket.send after websocket.close")
         )
@@ -34,6 +38,7 @@ class TestWsSubscribeCrash:
         from main_server import _safe_ws_send
 
         mock_ws = MagicMock()
+        mock_ws.client_state = WebSocketState.CONNECTED
         mock_ws.send_text = AsyncMock()
 
         result = await _safe_ws_send(mock_ws, {"type": "heartbeat", "data": "test"})
@@ -46,6 +51,7 @@ class TestWsSubscribeCrash:
         from main_server import _safe_ws_send
 
         mock_ws = MagicMock()
+        mock_ws.client_state = WebSocketState.CONNECTED
         mock_ws.send_text = AsyncMock(side_effect=asyncio.CancelledError())
 
         with pytest.raises(asyncio.CancelledError):
@@ -57,7 +63,21 @@ class TestWsSubscribeCrash:
         from main_server import _safe_ws_send
 
         mock_ws = MagicMock()
+        mock_ws.client_state = WebSocketState.CONNECTED
         mock_ws.send_text = AsyncMock(side_effect=ValueError("something went wrong"))
 
         result = await _safe_ws_send(mock_ws, {"type": "heartbeat"})
         assert result is False
+
+    @pytest.mark.anyio
+    async def test_safe_ws_send_returns_false_when_disconnected(self):
+        """_safe_ws_send returns False without attempting send when already disconnected."""
+        from main_server import _safe_ws_send
+
+        mock_ws = MagicMock()
+        mock_ws.client_state = WebSocketState.DISCONNECTED
+        mock_ws.send_text = AsyncMock()
+
+        result = await _safe_ws_send(mock_ws, {"type": "heartbeat"})
+        assert result is False
+        mock_ws.send_text.assert_not_called()
