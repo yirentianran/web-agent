@@ -158,7 +158,7 @@ const InputBar = forwardRef<InputBarHandle, InputBarProps>(
           // Upload had failures — don't send, let user retry or remove
           return
         }
-        const refFiles = fileMeta.length > 0 ? fileMeta.map(f => f.stored_name) : fileObjs.map(f => f.name)
+        const refFiles = fileMeta.length > 0 ? fileMeta.map(f => f.filename) : fileObjs.map(f => f.name)
         let messageContent = trimmed
         if (refFiles.length > 0 && trimmed) {
           const refs = refFiles.map(name => `@${name}`).join(' ')
@@ -173,10 +173,10 @@ const InputBar = forwardRef<InputBarHandle, InputBarProps>(
 
       // All files already uploaded
       const fileMeta = uploadedWithStored
-        .map(f => ({ stored_name: f.storedName!, size: f.storedSize ?? f.file.size }))
+        .map(f => ({ stored_name: f.storedName!, filename: f.file.name, size: f.storedSize ?? f.file.size }))
         .filter(f => f.stored_name)
       const uploadedFileObjects = attachedFiles.map(f => f.file)
-      const refFiles = fileMeta.length > 0 ? fileMeta.map(f => f.stored_name) : uploadedFileObjects.map(f => f.name)
+      const refFiles = fileMeta.length > 0 ? fileMeta.map(f => f.filename) : uploadedFileObjects.map(f => f.name)
       let messageContent = trimmed
       if (refFiles.length > 0 && trimmed) {
         const refs = refFiles.map(name => `@${name}`).join(' ')

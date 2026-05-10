@@ -1273,7 +1273,7 @@ function MainApp() {
 
 
   const handleSend = useCallback(
-    async (message: string, files?: File[], fileMeta?: Array<{stored_name: string; size: number}>) => {
+    async (message: string, files?: File[], fileMeta?: Array<{stored_name: string; filename: string; size: number}>) => {
       let sessionId = urlSessionIdRef.current;
 
       // Auto-create session if none exists

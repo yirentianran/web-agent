@@ -41,7 +41,7 @@ describe('InputBar - IME composition', () => {
     fireEvent.change(textarea, { target: { value: 'hello' } })
     textarea.dispatchEvent(createKeyEvent('Enter'))
 
-    expect(onSend).toHaveBeenCalledWith('hello', undefined)
+    expect(onSend).toHaveBeenCalledWith('hello', [], undefined)
   })
 
   it('does NOT send message on Enter during IME composition', () => {
@@ -179,7 +179,7 @@ describe('InputBar - file upload on send', () => {
     })
 
     // Set up successful mock BEFORE clicking retry
-    mockFetch.mockResolvedValueOnce({ ok: true })
+    mockFetch.mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ stored_name: 'abc123__report.xlsx', size: 4 }) })
 
     // Click retry — this triggers upload which will hit the success mock
     fireEvent.click(screen.getByLabelText(/retry.*report\.xlsx/i))
@@ -197,7 +197,7 @@ describe('InputBar - file upload on send', () => {
     fireEvent.submit(document.querySelector('form')!)
 
     await waitFor(() => {
-      expect(onSend).toHaveBeenCalledWith('@report.xlsx summarize', [file])
+      expect(onSend).toHaveBeenCalledWith('@report.xlsx summarize', [file], [{ stored_name: 'abc123__report.xlsx', filename: 'report.xlsx', size: 4 }])
     })
   })
 
@@ -229,7 +229,7 @@ describe('InputBar - file upload on send', () => {
     fireEvent.submit(document.querySelector('form')!)
 
     await waitFor(() => {
-      expect(onSend).toHaveBeenCalledWith('hello', undefined)
+      expect(onSend).toHaveBeenCalledWith('hello', [], undefined)
     })
   })
 })

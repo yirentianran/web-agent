@@ -250,14 +250,33 @@ function FileGroup({
                     {formatTime(f.modified_at)}
                   </span>
                 )}
-                <a
+                <button
+                  type="button"
                   className="sfp-item-dl"
-                  href={f.download_url ? `${f.download_url}?token=${encodeURIComponent(authToken || '')}` : `/api/users/${userId}/download/${encodeURIComponent(f.path)}?token=${encodeURIComponent(authToken || '')}`}
-                  download
+                  onClick={async () => {
+                    try {
+                      const dlUrl = f.download_url || `/api/users/${userId}/download/${encodeURIComponent(f.path)}`
+                      const fetchHeaders: Record<string, string> = {}
+                      if (authToken) fetchHeaders['Authorization'] = `Bearer ${authToken}`
+                      const response = await fetch(dlUrl, { headers: fetchHeaders })
+                      if (!response.ok) throw new Error(`HTTP ${response.status}`)
+                      const blob = await response.blob()
+                      const url = window.URL.createObjectURL(blob)
+                      const a = document.createElement('a')
+                      a.href = url
+                      a.download = f.filename
+                      document.body.appendChild(a)
+                      a.click()
+                      document.body.removeChild(a)
+                      window.URL.revokeObjectURL(url)
+                    } catch (e) {
+                      alert(e instanceof Error ? e.message : 'Download failed')
+                    }
+                  }}
                   title={t('common.download')}
                 >
                   &#8595;
-                </a>
+                </button>
                 <button
                   className="sfp-item-del"
                   onClick={() => onDelete(f)}

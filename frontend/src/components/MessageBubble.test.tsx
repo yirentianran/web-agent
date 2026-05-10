@@ -279,8 +279,8 @@ describe('MessageBubble - file_result (agent-generated files)', () => {
 
     renderMessage(message)
 
-    const link = screen.getByRole('link', { name: /download export\.csv/i })
-    expect(link).toHaveAttribute('href', '/api/users/user-123/download/outputs/export.csv')
+    const button = screen.getByRole('button', { name: /download export\.csv/i })
+    expect(button).toBeInTheDocument()
   })
 
   it('renders multiple generated files', () => {

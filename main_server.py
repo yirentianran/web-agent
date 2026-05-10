@@ -688,9 +688,14 @@ def _scan_workspace_for_generated_files(
         return start_time - 2 <= mtime <= task_end + 5
 
     def _process_file(file_path: Path, display_name: str) -> None:
-        """Rename file to unique physical name, record in DB and file list."""
-        if display_name in seen_filenames:
-            return
+        """Rename file to unique physical name, record in DB and file list.
+
+        When *display_name* is already in *seen_filenames* (e.g. the file was
+        tracked by Write tool events), the file is still renamed and inserted
+        into the database, but the existing entry is updated in-place instead
+        of appending a duplicate.
+        """
+        already_tracked = display_name in seen_filenames
         stored_name = _generate_stored_name(display_name)
         dest = file_path.parent / stored_name
         try:
@@ -705,15 +710,24 @@ def _scan_workspace_for_generated_files(
         generated_at = datetime.fromtimestamp(st.st_mtime, tz=UTC).isoformat()
         download_url = build_download_url(user_id, rel_stored)
 
-        existing_files.append(
-            {
-                "filename": display_name,
-                "stored_name": stored_name,
-                "size": file_size,
-                "generated_at": generated_at,
-                "download_url": download_url,
-            }
-        )
+        if already_tracked:
+            for entry in existing_files:
+                if entry["filename"] == display_name:
+                    entry["stored_name"] = stored_name
+                    entry["size"] = file_size
+                    entry["generated_at"] = generated_at
+                    entry["download_url"] = download_url
+                    break
+        else:
+            existing_files.append(
+                {
+                    "filename": display_name,
+                    "stored_name": stored_name,
+                    "size": file_size,
+                    "generated_at": generated_at,
+                    "download_url": download_url,
+                }
+            )
         _insert_generated_file(user_id, session_id, display_name, stored_name, file_size, rel_stored)
 
     # 1. Scan outputs/ recursively
