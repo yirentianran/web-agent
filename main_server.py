@@ -2556,6 +2556,11 @@ async def run_agent_task_container(
 async def _safe_ws_send(websocket: WebSocket, data: dict) -> bool:
     """Send a JSON message over WebSocket, returning False if the connection
     is already closed. Prevents RuntimeError from crashing the subscribe loop."""
+    # Layer 3: Filter sensitive content before sending to user.
+    if data.get("type") in ("assistant", "tool_result") and data.get("content"):
+        from src.security_filter import OutputFilter
+
+        data = {**data, "content": OutputFilter.scan(data["content"])}
     # Check client_state first to avoid sending on a closed connection.
     # This prevents the "Unexpected ASGI message 'websocket.send'" error
     # that occurs when the WebSocket is closed during agent task cleanup.
