@@ -49,6 +49,31 @@ export function useSkillsApi(authToken: string | null, userId: string) {
     },
     promote: (name: string): Promise<{ status: string; skill_name: string; message: string }> =>
       fetchJSON(`/api/users/${userId}/skills/${encodeURIComponent(name)}/promote`, { method: 'POST' }),
+    downloadSkill: async (source: 'shared' | 'personal', skillName: string, owner?: string): Promise<void> => {
+      const params = new URLSearchParams()
+      if (owner) params.set('owner', owner)
+
+      const url = `/api/skills/download/${source}/${encodeURIComponent(skillName)}?${params}`
+
+      const response = await fetch(url, {
+        headers: { Authorization: `Bearer ${authToken}` },
+      })
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ error: 'Download failed' }))
+        throw new Error(error.error || 'Download failed')
+      }
+
+      const blob = await response.blob()
+      const downloadUrl = window.URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = downloadUrl
+      a.download = `${skillName}.zip`
+      document.body.appendChild(a)
+      a.click()
+      document.body.removeChild(a)
+      window.URL.revokeObjectURL(downloadUrl)
+    },
   }), [userId, fetchJSON])
 }
 

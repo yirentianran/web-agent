@@ -67,6 +67,7 @@ type SkillSource = 'shared' | 'personal'
 export interface Skill {
   name: string
   source: SkillSource
+  owner: string
   description: string
   content: string
   path: string
