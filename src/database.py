@@ -190,6 +190,58 @@ CREATE TABLE IF NOT EXISTS generated_files (
 CREATE INDEX IF NOT EXISTS idx_generated_files_user ON generated_files(user_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_generated_files_session ON generated_files(session_id);
 CREATE INDEX IF NOT EXISTS idx_generated_files_user_stored_name ON generated_files(user_id, stored_name);
+
+-- Skills registry
+CREATE TABLE IF NOT EXISTS skills (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    skill_name  TEXT NOT NULL UNIQUE,
+    source      TEXT NOT NULL DEFAULT 'personal',
+    owner_id    TEXT NOT NULL DEFAULT '',
+    description TEXT NOT NULL DEFAULT '',
+    category    TEXT NOT NULL DEFAULT '',
+    tags        TEXT NOT NULL DEFAULT '[]',
+    status      TEXT NOT NULL DEFAULT 'active',
+    version     TEXT NOT NULL DEFAULT '',
+    path        TEXT NOT NULL DEFAULT '',
+    created_at  REAL NOT NULL DEFAULT (strftime('%s', 'now')),
+    updated_at  REAL NOT NULL DEFAULT (strftime('%s', 'now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_skills_source ON skills(source);
+CREATE INDEX IF NOT EXISTS idx_skills_owner ON skills(owner_id);
+CREATE INDEX IF NOT EXISTS idx_skills_category ON skills(category);
+CREATE INDEX IF NOT EXISTS idx_skills_status ON skills(status);
+
+-- Skill usage tracking
+CREATE TABLE IF NOT EXISTS skill_usage (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    skill_name     TEXT NOT NULL REFERENCES skills(skill_name),
+    user_id        TEXT NOT NULL DEFAULT '',
+    session_id     TEXT NOT NULL DEFAULT '',
+    version_number INTEGER NOT NULL DEFAULT 0,
+    action         TEXT NOT NULL DEFAULT 'use',
+    created_at     REAL NOT NULL DEFAULT (strftime('%s', 'now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_usage_skill ON skill_usage(skill_name, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_usage_user ON skill_usage(user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_usage_session ON skill_usage(session_id);
+
+-- Skill version metadata
+CREATE TABLE IF NOT EXISTS skill_versions (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    skill_name     TEXT NOT NULL REFERENCES skills(skill_name),
+    version_number INTEGER NOT NULL,
+    path           TEXT NOT NULL DEFAULT '',
+    change_summary TEXT NOT NULL DEFAULT '',
+    status         TEXT NOT NULL DEFAULT 'pending',
+    created_by     TEXT NOT NULL DEFAULT 'user',
+    file_count     INTEGER NOT NULL DEFAULT 1,
+    created_at     REAL NOT NULL DEFAULT (strftime('%s', 'now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_versions_skill ON skill_versions(skill_name, version_number DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_versions_unique ON skill_versions(skill_name, version_number);
 """
 
 
