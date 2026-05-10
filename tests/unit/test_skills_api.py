@@ -184,3 +184,17 @@ async def test_record_usage_with_bad_data(db, client):
     await mgr.record_usage("test-skill", version_number=-1, action="invalid")
     stats = await mgr.get_usage_stats("test-skill")
     assert stats["total_uses"] == 1
+
+
+@pytest.mark.asyncio
+async def test_analytics_includes_usage(db, client):
+    """GET /api/skills/{name}/analytics includes usage data."""
+    mgr = main_server._skill_manager
+    await mgr.register_skill("test-skill", source="shared", owner_id="")
+    await mgr.record_usage("test-skill", user_id="u1", action="load")
+    await mgr.record_usage("test-skill", user_id="u2", action="use")
+    resp = client.get("/api/skills/test-skill/analytics")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["total_uses"] == 2
+    assert data["unique_users"] == 2

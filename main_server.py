@@ -4619,31 +4619,51 @@ async def get_skill_analytics(
     skill_name: str,
     current_user: str = Depends(get_current_user),
 ) -> dict[str, Any]:
-    """Get aggregated analytics for a skill."""
+    """Get aggregated analytics for a skill (feedback + usage)."""
+    result: dict[str, Any] = {}
     if _db is not None:
         from src.skill_feedback import DBSkillFeedbackManager
-
         mgr = DBSkillFeedbackManager(db=_db)
-        return await mgr.get_analytics(skill_name)
+        result = await mgr.get_analytics(skill_name)
 
-    from src.skill_feedback import SkillFeedbackManager
+    # Add usage data if SkillManager is available
+    if _skill_manager is not None:
+        try:
+            usage_data = await _skill_manager.get_usage_stats(skill_name)
+            result.update(usage_data)
+        except Exception:
+            pass  # Usage data is optional
 
-    mgr = SkillFeedbackManager()
-    return mgr.get_analytics(skill_name)
+    if not result:
+        from src.skill_feedback import SkillFeedbackManager
+        mgr = SkillFeedbackManager()
+        result = mgr.get_analytics(skill_name)
+
+    return result
 
 
 @app.get("/api/admin/skills/analytics")
 async def get_all_skills_analytics(
     current_user: str = Depends(require_admin),
-) -> dict[str, dict[str, Any]]:
-    """Get analytics for all skills."""
+) -> dict[str, Any]:
+    """Get analytics for all skills (feedback + usage)."""
+    result: dict[str, Any] = {}
     if _db is not None:
         from src.skill_feedback import DBSkillFeedbackManager
+        result = await DBSkillFeedbackManager(db=_db).get_all_analytics()
 
-        return await DBSkillFeedbackManager(db=_db).get_all_analytics()
-    from src.skill_feedback import SkillFeedbackManager
+    # Add top-used skills if SkillManager is available
+    if _skill_manager is not None:
+        try:
+            result["top_used_skills"] = await _skill_manager.get_top_skills(limit=10)
+        except Exception:
+            pass
 
-    return SkillFeedbackManager().get_all_analytics()
+    if not result:
+        from src.skill_feedback import SkillFeedbackManager
+        result = SkillFeedbackManager().get_all_analytics()
+
+    return result
 
 
 @app.get("/api/skills/{skill_name}/suggestions")
