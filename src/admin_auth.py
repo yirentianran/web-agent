@@ -69,3 +69,17 @@ def require_admin(authorization: str | None = Header(None)) -> str:
             headers={"WWW-Authenticate": "Bearer"},
         )
     return user_id
+
+
+def is_admin_request(authorization: str | None = None) -> bool:
+    """Return True if the request carries a valid admin JWT. Never raises."""
+    if not ENFORCE_AUTH:
+        return True
+    if not authorization or not authorization.startswith("Bearer "):
+        return False
+    token = authorization.split(" ", 1)[1]
+    try:
+        payload = jwt.decode(token, JWT_SECRET, algorithms=[ALGORITHM])
+        return payload.get("role") == "admin"
+    except Exception:
+        return False

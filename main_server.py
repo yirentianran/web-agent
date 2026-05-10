@@ -3884,43 +3884,57 @@ def _read_skill_meta(skill_dir: Path) -> tuple[str, str, str]:
 async def list_user_skills(
     user_id: str,
     current_user: str = Depends(get_current_user),
+    authorization: str | None = Header(None),
 ) -> list[SkillInfo]:
-    """List personal skills for a user (real directories only, not symlinks).
+    """List personal skills.
 
-    Shared skills are served separately via /api/shared-skills.
+    Admin callers see all users' skills; regular callers see only their own.
     """
-    verify_path_user(user_id, current_user)
-    skills_dir = user_workspace_dir(user_id) / ".claude" / "skills"
-    if not skills_dir.exists():
-        return []
-    results = []
-    for d in sorted(skills_dir.iterdir()):
-        if not d.is_dir() or d.is_symlink() or (d / ".shared_skill_source").exists():
-            continue  # skip symlinks and Windows-copied shared skills
-        skill_file = d / "SKILL.md"
-        created_at, created_by, owner = _read_skill_meta(d)
-        if skill_file.exists():
-            content = skill_file.read_text()
-            frontmatter = parse_skill_frontmatter(content)
-            description = frontmatter.get("description") or ""
-            valid = True
-        else:
-            content = ""
-            description = "⚠ SKILL.md missing — this skill is invalid"
-            valid = False
-        results.append(
-            SkillInfo(
-                name=d.name,
-                source=SkillSource.PERSONAL,
-                content=content,
-                description=description,
-                path=str(d),
-                created_at=created_at,
-                created_by=created_by,
-                owner=owner,
-                valid=valid,
+    from src.admin_auth import is_admin_request
+
+    admin = is_admin_request(authorization)
+
+    # Cross-user access check: non-admin accessing another user's skills
+    if not admin and current_user != user_id:
+        return JSONResponse({"error": "forbidden"}, status_code=403)
+
+    skills_dir = DATA_ROOT / "users"
+
+    # Build list of (dir, owner_id) pairs to scan
+    if admin:
+        user_dirs: list[tuple[Path, str]] = []
+        if skills_dir.exists():
+            for d in sorted(skills_dir.iterdir()):
+                if d.is_dir():
+                    user_dirs.append((d, d.name))
+    else:
+        user_dirs = [(skills_dir / user_id, user_id)]
+
+    results: list[SkillInfo] = []
+    for user_dir, owner_id in user_dirs:
+        skill_base = user_dir / "workspace" / ".claude" / "skills"
+        if not skill_base.exists():
+            continue
+        for d in sorted(skill_base.iterdir()):
+            if not d.is_dir() or d.is_symlink():
+                continue
+            skill_md = d / "SKILL.md"
+            if not skill_md.exists():
+                continue
+            created_at, created_by, owner = _read_skill_meta(d)
+            results.append(
+                SkillInfo(
+                    name=d.name,
+                    source=SkillSource.PERSONAL,
+                    owner=owner,
+                    description="",
+                    content=skill_md.read_text(),
+                    path=str(d),
+                    created_at=created_at,
+                    created_by=created_by,
+                    valid=True,
+                )
             )
-        )
     return results
 
 
