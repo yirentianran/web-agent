@@ -97,7 +97,10 @@ export default function SkillsPage({ authToken, userId, userRole, onBack }: Skil
 
   const handleDownload = useCallback(async (skill: Skill) => {
     try {
-      await api.downloadSkill(skill.source, skill.name, skill.owner || undefined)
+      const owner = skill.source === 'personal'
+        ? (skill.owner || userId)
+        : skill.owner
+      await api.downloadSkill(skill.source, skill.name, owner)
     } catch (e) {
       setError(e instanceof Error ? e.message : t('skills.downloadFailed'))
     }
