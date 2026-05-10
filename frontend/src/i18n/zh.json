@@ -211,7 +211,9 @@
     "loadFailed": "加载技能失败",
     "uploadFailed": "上传技能失败",
     "deleteFailed": "删除技能失败",
-    "promoteFailed": "推广技能失败"
+    "promoteFailed": "推广技能失败",
+    "download": "下载",
+    "downloadFailed": "下载技能失败"
   },
   "memory": {
     "title": "记忆管理",

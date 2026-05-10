@@ -95,6 +95,14 @@ export default function SkillsPage({ authToken, userId, userRole, onBack }: Skil
     e.target.value = ''
   }
 
+  const handleDownload = useCallback(async (skill: Skill) => {
+    try {
+      await api.downloadSkill(skill.source, skill.name, skill.owner || undefined)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : t('skills.downloadFailed'))
+    }
+  }, [api, t])
+
   const skills = tab === 'shared' ? sharedSkills : personalSkills
   const isPersonal = tab === 'personal'
 
@@ -157,6 +165,7 @@ export default function SkillsPage({ authToken, userId, userRole, onBack }: Skil
               </div>
               <div className="skill-meta">{skill.description}</div>
               <div className="skill-actions">
+                <button className="skill-download-btn" onClick={() => handleDownload(skill)} type="button">{t('skills.download')}</button>
                 {skill.valid && (
                   <button className="skill-view-btn" onClick={() => setViewingSkill(skill)} type="button">{t('common.view')}</button>
                 )}

@@ -211,7 +211,9 @@
     "loadFailed": "Failed to load skills",
     "uploadFailed": "Failed to upload skill",
     "deleteFailed": "Failed to delete skill",
-    "promoteFailed": "Failed to promote skill"
+    "promoteFailed": "Failed to promote skill",
+    "download": "Download",
+    "downloadFailed": "Failed to download skill"
   },
   "memory": {
     "title": "Memory Management",

@@ -3413,7 +3413,8 @@ body {
 
 .skill-view-btn,
 .skill-delete-btn,
-.skill-promote-btn {
+.skill-promote-btn,
+.skill-download-btn {
   padding: 4px 10px;
   border: 1px solid var(--color-btn-border);
   border-radius: 4px;
@@ -3422,6 +3423,11 @@ body {
   background: transparent;
   color: var(--color-btn-text);
   transition: all 0.15s ease;
+}
+
+.skill-download-btn:hover {
+  border-color: var(--color-btn-view-hover-border);
+  color: var(--color-primary);
 }
 
 .skill-view-btn:hover {
