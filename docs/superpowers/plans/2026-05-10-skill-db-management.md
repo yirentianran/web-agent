@@ -74,6 +74,7 @@ CREATE TABLE IF NOT EXISTS skills (
     tags        TEXT NOT NULL DEFAULT '[]',
     status      TEXT NOT NULL DEFAULT 'active',
     version     TEXT NOT NULL DEFAULT '',
+    path        TEXT NOT NULL DEFAULT '',
     created_at  REAL NOT NULL DEFAULT (strftime('%s', 'now')),
     updated_at  REAL NOT NULL DEFAULT (strftime('%s', 'now'))
 );
@@ -103,6 +104,7 @@ CREATE TABLE IF NOT EXISTS skill_versions (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,
     skill_name     TEXT NOT NULL REFERENCES skills(skill_name),
     version_number INTEGER NOT NULL,
+    path           TEXT NOT NULL DEFAULT '',
     change_summary TEXT NOT NULL DEFAULT '',
     status         TEXT NOT NULL DEFAULT 'pending',
     created_by     TEXT NOT NULL DEFAULT 'user',
@@ -150,18 +152,19 @@ class SkillManager:
         description: str = "",
         category: str = "",
         tags: list[str] | None = None,
+        path: str = "",
     ) -> None:
         """Register a skill. Idempotent — ON CONFLICT updates metadata."""
         tags_json = json.dumps(tags or [])
         async with self.db.connection() as conn:
             await conn.execute(
-                """INSERT INTO skills (skill_name, source, owner_id, description, category, tags)
-                   VALUES (?, ?, ?, ?, ?, ?)
+                """INSERT INTO skills (skill_name, source, owner_id, description, category, tags, path)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(skill_name) DO UPDATE SET
                        source=excluded.source, owner_id=excluded.owner_id,
                        description=excluded.description, category=excluded.category,
-                       tags=excluded.tags, updated_at=strftime('%s', 'now')""",
-                (skill_name, source, owner_id, description, category, tags_json),
+                       tags=excluded.tags, path=excluded.path, updated_at=strftime('%s', 'now')""",
+                (skill_name, source, owner_id, description, category, tags_json, path),
             )
             await conn.commit()
 
@@ -350,49 +353,125 @@ class SkillManager:
         self,
         skill_name: str,
         version_number: int,
+        path: str,
         change_summary: str = "",
         created_by: str = "user",
         file_count: int = 1,
     ) -> None:
-        """Record a new skill version."""
+        """Record a new skill version with its directory path."""
         async with self.db.connection() as conn:
             await conn.execute(
                 "INSERT OR REPLACE INTO skill_versions "
-                "(skill_name, version_number, change_summary, created_by, file_count) "
-                "VALUES (?, ?, ?, ?, ?)",
-                (skill_name, version_number, change_summary, created_by, file_count),
+                "(skill_name, version_number, path, change_summary, created_by, file_count) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (skill_name, version_number, path, change_summary, created_by, file_count),
             )
             await conn.commit()
 
     async def activate_version(self, skill_name: str, version_number: int) -> dict[str, Any] | None:
-        """Mark a version as active, deactivate others."""
+        """Activate a version: replace current SKILL.md with the version's content.
+
+        Version directories are flat siblings: {skill_name}@vN/
+        Activation: copy SKILL.md from version dir to main skill dir,
+        record in DB.
+        """
+        import shutil
+        from pathlib import Path
+
         async with self.db.connection() as conn:
-            # Check version exists
+            # Get version path
             cursor = await conn.execute(
-                "SELECT id FROM skill_versions WHERE skill_name = ? AND version_number = ?",
+                "SELECT path FROM skill_versions WHERE skill_name = ? AND version_number = ?",
                 (skill_name, version_number),
             )
-            if not await cursor.fetchone():
+            row = await cursor.fetchone()
+            if row is None:
                 return None
-            # Deactivate all
+            version_dir = Path(row[0])
+            if not version_dir.exists():
+                return None
+
+            # Find the skill dir (parent of this version dir)
+            # Version dirs are {parent}/{skill_name}@vN/
+            # Active dir is {parent}/{skill_name}/
+            # Extract parent dir from version path:
+            # e.g. /data/shared-skills/code-review@v2 → parent=/data/shared-skills
+            parent_dir = version_dir.parent
+            # Derive skill dir from version dir name: code-review@v2 → code-review
+            skill_dir_name = version_dir.name.rsplit("@v", 1)[0]
+            skill_dir = parent_dir / skill_dir_name
+            if not skill_dir.exists():
+                return None
+
+            # Backup current SKILL.md
+            current_file = skill_dir / "SKILL.md"
+            version_file = version_dir / "SKILL.md"
+            if current_file.exists():
+                existing_backups = list(skill_dir.glob("SKILL_backup_v*.md"))
+                next_backup = len(existing_backups) + 1
+                backup_path = skill_dir / f"SKILL_backup_v{next_backup}.md"
+                current_file.rename(backup_path)
+
+            # Copy new version into place
+            shutil.copy2(version_file, current_file)
+
+            # Deactivate all, activate target
             await conn.execute(
                 "UPDATE skill_versions SET status = 'pending' WHERE skill_name = ?",
                 (skill_name,),
             )
-            # Activate target
             await conn.execute(
                 "UPDATE skill_versions SET status = 'active' "
                 "WHERE skill_name = ? AND version_number = ?",
                 (skill_name, version_number),
             )
-            # Update skills table
             await conn.execute(
                 "UPDATE skills SET version = ?, updated_at = strftime('%s', 'now') "
                 "WHERE skill_name = ?",
                 (f"v{version_number}", skill_name),
             )
             await conn.commit()
-        return {"activated": True, "version_number": version_number}
+        return {
+            "activated": True,
+            "version_number": version_number,
+            "skill_dir": str(skill_dir),
+        }
+
+    async def rollback_version(self, skill_name: str) -> dict[str, Any] | None:
+        """Rollback to most recent backup SKILL file.
+
+        Finds SKILL_backup_vN.md files, restores the latest backup.
+        """
+        import shutil
+        from pathlib import Path
+
+        # Find the skill dir
+        async with self.db.connection() as conn:
+            cursor = await conn.execute("SELECT path FROM skills WHERE skill_name = ?", (skill_name,))
+            row = await cursor.fetchone()
+            if row is None:
+                return None
+            skill_dir = Path(row["path"])
+
+        backups = sorted(skill_dir.glob("SKILL_backup_v*.md"))
+        if not backups:
+            return None
+        latest_backup = backups[-1]
+        current_file = skill_dir / "SKILL.md"
+        if current_file.exists():
+            # Move current to a new backup
+            existing_count = len(list(skill_dir.glob("SKILL_backup_v*.md")))
+            current_file.rename(skill_dir / f"SKILL_backup_v{existing_count + 1}.md")
+        latest_backup.rename(current_file)
+
+        # Update DB status
+        async with self.db.connection() as conn:
+            await conn.execute(
+                "UPDATE skill_versions SET status = 'rolled_back' WHERE skill_name = ?",
+                (skill_name,),
+            )
+            await conn.commit()
+        return {"rolled_back": True}
 
     async def list_versions(self, skill_name: str) -> list[dict[str, Any]]:
         """List all versions for a skill."""
@@ -548,37 +627,46 @@ Append to SkillManager class:
     async def migrate_from_filesystem(self) -> dict[str, int]:
         """Scan filesystem and register all skills not yet in DB.
 
-        Returns dict with counts: {registered: N, skipped: N}
+        Also migrates legacy nested versions (SKILL_v*.md, versions/vN/)
+        to flat {skill_name}@vN/ directories.
+
+        Returns dict with counts: {registered: N, versions_migrated: N}
         """
         import os
+        import shutil
         from pathlib import Path
 
         DATA_ROOT = Path(os.environ.get("DATA_ROOT", "data")).resolve()
         registered = 0
-        skipped = 0
+        versions_migrated = 0
 
         # Scan shared skills
         shared_dir = DATA_ROOT / "shared-skills"
         if shared_dir.exists():
-            for skill_dir in sorted(shared_dir.iterdir()):
-                if not skill_dir.is_dir() or skill_dir.is_symlink():
+            for entry in sorted(shared_dir.iterdir()):
+                if not entry.is_dir() or entry.is_symlink():
                     continue
-                if not (skill_dir / "SKILL.md").exists():
+                # Skip historical version directories (@vN pattern)
+                if "@v" in entry.name:
                     continue
-                existing = await self.get_skill(skill_dir.name)
+                if not (entry / "SKILL.md").exists():
+                    continue
+                existing = await self.get_skill(entry.name)
                 if existing is not None:
-                    skipped += 1
                     continue
-                meta = self._read_skill_meta(skill_dir)
+                meta = self._read_skill_meta(entry)
                 await self.register_skill(
-                    skill_name=skill_dir.name,
+                    skill_name=entry.name,
                     source="shared",
                     owner_id=meta.get("owner", ""),
                     description=meta.get("description", ""),
                     category="",
                     tags=[],
+                    path=str(entry),
                 )
                 registered += 1
+                # Migrate legacy versions in this directory
+                versions_migrated += await self._migrate_legacy_versions(entry)
 
         # Scan personal skills
         users_dir = DATA_ROOT / "users"
@@ -589,27 +677,31 @@ Append to SkillManager class:
                 skill_base = user_dir / "workspace" / ".claude" / "skills"
                 if not skill_base.exists():
                     continue
-                for skill_dir in sorted(skill_base.iterdir()):
-                    if not skill_dir.is_dir() or skill_dir.is_symlink():
+                for entry in sorted(skill_base.iterdir()):
+                    if not entry.is_dir() or entry.is_symlink():
                         continue
-                    if not (skill_dir / "SKILL.md").exists():
+                    # Skip historical version directories
+                    if "@v" in entry.name:
                         continue
-                    existing = await self.get_skill(skill_dir.name)
+                    if not (entry / "SKILL.md").exists():
+                        continue
+                    existing = await self.get_skill(entry.name)
                     if existing is not None:
-                        skipped += 1
                         continue
-                    meta = self._read_skill_meta(skill_dir)
+                    meta = self._read_skill_meta(entry)
                     await self.register_skill(
-                        skill_name=skill_dir.name,
+                        skill_name=entry.name,
                         source="personal",
                         owner_id=user_dir.name,
                         description=meta.get("description", ""),
                         category="",
                         tags=[],
+                        path=str(entry),
                     )
                     registered += 1
+                    versions_migrated += await self._migrate_legacy_versions(entry)
 
-        return {"registered": registered, "skipped": skipped}
+        return {"registered": registered, "versions_migrated": versions_migrated}
 
     @staticmethod
     def _read_skill_meta(skill_dir: Path) -> dict[str, str]:
@@ -621,6 +713,61 @@ Append to SkillManager class:
             except (json.JSONDecodeError, OSError):
                 pass
         return {}
+
+    @staticmethod
+    async def _migrate_legacy_versions(skill_dir: Path) -> int:
+        """Migrate legacy SKILL_v*.md and versions/vN/ to flat @vN dirs.
+
+        Returns count of migrated versions.
+        """
+        import re
+
+        migrated = 0
+
+        # Legacy file-based: SKILL_v1.md, SKILL_v2.md, etc.
+        for f in sorted(skill_dir.glob("SKILL_v*.md")):
+            if not f.is_file():
+                continue
+            m = re.match(r"SKILL_v(\d+)\.md", f.name)
+            if not m:
+                continue
+            version_number = int(m.group(1))
+            version_dir = skill_dir.with_name(f"{skill_dir.name}@v{version_number}")
+            version_dir.mkdir(parents=True, exist_ok=True)
+            f.rename(version_dir / "SKILL.md")
+            migrated += 1
+
+        # Legacy directory-based: versions/v1/, versions/v2/, etc.
+        legacy_versions_dir = skill_dir / "versions"
+        if legacy_versions_dir.exists():
+            for v_dir in sorted(legacy_versions_dir.iterdir()):
+                if not v_dir.is_dir() or not v_dir.name.startswith("v"):
+                    continue
+                try:
+                    version_number = int(v_dir.name[1:])
+                except ValueError:
+                    continue
+                new_dir = skill_dir.with_name(f"{skill_dir.name}@v{version_number}")
+                if new_dir.exists():
+                    # Merge: copy files, skip conflicts
+                    for src_file in v_dir.rglob("*"):
+                        if src_file.is_file():
+                            rel = src_file.relative_to(v_dir)
+                            dest = new_dir / rel
+                            if not dest.exists():
+                                dest.parent.mkdir(parents=True, exist_ok=True)
+                                shutil.copy2(src_file, dest)
+                    shutil.rmtree(v_dir)
+                else:
+                    v_dir.rename(new_dir)
+                migrated += 1
+            # Remove versions dir if empty
+            try:
+                legacy_versions_dir.rmdir()
+            except OSError:
+                pass  # Not empty, leave as-is
+
+        return migrated
 ```
 
 - [ ] **Step 4: Add migration call to `main_server.py` startup()**
@@ -636,26 +783,47 @@ In `main_server.py`, after the existing feedback JSONL migration block (around l
             result = await skill_mgr.migrate_from_filesystem()
             if result["registered"] > 0:
                 logger.info(
-                    "Skill migration: %d registered, %d already known",
+                    "Skill migration: %d registered, %d versions migrated",
                     result["registered"],
-                    result["skipped"],
+                    result["versions_migrated"],
                 )
         except Exception:
             logger.exception("Skill DB migration failed")
 ```
 
-- [ ] **Step 5: Run test to verify it passes**
+- [ ] **Step 5: Update `load_skills()` to skip `@vN` directories**
+
+In `main_server.py`, find `load_skills()` (line ~371). Add skip filter after the existing `is_dir()` check for both shared and personal loops:
+
+```python
+# Shared skills loop (line ~382)
+if not skill_dir.is_dir() or skill_dir.is_symlink():
+    continue
+if "@v" in skill_dir.name:
+    continue  # skip historical version directories
+```
+
+```python
+# Personal skills loop (line ~399)
+if not skill_dir.is_dir() or skill_dir.is_symlink() or (skill_dir / ".shared_skill_source").exists():
+    continue
+if "@v" in skill_dir.name:
+    continue  # skip historical version directories
+```
+
+- [ ] **Step 6: Run test to verify it passes**
 
 Run: `uv run pytest tests/integration/test_skill_migration.py -v`
 Expected: PASS
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
 git add src/skill_manager.py main_server.py tests/integration/test_skill_migration.py
 git commit -m "feat: add startup migration from filesystem to skill DB
 - Add migrate_from_filesystem to scan and register all existing skills
-- Call migration in startup() after DB initialization
+- Migrate legacy nested versions to flat @vN directories
+- Update load_skills() to skip @vN version directories
 - Integration test with fake data root"
 ```
 
@@ -731,6 +899,7 @@ In `main_server.py`, find `upload_skill_files` (line ~4028). After the ZIP extra
                 source="personal",
                 owner_id=current_user,
                 description="",
+                path=str(skill_dir),
             )
         except Exception:
             logger.exception("Failed to register skill in DB: %s", skill_name)
@@ -751,6 +920,7 @@ In `main_server.py`, find `upload_shared_skill` (line ~4082). After the skill fi
                 source="shared",
                 owner_id="admin",
                 description="",
+                path=str(skill_dir),
             )
         except Exception:
             logger.exception("Failed to register shared skill in DB: %s", skill_name)
