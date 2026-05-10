@@ -3907,7 +3907,7 @@ async def list_user_skills(
     current_user: str = Depends(get_current_user),
     authorization: str | None = Header(None),
 ) -> list[SkillInfo]:
-    """List personal skills.
+    """List personal skills from the database.
 
     Admin callers see all users' skills; regular callers see only their own.
     """
@@ -3919,43 +3919,63 @@ async def list_user_skills(
     if not admin and current_user != user_id:
         return JSONResponse({"error": "forbidden"}, status_code=403)
 
-    skills_dir = DATA_ROOT / "users"
-
-    # Build list of (dir, owner_id) pairs to scan
-    if admin:
-        user_dirs: list[tuple[Path, str]] = []
-        if skills_dir.exists():
-            for d in sorted(skills_dir.iterdir()):
-                if d.is_dir():
-                    user_dirs.append((d, d.name))
-    else:
-        user_dirs = [(skills_dir / user_id, user_id)]
-
     results: list[SkillInfo] = []
-    for user_dir, owner_id in user_dirs:
-        skill_base = user_dir / "workspace" / ".claude" / "skills"
-        if not skill_base.exists():
-            continue
-        for d in sorted(skill_base.iterdir()):
-            if not d.is_dir() or d.is_symlink():
-                continue
-            skill_md = d / "SKILL.md"
-            if not skill_md.exists():
-                continue
-            created_at, created_by, _ = _read_skill_meta(d)
-            results.append(
-                SkillInfo(
-                    name=d.name,
-                    source=SkillSource.PERSONAL,
-                    owner=owner_id,  # directory name is the authoritative owner
-                    description="",
-                    content=skill_md.read_text(),
-                    path=str(d),
-                    created_at=created_at,
-                    created_by=created_by,
-                    valid=True,
+
+    if _db is not None and _db._initialized:
+        import sqlite3
+        from datetime import datetime, timezone
+
+        conn = sqlite3.connect(str(_db.db_path))
+        conn.row_factory = sqlite3.Row
+        try:
+            owner_filter = "" if admin else "AND owner_id = ?"
+            params: tuple[str, ...] = () if admin else (user_id,)
+            rows = conn.execute(
+                f"SELECT skill_name, source, owner_id, description, path, created_at"
+                f" FROM skills WHERE source = 'personal' {owner_filter}"
+                f" AND status != 'deprecated' ORDER BY created_at DESC",
+                params,
+            ).fetchall()
+            for row in rows:
+                rd = dict(row)
+                skill_path = Path(rd.get("path", ""))
+                skill_name = rd["skill_name"]
+                owner = rd["owner_id"]
+                created_at = ""
+                if rd.get("created_at"):
+                    try:
+                        created_at = datetime.fromtimestamp(rd["created_at"], tz=timezone.utc).isoformat()
+                    except (ValueError, OSError):
+                        pass
+
+                # Read SKILL.md content and created_by from metadata
+                content = ""
+                created_by = ""
+                if skill_path.exists():
+                    skill_md = skill_path / "SKILL.md"
+                    if skill_md.exists():
+                        content = skill_md.read_text()
+                    created_at_meta, created_by_meta, _ = _read_skill_meta(skill_path)
+                    if not created_at:
+                        created_at = created_at_meta
+                    created_by = created_by_meta
+
+                results.append(
+                    SkillInfo(
+                        name=skill_name,
+                        source=SkillSource.PERSONAL,
+                        owner=owner,
+                        description=rd.get("description", ""),
+                        content=content,
+                        path=str(skill_path),
+                        created_at=created_at,
+                        created_by=created_by,
+                        valid=skill_path.is_dir(),
+                    )
                 )
-            )
+        finally:
+            conn.close()
+
     return results
 
 
