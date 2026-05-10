@@ -724,7 +724,7 @@ def _scan_workspace_for_generated_files(
             rel = f.relative_to(workspace).as_posix()
             mtime = f.stat().st_mtime
             if _is_session_file(mtime) and (rel not in workspace_snapshot or mtime > workspace_snapshot[rel]):
-                _process_file(f, f.name)
+                _process_file(f, rel)
 
     # 2. Scan workspace root for data files
     if workspace.exists():
@@ -736,7 +736,7 @@ def _scan_workspace_for_generated_files(
             if (
                 _is_session_file(mtime)
                 and (rel not in workspace_snapshot or mtime > workspace_snapshot[rel])
-                and f.name not in seen_filenames
+                and rel not in seen_filenames
             ):
                 if f.suffix.lower() in DATA_EXTS:
                     dest_dir = outputs_dir
@@ -744,7 +744,7 @@ def _scan_workspace_for_generated_files(
                     try:
                         intermediate = dest_dir / f.name
                         shutil.move(str(f), str(intermediate))
-                        _process_file(intermediate, f.name)
+                        _process_file(intermediate, rel)
                     except Exception as e:
                         logger.warning("Failed to relocate data file %s to outputs/: %s", f, e)
 

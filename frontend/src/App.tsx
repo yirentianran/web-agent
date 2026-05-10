@@ -1309,7 +1309,7 @@ function MainApp() {
       clearThresholdRef.current = lastBackendIndex;
       replayStartedRef.current = false;
       const fileMetadata: Array<{ filename?: string; stored_name?: string; size: number }> | undefined =
-        fileMeta?.map((f) => ({ stored_name: f.stored_name, size: f.size })) ||
+        fileMeta?.map((f) => ({ filename: f.filename ?? f.stored_name, stored_name: f.stored_name, size: f.size })) ||
         files?.map((f) => ({ filename: f.name, size: f.size }));
       const clientMsgId = generateUUID();
       const optimisticMsg: Message = {

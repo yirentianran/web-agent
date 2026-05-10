@@ -66,8 +66,8 @@ const InputBar = forwardRef<InputBarHandle, InputBarProps>(
 
     // ── Upload helpers ────────────────────────────────────────
 
-    const uploadFile = async (af: AttachedFile): Promise<boolean> => {
-      if (!userId) return false
+    const uploadFile = async (af: AttachedFile): Promise<{ success: boolean; storedName?: string; storedSize?: number }> => {
+      if (!userId) return { success: false }
       const formData = new FormData()
       formData.append('file', af.file)
       try {
@@ -80,18 +80,23 @@ const InputBar = forwardRef<InputBarHandle, InputBarProps>(
             setAttachedFiles(prev => prev.map(f =>
               f.id === af.id ? { ...f, storedName: data.stored_name, storedSize: data.size ?? af.file.size } : f
             ))
+            return { success: true, storedName: data.stored_name, storedSize: data.size ?? af.file.size }
           }
         }
-        return resp.ok
+        return { success: resp.ok }
       } catch {
-        return false
+        return { success: false }
       }
     }
 
-    const uploadAllPending = async (): Promise<{ uploadedFiles: File[]; allSuccess: boolean }> => {
+    const uploadAllPending = async (): Promise<{ fileMeta: Array<{stored_name: string; filename: string; size: number}>; fileObjs: File[]; allSuccess: boolean }> => {
       const pending = attachedFiles.filter(f => f.status === 'pending' || f.status === 'failed')
       if (pending.length === 0) {
-        return { uploadedFiles: attachedFiles.map(f => f.file), allSuccess: true }
+        return {
+          fileMeta: attachedFiles.filter(f => f.storedName).map(f => ({ stored_name: f.storedName!, filename: f.file.name, size: f.storedSize ?? f.file.size })),
+          fileObjs: attachedFiles.map(f => f.file),
+          allSuccess: true,
+        }
       }
 
       // Mark all as uploading
@@ -100,12 +105,12 @@ const InputBar = forwardRef<InputBarHandle, InputBarProps>(
       ))
 
       let allSuccess = true
-      const results: Array<{ id: string; success: boolean }> = []
+      const results: Array<{ id: string; success: boolean; storedName?: string; storedSize?: number }> = []
 
       for (const af of pending) {
-        const success = await uploadFile(af)
-        results.push({ id: af.id, success })
-        if (!success) allSuccess = false
+        const result = await uploadFile(af)
+        results.push({ id: af.id, ...result })
+        if (!result.success) allSuccess = false
       }
 
       // Update statuses based on results
@@ -117,13 +122,21 @@ const InputBar = forwardRef<InputBarHandle, InputBarProps>(
         return f
       }))
 
-      return {
-        uploadedFiles: attachedFiles.filter(f => {
-          const result = results.find(r => r.id === f.id)
-          return result?.success ?? f.status === 'uploaded'
-        }).map(f => f.file),
-        allSuccess,
-      }
+      // Build metadata directly from upload responses, not from async React state
+      const fileMeta = results
+        .filter(r => r.success && r.storedName)
+        .map(r => ({
+          stored_name: r.storedName!,
+          filename: pending.find(f => f.id === r.id)?.file.name ?? r.storedName!,
+          size: r.storedSize ?? 0,
+        }))
+      const fileObjs = results
+        .filter(r => r.success)
+        .map(r => pending.find(f => f.id === r.id)!)
+        .filter(Boolean)
+        .map(f => f.file)
+
+      return { fileMeta, fileObjs, allSuccess }
     }
 
     // ── Form submission ──────────────────────────────────────
@@ -135,30 +148,23 @@ const InputBar = forwardRef<InputBarHandle, InputBarProps>(
       const hasUploading = attachedFiles.some(f => f.status === 'uploading')
       if ((!trimmed && attachedFiles.length === 0) || disabled || hasUploading) return
 
-      // Collect stored names for uploaded files
+      // Collect stored names for already-uploaded files
       const uploadedWithStored = attachedFiles.filter(f => f.status === 'uploaded' && f.storedName)
 
       // If there are pending or failed files, upload them first
       if (hasPending) {
-        const { allSuccess } = await uploadAllPending()
+        const { allSuccess, fileMeta, fileObjs } = await uploadAllPending()
         if (!allSuccess) {
           // Upload had failures — don't send, let user retry or remove
           return
         }
-        // Collect file metadata after upload completes
-        const fileMeta = attachedFiles
-          .filter(f => f.storedName && (f.status === 'uploaded' || f.status === 'pending'))
-          .map(f => ({ stored_name: f.storedName!, size: f.storedSize ?? f.file.size }))
-        const uploadedFileObjects = attachedFiles
-          .filter(f => f.status === 'uploaded' || f.status === 'pending')
-          .map(f => f.file)
-        const refFiles = fileMeta.length > 0 ? fileMeta.map(f => f.stored_name) : uploadedFileObjects.map(f => f.name)
+        const refFiles = fileMeta.length > 0 ? fileMeta.map(f => f.stored_name) : fileObjs.map(f => f.name)
         let messageContent = trimmed
         if (refFiles.length > 0 && trimmed) {
           const refs = refFiles.map(name => `@${name}`).join(' ')
           messageContent = `${refs} ${trimmed}`
         }
-        onSend(messageContent, uploadedFileObjects, fileMeta.length > 0 ? fileMeta : undefined)
+        onSend(messageContent, fileObjs, fileMeta.length > 0 ? fileMeta : undefined)
         setInput('')
         setAttachedFiles([])
         if (fileInputRef.current) fileInputRef.current.value = ''
