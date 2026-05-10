@@ -3940,9 +3940,11 @@ async def list_user_skills(
 
     Admin callers see all users' skills; regular callers see only their own.
     """
-    from src.admin_auth import is_admin_request
+    from src.admin_auth import ENFORCE_AUTH, is_admin_request
 
-    admin = is_admin_request(authorization)
+    # When auth is disabled, default to non-admin so skills are filtered by owner.
+    # Admin behavior is only meaningful when auth is actually enforced.
+    admin = is_admin_request(authorization) and ENFORCE_AUTH
 
     # Cross-user access check: non-admin accessing another user's skills
     if not admin and current_user != user_id:
@@ -3957,12 +3959,18 @@ async def list_user_skills(
         conn = sqlite3.connect(str(_db.db_path))
         conn.row_factory = sqlite3.Row
         try:
-            owner_filter = "" if admin else "AND owner_id = ?"
-            params: tuple[str, ...] = () if admin else (user_id,)
+            if admin:
+                # Admin can see all users' personal skills, but still only personal ones
+                source_filter = "AND source = 'personal'"
+                params: tuple[str, ...] = ()
+            else:
+                # Owner: only personal skills (shared are fetched via listShared)
+                source_filter = "AND source = 'personal' AND owner_id = ?"
+                params = (user_id,)
             rows = conn.execute(
                 f"SELECT skill_name, source, owner_id, description, path, created_at"
-                f" FROM skills WHERE source = 'personal' {owner_filter}"
-                f" AND status != 'deprecated' ORDER BY created_at DESC",
+                f" FROM skills WHERE status != 'deprecated' {source_filter}"
+                f" ORDER BY created_at DESC",
                 params,
             ).fetchall()
             for row in rows:
@@ -3992,7 +4000,7 @@ async def list_user_skills(
                 results.append(
                     SkillInfo(
                         name=skill_name,
-                        source=SkillSource.PERSONAL,
+                        source=SkillSource.SHARED if rd["source"] == "shared" else SkillSource.PERSONAL,
                         owner=owner,
                         description=rd.get("description", ""),
                         content=content,

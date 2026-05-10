@@ -196,8 +196,8 @@ function SkillList({ skills, isPersonal, onDelete, onView, onPromote, promoting 
           <div className="skill-header">
             <span className="skill-icon">{skill.valid ? '📦' : '⚠️'}</span>
             <span className="skill-name">{skill.name}</span>
-            <span className={`skill-badge ${skill.source}`}>{skill.source}</span>
             {!skill.valid && <span className="skill-badge invalid">invalid</span>}
+            <span className={`skill-badge ${skill.source}`}>{skill.source}</span>
           </div>
           <div className="skill-meta">{skill.description}</div>
           <div className="skill-actions">

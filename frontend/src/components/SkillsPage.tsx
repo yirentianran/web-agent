@@ -116,8 +116,8 @@ export default function SkillsPage({ authToken, userId, userRole, onBack }: Skil
           <button className="skills-back-btn feedback-back-btn" onClick={() => setViewingSkill(null)} type="button">{t('common.back')}</button>
           <div className="skills-header-title-group">
             <h2>{viewingSkill.name}</h2>
-            <span className={`skill-badge ${viewingSkill.source}`}>{viewingSkill.source}</span>
             {viewingSkill.owner && <span className="skill-owner">{viewingSkill.owner}</span>}
+            <span className={`skill-badge ${viewingSkill.source}`}>{viewingSkill.source}</span>
           </div>
         </div>
         {viewingSkill.description && (
@@ -164,8 +164,8 @@ export default function SkillsPage({ authToken, userId, userRole, onBack }: Skil
               <div className="skill-header">
                 <span className="skill-icon">{skill.valid ? '\ud83d\udce6' : '\u26a0\ufe0f'}</span>
                 <span className="skill-name">{skill.name}</span>
-                <span className={`skill-badge ${skill.source}`}>{skill.source}</span>
                 {skill.owner && <span className="skill-owner">{skill.owner}</span>}
+                <span className={`skill-badge ${skill.source}`}>{skill.source}</span>
                 {!skill.valid && <span className="skill-badge invalid">{t('skills.invalid')}</span>}
               </div>
               <div className="skill-meta">{skill.description}</div>

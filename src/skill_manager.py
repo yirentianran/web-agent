@@ -34,14 +34,14 @@ class SkillManager:
         tags: list[str] | None = None,
         path: str = "",
     ) -> None:
-        """Register a skill. Idempotent — ON CONFLICT updates metadata."""
+        """Register a skill. Idempotent per (skill_name, source) — ON CONFLICT updates metadata."""
         tags_json = json.dumps(tags or [])
         async with self.db.connection() as conn:
             await conn.execute(
                 """INSERT INTO skills (skill_name, source, owner_id, description, category, tags, path)
                    VALUES (?, ?, ?, ?, ?, ?, ?)
-                   ON CONFLICT(skill_name) DO UPDATE SET
-                       source=excluded.source, owner_id=excluded.owner_id,
+                   ON CONFLICT(skill_name, source) DO UPDATE SET
+                       owner_id=excluded.owner_id,
                        description=excluded.description, category=excluded.category,
                        tags=excluded.tags, path=excluded.path, updated_at=strftime('%s', 'now')""",
                 (skill_name, source, owner_id, description, category, tags_json, path),

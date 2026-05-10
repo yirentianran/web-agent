@@ -194,7 +194,7 @@ CREATE INDEX IF NOT EXISTS idx_generated_files_user_stored_name ON generated_fil
 -- Skills registry
 CREATE TABLE IF NOT EXISTS skills (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    skill_name  TEXT NOT NULL UNIQUE,
+    skill_name  TEXT NOT NULL,
     source      TEXT NOT NULL DEFAULT 'personal',
     owner_id    TEXT NOT NULL DEFAULT '',
     description TEXT NOT NULL DEFAULT '',
@@ -204,7 +204,8 @@ CREATE TABLE IF NOT EXISTS skills (
     version     TEXT NOT NULL DEFAULT '',
     path        TEXT NOT NULL DEFAULT '',
     created_at  REAL NOT NULL DEFAULT (strftime('%s', 'now')),
-    updated_at  REAL NOT NULL DEFAULT (strftime('%s', 'now'))
+    updated_at  REAL NOT NULL DEFAULT (strftime('%s', 'now')),
+    UNIQUE(skill_name, source)
 );
 
 CREATE INDEX IF NOT EXISTS idx_skills_source ON skills(source);
@@ -407,6 +408,42 @@ class Database:
                     ON generated_files(user_id, stored_name);"""
             )
             await conn.commit()
+
+            # Phase 4: Migrate skills table from UNIQUE(skill_name) to UNIQUE(skill_name, source).
+            # Check if migration is needed by looking at the index SQL.
+            try:
+                index_rows = await conn.execute(
+                    "SELECT sql FROM sqlite_master WHERE type='table' AND name='skills'"
+                )
+                row = await index_rows.fetchone()
+                needs_migration = row and "UNIQUE(skill_name, source)" not in row[0]
+                if needs_migration:
+                    await conn.execute("ALTER TABLE skills RENAME TO skills_old")
+                    await conn.execute(
+                        """CREATE TABLE skills (
+                            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                            skill_name  TEXT NOT NULL,
+                            source      TEXT NOT NULL DEFAULT 'personal',
+                            owner_id    TEXT NOT NULL DEFAULT '',
+                            description TEXT NOT NULL DEFAULT '',
+                            category    TEXT NOT NULL DEFAULT '',
+                            tags        TEXT NOT NULL DEFAULT '[]',
+                            status      TEXT NOT NULL DEFAULT 'active',
+                            version     TEXT NOT NULL DEFAULT '',
+                            path        TEXT NOT NULL DEFAULT '',
+                            created_at  REAL NOT NULL DEFAULT (strftime('%s', 'now')),
+                            updated_at  REAL NOT NULL DEFAULT (strftime('%s', 'now')),
+                            UNIQUE(skill_name, source)
+                        )"""
+                    )
+                    await conn.execute(
+                        """INSERT INTO skills (skill_name, source, owner_id, description, category, tags, status, version, path, created_at, updated_at)
+                           SELECT skill_name, source, owner_id, description, category, tags, status, version, path, created_at, updated_at
+                           FROM skills_old"""
+                    )
+                    await conn.execute("DROP TABLE skills_old")
+            except Exception:
+                pass  # Already migrated
 
     async def close(self) -> None:
         """Close the connection and stop the checkpoint loop."""
