@@ -117,6 +117,7 @@ export default function SkillsPage({ authToken, userId, userRole, onBack }: Skil
           <div className="skills-header-title-group">
             <h2>{viewingSkill.name}</h2>
             <span className={`skill-badge ${viewingSkill.source}`}>{viewingSkill.source}</span>
+            {viewingSkill.owner && <span className="skill-owner">{viewingSkill.owner}</span>}
           </div>
         </div>
         {viewingSkill.description && (
@@ -164,6 +165,7 @@ export default function SkillsPage({ authToken, userId, userRole, onBack }: Skil
                 <span className="skill-icon">{skill.valid ? '\ud83d\udce6' : '\u26a0\ufe0f'}</span>
                 <span className="skill-name">{skill.name}</span>
                 <span className={`skill-badge ${skill.source}`}>{skill.source}</span>
+                {skill.owner && <span className="skill-owner">{skill.owner}</span>}
                 {!skill.valid && <span className="skill-badge invalid">{t('skills.invalid')}</span>}
               </div>
               <div className="skill-meta">{skill.description}</div>
@@ -172,7 +174,7 @@ export default function SkillsPage({ authToken, userId, userRole, onBack }: Skil
                 {skill.valid && (
                   <button className="skill-view-btn" onClick={() => setViewingSkill(skill)} type="button">{t('common.view')}</button>
                 )}
-                {isPersonal && skill.valid && (
+                {isAdmin && isPersonal && skill.valid && (
                   <button className="skill-promote-btn" onClick={() => handlePromote(skill.name)} type="button" disabled={promoting === skill.name}>
                     {promoting === skill.name ? t('common.promoting') : t('common.promote')}
                   </button>
