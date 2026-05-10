@@ -135,6 +135,7 @@ if not PROD:
 _db: Database | None = None  # SQLite database
 _mcp_store: MCPServerStore | None = None  # MCP server DB store
 _audit_logger: Any = None  # AuditLogger, initialized at startup
+_skill_manager: Any = None  # SkillManager, initialized at startup if DB available
 buffer = MessageBuffer()
 session_store: SessionStore | None = None  # Initialized at startup if DATA_DB_PATH set
 active_tasks: dict[str, asyncio.Task] = {}
@@ -4080,6 +4081,19 @@ async def upload_skill_files(
             )
         )
 
+    # Register skill in DB
+    if _skill_manager is not None:
+        try:
+            await _skill_manager.register_skill(
+                skill_name=skill_name,
+                source="personal",
+                owner_id=current_user,
+                description="",
+                path=str(skill_dir),
+            )
+        except Exception:
+            logger.exception("Failed to register skill in DB: %s", skill_name)
+
     return {"status": "ok", "skill_name": skill_name, "files": extracted}
 
 
@@ -4121,6 +4135,19 @@ async def upload_shared_skill(
                 indent=2,
             )
         )
+
+    # Register skill in DB
+    if _skill_manager is not None:
+        try:
+            await _skill_manager.register_skill(
+                skill_name=skill_name,
+                source="shared",
+                owner_id="admin",
+                description="",
+                path=str(skill_dir),
+            )
+        except Exception:
+            logger.exception("Failed to register shared skill in DB: %s", skill_name)
 
     return {"status": "ok", "skill_name": skill_name, "files": extracted}
 
@@ -4728,6 +4755,11 @@ async def activate_skill_version(
     mgr = SkillEvolutionManager(db=_db)
     result = await mgr.db_activate_version(skill_name, version_number=req.version_number)
     if result:
+        if _skill_manager is not None:
+            try:
+                await _skill_manager.activate_version(skill_name, req.version_number)
+            except Exception:
+                logger.exception("Failed to activate version in DB: %s", skill_name)
         return {
             "status": "ok",
             "activated": True,
@@ -5799,7 +5831,7 @@ async def startup() -> None:
         (DATA_ROOT / subdir).mkdir(parents=True, exist_ok=True)
 
     # Initialize SQLite + SessionStore if DATA_DB_PATH is set
-    global _db, _mcp_store, buffer, session_store
+    global _db, _mcp_store, buffer, session_store, _skill_manager
     db_path_env = os.getenv("DATA_DB_PATH", "")
     if db_path_env:
         db_path = Path(db_path_env)
@@ -5863,6 +5895,11 @@ async def startup() -> None:
                 )
         except Exception:
             logger.exception("Skill DB migration failed")
+
+        # Initialize SkillManager for runtime use
+        from src.skill_manager import SkillManager
+
+        _skill_manager = SkillManager(db=_db)
     else:
         logger.info("No DATA_DB_PATH set — using file-based storage")
 
