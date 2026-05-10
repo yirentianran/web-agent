@@ -4,7 +4,23 @@
 
 **Goal:** Add database-backed skill registry, usage tracking, and version metadata to replace file-system scanning and enable search, filtering, and analytics.
 
-**Architecture:** Three new SQLite tables (`skills`, `skill_usage`, `skill_versions`) that layer on top of the existing file-based skill storage. File system remains the source of truth for content; DB provides indexing, metadata, and analytics.
+**Architecture:** Three new SQLite tables (`skills`, `skill_usage`, `skill_versions`) that layer on top of a restructured file-based storage. File system remains the source of truth for content; DB provides indexing, metadata, and analytics.
+
+**Version Storage:** Historical versions live in **flat sibling directories** (`{skill_name}@vN/`) rather than nested subdirectories. This keeps downloads and agent loading clean: only the active version sits in the main skill directory.
+
+```
+data/shared-skills/
+├── code-review/          ← active version (only SKILL.md + resources)
+│   ├── SKILL.md
+│   └── references/
+├── code-review@v1/       ← historical v1 (isolated)
+│   └── SKILL.md
+├── code-review@v2/       ← historical v2 (isolated)
+│   └── SKILL.md
+└── ...
+```
+
+Same structure for personal skills under `data/users/{user_id}/workspace/.claude/skills/`.
 
 **Tech Stack:** SQLite (aiosqlite), FastAPI, existing `src/database.py` schema.
 
@@ -16,13 +32,21 @@ Skills are stored as directories on the filesystem:
 - **Shared skills:** `data/shared-skills/{skill_name}/`
 - **Personal skills:** `data/users/{user_id}/workspace/.claude/skills/{skill_name}/`
 - **Metadata:** `skill-meta.json` within each skill directory (may be missing for older skills)
-- **Versions:** File-based (`SKILL_v*.md` and `versions/vN/`) managed by `src/skill_feedback.py`
+- **Versions:** File-based (`SKILL_v*.md`, `versions/vN/`, or `{skill_name}@vN/`) managed by `src/skill_feedback.py`
 - **Feedback:** `skill_feedback` table in SQLite
 
 Current pain points:
 1. All listing/searching requires filesystem scanning
 2. No usage tracking — can't tell which skills are actually used
 3. Version metadata (active version, change history) only in files, not queryable
+
+### Version Isolation (New)
+
+Historical versions are stored as **flat sibling directories** using `{skill_name}@vN/` naming, not nested inside the active version. Benefits:
+- Agent's `load_skills()` only scans root-level directories, never reads old versions
+- Download ZIP only includes active version, not historical baggage
+- Activating/switching versions is simple directory rename/replace
+- `load_skills()` skips `@vN` directories via name pattern filter
 
 ## Architecture
 
@@ -38,7 +62,8 @@ Skill Version Change: File backup + replace → skill_versions table UPDATE
 ### Backward Compatibility
 
 - Existing `skill_feedback` table unchanged
-- File-based version system continues to work; `skill_versions` adds metadata layer only
+- Legacy file-based versions (`SKILL_v*.md`, `versions/vN/`) migrated on startup to flat `{skill_name}@vN/` structure
+- `load_skills()` updated to skip `@vN` directories (filter: skip if `@v` in directory name)
 - All existing endpoints continue to function
 - List endpoint gains optional query params for filtering (defaults to current behavior)
 
@@ -59,6 +84,7 @@ CREATE TABLE IF NOT EXISTS skills (
     tags        TEXT NOT NULL DEFAULT '[]',         -- JSON array: ["python", "testing"]
     status      TEXT NOT NULL DEFAULT 'active',     -- 'active' | 'deprecated' | 'draft'
     version     TEXT NOT NULL DEFAULT '',           -- current version string (e.g. "v2")
+    path        TEXT NOT NULL DEFAULT '',           -- full directory path on filesystem
     created_at  REAL NOT NULL DEFAULT (strftime('%s', 'now')),
     updated_at  REAL NOT NULL DEFAULT (strftime('%s', 'now'))
 );
@@ -94,6 +120,7 @@ CREATE TABLE IF NOT EXISTS skill_versions (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,
     skill_name     TEXT NOT NULL REFERENCES skills(skill_name),
     version_number INTEGER NOT NULL,
+    path           TEXT NOT NULL DEFAULT '',   -- flat directory: {skill_name}@vN/
     change_summary TEXT NOT NULL DEFAULT '',
     status         TEXT NOT NULL DEFAULT 'pending',  -- 'pending' | 'active' | 'rolled_back'
     created_by     TEXT NOT NULL DEFAULT 'user',      -- 'user' | 'agent' | 'upload'
@@ -163,7 +190,7 @@ class SkillManager:
 
     # Versions
     async def record_version(self, skill_name: str, version_number: int,
-                             change_summary: str, created_by: str,
+                             path: str, change_summary: str, created_by: str,
                              file_count: int = 1) -> None
     async def activate_version(self, skill_name: str, version_number: int) -> dict | None
     async def list_versions(self, skill_name: str) -> list[dict]
@@ -174,7 +201,14 @@ class SkillManager:
 In `main_server.py` startup hook (`lifespan` function):
 - Scan filesystem for all skills (shared + personal)
 - For each skill not in `skills` table: INSERT
+- Migrate legacy nested versions (`SKILL_v*.md`, `versions/vN/`) to flat `{skill_name}@vN/` directories
 - Existing skills in DB but missing from filesystem: mark as `status='deprecated'`
+
+### `load_skills()` Update
+
+In `main_server.py` `load_skills()`:
+- Filter out directories matching `{name}@vN` pattern (historical versions)
+- Keep existing behavior: only read `SKILL.md` from root-level directories
 
 ### Usage Recording Hook
 
