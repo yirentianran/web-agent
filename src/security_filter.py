@@ -27,14 +27,14 @@ class OutputFilter:
         # Container/infrastructure identifiers
         (re.compile(r"(?i)(?:container_id|hostname|instance_id)\s*[=:]\s*\S+"), "*** (hidden) ***"),
         # Port information
-        (re.compile(r"(?i)port[=:]\s*\d+"), "*** (hidden) ***"),
+        (re.compile(r"(?i)\bport[=:\s]+\d+"), "*** (hidden) ***"),
     ]
 
     # Block patterns: replace entire line/block with [Content blocked]
     _BLOCK_PATTERNS: Final[list[re.Pattern[str]]] = [
-        re.compile(r"uname\s+-[aA]"),
+        re.compile(r"\buname\b"),
         re.compile(r"/etc/(?:passwd|shadow|hosts)"),
-        re.compile(r"/proc/(?:cpuinfo|meminfo)"),
+        re.compile(r"/proc/"),
     ]
 
     _BLOCKED_MARKER: Final[str] = "[Content blocked]"

@@ -28,11 +28,33 @@ class TestOutputFilter:
         result = OutputFilter.scan(text)
         assert "8000" not in result
 
+    def test_hides_port_natural_language(self):
+        """Port in natural language like 'on port 3000' should be hidden."""
+        text = "Server started on port 3000"
+        result = OutputFilter.scan(text)
+        assert "3000" not in result
+        assert "*** (hidden) ***" in result
+
+    def test_blocks_uname_all_variants(self):
+        """Any uname invocation line should be blocked."""
+        text = "System: uname -r reports 5.15.0-generic"
+        result = OutputFilter.scan(text)
+        assert "[Content blocked]" in result
+        assert "uname -r" not in result
+
+    def test_blocks_all_proc_paths(self):
+        """Any /proc/ path should be blocked, not just cpuinfo/meminfo."""
+        text = "Here is /proc/version info"
+        result = OutputFilter.scan(text)
+        assert "[Content blocked]" in result
+        assert "/proc/version" not in result
+
     def test_blocks_uname_output(self):
-        text = "uname -a\nLinux hostname 5.15.0-generic #1 SMP x86_64"
+        text = "uname -a: Linux hostname 5.15.0-generic #1 SMP x86_64"
         result = OutputFilter.scan(text)
         assert "[Content blocked]" in result
         assert "uname -a" not in result
+        assert "Linux hostname" not in result
 
     def test_blocks_proc_output(self):
         text = "cat /proc/cpuinfo\nprocessor\t: 0\nmodel name\t: Intel"
