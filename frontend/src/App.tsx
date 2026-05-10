@@ -695,8 +695,10 @@ function MainApp() {
 
   // Reset heartbeat ref on session switch to prevent false staleness
   // (old heartbeat from previous session could be >60s ago)
+  // Also clear streaming text to avoid showing previous session's content.
   useEffect(() => {
     lastHeartbeatRef.current = Date.now();
+    setStreamingTextState(useStreamingText.createInitialState());
   }, [urlSessionId]);
 
   // Helper: update send state for a message by clientMsgId
@@ -753,14 +755,17 @@ function MainApp() {
       }
 
       // Process streaming text from content_block_delta events
-      // Aggregate text deltas into a single streaming state for display
-      const newStreamingState = useStreamingText.processMessage(
-        streamingTextStateRef.current,
-        msg,
-      );
-      if (newStreamingState !== streamingTextStateRef.current) {
-        streamingTextStateRef.current = newStreamingState;
-        setStreamingTextState(newStreamingState);
+      // Only for the currently active session — prevent cross-session leak.
+      const msgSessionId = msg.session_id || urlSessionIdRef.current;
+      if (msgSessionId === urlSessionIdRef.current) {
+        const newStreamingState = useStreamingText.processMessage(
+          streamingTextStateRef.current,
+          msg,
+        );
+        if (newStreamingState !== streamingTextStateRef.current) {
+          streamingTextStateRef.current = newStreamingState;
+          setStreamingTextState(newStreamingState);
+        }
       }
 
       // Update last_known_index for persistence
