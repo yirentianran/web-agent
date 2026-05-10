@@ -41,6 +41,7 @@ from src.workspace_enforcement import (
     is_path_within_user_dir,
     rewrite_path_to_workspace,
 )
+from src.security_filter import OutputFilter
 
 logger = logging.getLogger("agent_server")
 
@@ -401,9 +402,53 @@ class _CliRunner:
                                 tool_input, self._container_paths
                             )
                         elif tool_name == "Bash":
+                            from src.security_filter import BashCommandFilter
+                            cmd = tool_input.get("command", "")
+                            allowed, reason = BashCommandFilter.check(cmd)
+                            if not allowed:
+                                result = {
+                                    "subtype": "success",
+                                    "request_id": req_id,
+                                    "response": {
+                                        "continue_": True,
+                                        "hookSpecificOutput": {
+                                            "hookEventName": "PreToolUse",
+                                            "permissionDecision": "deny",
+                                            "permissionDecisionReason": reason,
+                                        },
+                                    },
+                                }
+                                resp = {"type": "control_response", "response": result}
+                                resp_line = json.dumps(resp, ensure_ascii=False) + "\n"
+                                process.stdin.write(resp_line.encode())
+                                await process.stdin.drain()
+                                continue
                             new_input = _apply_bash_path_hook(
                                 tool_input, self._container_paths
                             )
+                        elif tool_name == "Read":
+                            from src.security_filter import FileAccessFilter
+                            file_path = tool_input.get("file_path", "")
+                            allowed, reason = FileAccessFilter.check(file_path)
+                            if not allowed:
+                                result = {
+                                    "subtype": "success",
+                                    "request_id": req_id,
+                                    "response": {
+                                        "continue_": True,
+                                        "hookSpecificOutput": {
+                                            "hookEventName": "PreToolUse",
+                                            "permissionDecision": "deny",
+                                            "permissionDecisionReason": reason,
+                                        },
+                                    },
+                                }
+                                resp = {"type": "control_response", "response": result}
+                                resp_line = json.dumps(resp, ensure_ascii=False) + "\n"
+                                process.stdin.write(resp_line.encode())
+                                await process.stdin.drain()
+                                continue
+                            new_input = tool_input
                         else:
                             new_input = tool_input
 
@@ -573,13 +618,19 @@ async def agent_ws(websocket: WebSocket) -> None:
                         # thinking, tool_use, and text blocks.
                         message = evt_data.get("message", {})
                         if message:
+                            # Scan text blocks for sensitive content
+                            content_blocks = message.get("content", [])
+                            if isinstance(content_blocks, list):
+                                for block in content_blocks:
+                                    if isinstance(block, dict) and block.get("type") == "text":
+                                        block["text"] = OutputFilter.scan(block.get("text", ""))
                             await _ws_send({
                                 "type": "assistant",
                                 "message": message,
                             })
                         else:
                             # CLI fallback: bare text (from result fallback path)
-                            assistant_content = evt_data.get("content", "")
+                            assistant_content = OutputFilter.scan(evt_data.get("content", ""))
                             if assistant_content:
                                 await _ws_send({
                                     "type": "assistant",
