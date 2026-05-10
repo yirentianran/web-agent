@@ -79,6 +79,25 @@ class SkillInfo(BaseModel):
     valid: bool = True  # False when SKILL.md is missing or unparseable
 
 
+class SkillsListResponse(BaseModel):
+    skills: list[dict[str, Any]]
+    total: int
+
+
+class SkillUpdateRequest(BaseModel):
+    description: str = ""
+    category: str = ""
+    tags: list[str] = []
+    status: str = "active"
+
+
+class UsageRecord(BaseModel):
+    user_id: str = ""
+    session_id: str = ""
+    version_number: int = 0
+    action: str = "use"
+
+
 # ── Memory Models ───────────────────────────────────────────────────
 
 

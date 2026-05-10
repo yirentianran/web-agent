@@ -48,7 +48,10 @@ from src.models import (
     MemoryUpdate,
     SessionStatusResponse,
     SkillInfo,
+    SkillsListResponse,
     SkillSource,
+    SkillUpdateRequest,
+    UsageRecord,
 )
 
 if TYPE_CHECKING:
@@ -5218,6 +5221,104 @@ async def get_skill_version_content(
         "content": content,
         "name": version_name,
     }
+
+
+# ── Skill DB API ─────────────────────────────────────────────────
+
+
+@app.get("/api/skills", response_model=SkillsListResponse)
+async def list_skills_db(
+    source: str | None = None,
+    category: str | None = None,
+    tag: str | None = None,
+    status: str | None = None,
+    owner: str | None = None,
+    current_user: str = Depends(get_current_user),
+) -> SkillsListResponse:
+    """List all skills with optional filters."""
+    if _skill_manager is None:
+        return SkillsListResponse(skills=[], total=0)
+    skills = await _skill_manager.list_skills(
+        source=source, category=category, tag=tag, status=status, owner=owner,
+    )
+    return SkillsListResponse(skills=skills, total=len(skills))
+
+
+@app.get("/api/skills/{skill_name}/usage")
+async def get_skill_usage_db(
+    skill_name: str,
+    current_user: str = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Get usage statistics for a skill."""
+    if _skill_manager is None:
+        return {"skill_name": skill_name, "total_uses": 0}
+    return await _skill_manager.get_usage_stats(skill_name)
+
+
+@app.post("/api/skills/{skill_name}/usage")
+async def record_skill_usage_db(
+    skill_name: str,
+    req: UsageRecord,
+) -> dict[str, str]:
+    """Record a skill usage event."""
+    if _skill_manager is not None:
+        await _skill_manager.record_usage(
+            skill_name,
+            user_id=req.user_id,
+            session_id=req.session_id,
+            version_number=req.version_number,
+            action=req.action,
+        )
+    return {"status": "ok"}
+
+
+@app.put("/api/admin/skills/{skill_name}/meta")
+async def update_skill_meta_db(
+    skill_name: str,
+    req: SkillUpdateRequest,
+    current_user: str = Depends(require_admin),
+) -> dict[str, Any]:
+    """Update skill category, tags, description, status. Admin only."""
+    if _skill_manager is None:
+        return JSONResponse({"error": "Skill DB not available"}, status_code=503)
+    skill = await _skill_manager.get_skill(skill_name)
+    if skill is None:
+        return JSONResponse({"error": "skill not found"}, status_code=404)
+    await _skill_manager.update_skill_meta(
+        skill_name,
+        description=req.description,
+        category=req.category,
+        tags=req.tags,
+        status=req.status,
+    )
+    return {"status": "ok"}
+
+
+@app.get("/api/admin/skills/manage")
+async def admin_skills_dashboard_db(
+    current_user: str = Depends(require_admin),
+) -> dict[str, Any]:
+    """Admin dashboard: all skills with usage stats."""
+    if _skill_manager is None:
+        return {"skills": [], "top_skills": [], "total": 0}
+    skills = await _skill_manager.list_skills()
+    top_skills = await _skill_manager.get_top_skills(limit=10)
+    return {"skills": skills, "top_skills": top_skills, "total": len(skills)}
+
+
+@app.delete("/api/admin/skills/{skill_name}")
+async def delete_skill_admin(
+    skill_name: str,
+    current_user: str = Depends(require_admin),
+) -> dict[str, str]:
+    """Hard delete skill from DB (optionally also from filesystem). Admin only."""
+    if _skill_manager is None:
+        return JSONResponse({"error": "Skill DB not available"}, status_code=503)
+    skill = await _skill_manager.get_skill(skill_name)
+    if skill is None:
+        return JSONResponse({"error": "skill not found"}, status_code=404)
+    await _skill_manager.delete_skill(skill_name, delete_files=False)
+    return {"status": "ok"}
 
 
 # ── MCP Registry ─────────────────────────────────────────────────
