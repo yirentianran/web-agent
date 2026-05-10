@@ -1,11 +1,10 @@
 """Tests for build_system_prompt identity consistency."""
 
-import json
+# Add project root to path
+import sys
 import tempfile
 from pathlib import Path
 
-# Add project root to path
-import sys
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from main_server import build_system_prompt
@@ -113,9 +112,7 @@ class TestBuildSystemPromptLanguage:
             ws = _make_workspace(Path(td))
             prompt = build_system_prompt("test_user", {}, ws, language="zh")
             first_section = prompt.split("## ")[1]
-            assert first_section.startswith("Response Language"), (
-                f"First section is: {first_section[:50]}"
-            )
+            assert first_section.startswith("Response Language"), f"First section is: {first_section[:50]}"
 
     def test_only_response_language_has_absolute_priority(self):
         """Only Response Language section should claim ABSOLUTE PRIORITY."""
@@ -124,9 +121,9 @@ class TestBuildSystemPromptLanguage:
             prompt = build_system_prompt("test_user", {}, ws, language="en")
             identity_start = prompt.index("## Identity Instructions")
             # Find next ## section after Identity
-            rest = prompt[identity_start + 1:]
+            rest = prompt[identity_start + 1 :]
             next_section = rest.index("## ") if "## " in rest else len(rest)
-            identity_section = prompt[identity_start:identity_start + 1 + next_section]
+            identity_section = prompt[identity_start : identity_start + 1 + next_section]
             assert "ABSOLUTE PRIORITY" not in identity_section
 
     def test_skills_section_has_language_note(self):
@@ -176,53 +173,91 @@ class TestBuildSystemPromptLanguage:
 
 
 class TestSecurityPrompt:
-    def test_prompt_contains_hardware_os_refusal(self):
+    def test_refusal_keys_exist_in_both_languages(self):
+        """All five refusal messages must appear in prompts for both zh and en."""
+        zh_expected = [
+            "我无法提供系统信息",
+            "我无法访问或公开配置信息",
+            "我无法提供部署相关信息",
+            "我无法分享实现细节",
+            "我无法公开配置文件内容",
+        ]
+        en_expected = [
+            "I cannot provide system information",
+            "I cannot access or expose configuration values",
+            "I cannot provide deployment details",
+            "I cannot share implementation details",
+            "I cannot expose configuration files",
+        ]
         with tempfile.TemporaryDirectory() as td:
             ws = _make_workspace(Path(td))
-            prompt = build_system_prompt("test_user", {}, ws)
-            assert "system information" in prompt.lower() or "系统信息" in prompt
+            zh_prompt = build_system_prompt("test_user", {}, ws, language="zh")
+            for msg in zh_expected:
+                assert msg in zh_prompt, f"Missing Chinese refusal: {msg}"
 
-    def test_prompt_contains_env_secrets_refusal(self):
+            en_prompt = build_system_prompt("test_user", {}, ws, language="en")
+            for msg in en_expected:
+                assert msg in en_prompt, f"Missing English refusal: {msg}"
+
+    def test_refusal_messages_are_strings(self):
+        """Each refusal message must be a non-empty string in both languages."""
         with tempfile.TemporaryDirectory() as td:
             ws = _make_workspace(Path(td))
-            prompt = build_system_prompt("test_user", {}, ws)
-            assert "configuration" in prompt.lower() or "配置" in prompt
+            for lang in ("zh", "en"):
+                prompt = build_system_prompt("test_user", {}, ws, language=lang)
+                # Verify the refusal messages are embedded (not None/empty)
+                assert "无法" in prompt or "cannot" in prompt, f"Refusal messages empty in {lang}"
 
-    def test_prompt_contains_deployment_refusal(self):
-        with tempfile.TemporaryDirectory() as td:
-            ws = _make_workspace(Path(td))
-            prompt = build_system_prompt("test_user", {}, ws)
-            assert "deployment" in prompt.lower() or "部署" in prompt
-
-    def test_prompt_contains_architecture_refusal(self):
-        with tempfile.TemporaryDirectory() as td:
-            ws = _make_workspace(Path(td))
-            prompt = build_system_prompt("test_user", {}, ws)
-            assert "implementation detail" in prompt.lower() or "实现细节" in prompt
-
-    def test_prompt_contains_config_refusal(self):
-        with tempfile.TemporaryDirectory() as td:
-            ws = _make_workspace(Path(td))
-            prompt = build_system_prompt("test_user", {}, ws)
-            assert "configuration file" in prompt.lower() or "配置文件" in prompt
-
-    def test_security_section_appears_before_skills(self):
-        with tempfile.TemporaryDirectory() as td:
-            ws = _make_workspace(Path(td))
-            prompt = build_system_prompt("test_user", {}, ws)
-            security_idx = prompt.find("Information Disclosure")
-            skills_idx = prompt.find("Available Skills")
-            if security_idx >= 0 and skills_idx >= 0:
-                assert security_idx < skills_idx
-
-    def test_security_prompt_english(self):
+    def test_prompt_contains_hardware_os_refusal_english(self):
         with tempfile.TemporaryDirectory() as td:
             ws = _make_workspace(Path(td))
             prompt = build_system_prompt("test_user", {}, ws, language="en")
-            assert "NEVER" in prompt or "MUST" in prompt
+            assert "I cannot provide system information" in prompt
 
-    def test_security_prompt_chinese(self):
+    def test_prompt_contains_hardware_os_refusal_chinese(self):
         with tempfile.TemporaryDirectory() as td:
             ws = _make_workspace(Path(td))
             prompt = build_system_prompt("test_user", {}, ws, language="zh")
-            assert "无法" in prompt or "禁止" in prompt or "切勿" in prompt or "不能" in prompt
+            assert "我无法提供系统信息" in prompt
+
+    def test_prompt_contains_env_secrets_refusal_english(self):
+        with tempfile.TemporaryDirectory() as td:
+            ws = _make_workspace(Path(td))
+            prompt = build_system_prompt("test_user", {}, ws, language="en")
+            assert "I cannot access or expose configuration values" in prompt
+
+    def test_prompt_contains_env_secrets_refusal_chinese(self):
+        with tempfile.TemporaryDirectory() as td:
+            ws = _make_workspace(Path(td))
+            prompt = build_system_prompt("test_user", {}, ws, language="zh")
+            assert "我无法访问或公开配置信息" in prompt
+
+    def test_prompt_contains_deployment_refusal_english(self):
+        with tempfile.TemporaryDirectory() as td:
+            ws = _make_workspace(Path(td))
+            prompt = build_system_prompt("test_user", {}, ws, language="en")
+            assert "I cannot provide deployment details" in prompt
+
+    def test_prompt_contains_architecture_refusal_english(self):
+        with tempfile.TemporaryDirectory() as td:
+            ws = _make_workspace(Path(td))
+            prompt = build_system_prompt("test_user", {}, ws, language="en")
+            assert "I cannot share implementation details" in prompt
+
+    def test_prompt_contains_config_refusal_english(self):
+        with tempfile.TemporaryDirectory() as td:
+            ws = _make_workspace(Path(td))
+            prompt = build_system_prompt("test_user", {}, ws, language="en")
+            assert "I cannot expose configuration files" in prompt
+
+    def test_security_section_appears_before_skills(self):
+        """Security section must appear before skills section."""
+        with tempfile.TemporaryDirectory() as td:
+            ws = _make_workspace(Path(td))
+            # Pass non-empty skills to ensure "Available Skills" section appears
+            prompt = build_system_prompt("test_user", {"test_skill": {"description": "A test skill"}}, ws)
+            security_idx = prompt.find("Information Disclosure")
+            skills_idx = prompt.find("Available Skills")
+            assert security_idx >= 0, "Security section not found"
+            assert skills_idx >= 0, "Skills section not found"
+            assert security_idx < skills_idx, "Security section must come before Skills section"
