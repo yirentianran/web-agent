@@ -651,6 +651,16 @@ class TestSkillDownload:
         resp = client.get("/api/skills/download/personal/some-skill")
         assert resp.status_code == 400
 
+    def test_download_path_traversal_skill_name(self, client: TestClient) -> None:
+        """Skill name with path traversal is rejected."""
+        resp = client.get("/api/skills/download/personal/..%2F..%2Fetc?owner=alice")
+        assert resp.status_code == 400
+
+    def test_download_path_traversal_owner(self, client: TestClient) -> None:
+        """Owner with path traversal is rejected."""
+        resp = client.get("/api/skills/download/personal/skill?owner=..%2F..%2Fetc")
+        assert resp.status_code == 400
+
 
 # ── Memory API ─────────────────────────────────────────────────────
 

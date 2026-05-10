@@ -4146,10 +4146,14 @@ async def download_skill(
     if source == "shared":
         if not admin:
             return JSONResponse({"error": "forbidden: admin required for shared skills"}, status_code=403)
+        _validate_skill_name(skill_name, DATA_ROOT / "shared-skills")
         skill_dir = DATA_ROOT / "shared-skills" / skill_name
     else:
         if not owner:
             return JSONResponse({"error": "owner query param required for personal skills"}, status_code=400)
+        if not owner or ".." in owner or "/" in owner or "\\" in owner:
+            return JSONResponse({"error": "invalid owner"}, status_code=400)
+        _validate_skill_name(skill_name, DATA_ROOT / "users" / owner / "workspace" / ".claude" / "skills")
         skill_dir = DATA_ROOT / "users" / owner / "workspace" / ".claude" / "skills" / skill_name
 
         if current_user != owner and not admin:

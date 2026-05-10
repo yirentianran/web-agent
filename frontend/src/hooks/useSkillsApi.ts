@@ -56,7 +56,7 @@ export function useSkillsApi(authToken: string | null, userId: string) {
       const url = `/api/skills/download/${source}/${encodeURIComponent(skillName)}?${params}`
 
       const response = await fetch(url, {
-        headers: { Authorization: `Bearer ${authToken}` },
+        headers: { ...headersRef.current },
       })
 
       if (!response.ok) {
