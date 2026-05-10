@@ -352,3 +352,145 @@ class SkillManager:
             )
             rows = await cursor.fetchall()
         return [dict(r) for r in rows]
+
+    # ── Filesystem Migration ──────────────────────────────────────────
+
+    async def migrate_from_filesystem(self) -> dict[str, int]:
+        """Scan filesystem and register all skills not yet in DB.
+
+        Also migrates legacy nested versions (SKILL_v*.md, versions/vN/)
+        to flat {skill_name}@vN/ directories.
+
+        Returns dict with counts: {registered: N, versions_migrated: N}
+        """
+        import os
+        import shutil
+        from pathlib import Path
+
+        DATA_ROOT = Path(os.environ.get("DATA_ROOT", "data")).resolve()
+        registered = 0
+        versions_migrated = 0
+
+        # Scan shared skills
+        shared_dir = DATA_ROOT / "shared-skills"
+        if shared_dir.exists():
+            for entry in sorted(shared_dir.iterdir()):
+                if not entry.is_dir() or entry.is_symlink():
+                    continue
+                if "@v" in entry.name:
+                    continue
+                if not (entry / "SKILL.md").exists():
+                    continue
+                existing = await self.get_skill(entry.name)
+                if existing is not None:
+                    continue
+                meta = self._read_skill_meta(entry)
+                await self.register_skill(
+                    skill_name=entry.name,
+                    source="shared",
+                    owner_id=meta.get("owner", ""),
+                    description=meta.get("description", ""),
+                    category="",
+                    tags=[],
+                    path=str(entry),
+                )
+                registered += 1
+                versions_migrated += await self._migrate_legacy_versions(entry)
+
+        # Scan personal skills
+        users_dir = DATA_ROOT / "users"
+        if users_dir.exists():
+            for user_dir in sorted(users_dir.iterdir()):
+                if not user_dir.is_dir():
+                    continue
+                skill_base = user_dir / "workspace" / ".claude" / "skills"
+                if not skill_base.exists():
+                    continue
+                for entry in sorted(skill_base.iterdir()):
+                    if not entry.is_dir() or entry.is_symlink():
+                        continue
+                    if "@v" in entry.name:
+                        continue
+                    if not (entry / "SKILL.md").exists():
+                        continue
+                    existing = await self.get_skill(entry.name)
+                    if existing is not None:
+                        continue
+                    meta = self._read_skill_meta(entry)
+                    await self.register_skill(
+                        skill_name=entry.name,
+                        source="personal",
+                        owner_id=user_dir.name,
+                        description=meta.get("description", ""),
+                        category="",
+                        tags=[],
+                        path=str(entry),
+                    )
+                    registered += 1
+                    versions_migrated += await self._migrate_legacy_versions(entry)
+
+        return {"registered": registered, "versions_migrated": versions_migrated}
+
+    @staticmethod
+    def _read_skill_meta(skill_dir: Path) -> dict[str, str]:
+        """Read skill-meta.json, return dict with defaults."""
+        meta_path = skill_dir / "skill-meta.json"
+        if meta_path.exists():
+            try:
+                return json.loads(meta_path.read_text())
+            except (json.JSONDecodeError, OSError):
+                pass
+        return {}
+
+    @staticmethod
+    async def _migrate_legacy_versions(skill_dir: Path) -> int:
+        """Migrate legacy SKILL_v*.md and versions/vN/ to flat @vN dirs.
+
+        Returns count of migrated versions.
+        """
+        import re
+
+        migrated = 0
+
+        # Legacy file-based: SKILL_v1.md, SKILL_v2.md, etc.
+        for f in sorted(skill_dir.glob("SKILL_v*.md")):
+            if not f.is_file():
+                continue
+            m = re.match(r"SKILL_v(\d+)\.md", f.name)
+            if not m:
+                continue
+            version_number = int(m.group(1))
+            version_dir = skill_dir.with_name(f"{skill_dir.name}@v{version_number}")
+            version_dir.mkdir(parents=True, exist_ok=True)
+            f.rename(version_dir / "SKILL.md")
+            migrated += 1
+
+        # Legacy directory-based: versions/v1/, versions/v2/, etc.
+        legacy_versions_dir = skill_dir / "versions"
+        if legacy_versions_dir.exists():
+            for v_dir in sorted(legacy_versions_dir.iterdir()):
+                if not v_dir.is_dir() or not v_dir.name.startswith("v"):
+                    continue
+                try:
+                    version_number = int(v_dir.name[1:])
+                except ValueError:
+                    continue
+                new_dir = skill_dir.with_name(f"{skill_dir.name}@v{version_number}")
+                if new_dir.exists():
+                    for src_file in v_dir.rglob("*"):
+                        if src_file.is_file():
+                            rel = src_file.relative_to(v_dir)
+                            dest = new_dir / rel
+                            if not dest.exists():
+                                dest.parent.mkdir(parents=True, exist_ok=True)
+                                shutil.copy2(src_file, dest)
+                    shutil.rmtree(v_dir)
+                else:
+                    v_dir.rename(new_dir)
+                migrated += 1
+            try:
+                legacy_versions_dir.rmdir()
+            except OSError:
+                pass
+
+        return migrated

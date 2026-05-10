@@ -381,6 +381,8 @@ def load_skills(user_id: str) -> dict[str, dict[str, Any]]:
         for skill_dir in sorted(shared_skills.iterdir()):
             if not skill_dir.is_dir():
                 continue
+            if "@v" in skill_dir.name:
+                continue  # skip historical version directories
             skill_file = skill_dir / "SKILL.md"
             if skill_file.exists():
                 content = skill_file.read_text()
@@ -398,7 +400,9 @@ def load_skills(user_id: str) -> dict[str, dict[str, Any]]:
     if workspace_skills.exists():
         for skill_dir in sorted(workspace_skills.iterdir()):
             if not skill_dir.is_dir() or skill_dir.is_symlink() or (skill_dir / ".shared_skill_source").exists():
-                continue  # symlinks and Windows-copied shared skills
+                continue
+            if "@v" in skill_dir.name:
+                continue  # skip historical version directories
             skill_file = skill_dir / "SKILL.md"
             if skill_file.exists():
                 content = skill_file.read_text()
@@ -5844,6 +5848,21 @@ async def startup() -> None:
                 logger.info("Migrated %d JSONL feedback entries to SQLite", migrated)
         except Exception:
             logger.exception("Feedback JSONL migration failed")
+
+        # Migrate existing skills from filesystem to DB
+        try:
+            from src.skill_manager import SkillManager
+
+            skill_mgr = SkillManager(db=_db)
+            result = await skill_mgr.migrate_from_filesystem()
+            if result["registered"] > 0:
+                logger.info(
+                    "Skill migration: %d registered, %d versions migrated",
+                    result["registered"],
+                    result["versions_migrated"],
+                )
+        except Exception:
+            logger.exception("Skill DB migration failed")
     else:
         logger.info("No DATA_DB_PATH set — using file-based storage")
 
