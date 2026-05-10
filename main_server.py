@@ -4369,6 +4369,19 @@ async def promote_skill_to_shared(
     meta["source"] = meta.get("source", "promoted")
     meta_path.write_text(json.dumps(meta, indent=2))
 
+    # Register promoted skill in DB
+    if _skill_manager is not None:
+        try:
+            await _skill_manager.register_skill(
+                skill_name=skill_name,
+                source="shared",
+                owner_id=user_id,
+                description="",
+                path=str(target_dir),
+            )
+        except Exception:
+            logger.exception("Failed to register promoted skill in DB: %s", skill_name)
+
     return {
         "status": "ok",
         "skill_name": skill_name,
