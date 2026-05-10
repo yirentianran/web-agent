@@ -173,3 +173,56 @@ class TestBuildSystemPromptLanguage:
             final_check = prompt[final_check_start:]
             assert "reply" in final_check.lower()
             assert "REPLY IN ENGLISH" in final_check
+
+
+class TestSecurityPrompt:
+    def test_prompt_contains_hardware_os_refusal(self):
+        with tempfile.TemporaryDirectory() as td:
+            ws = _make_workspace(Path(td))
+            prompt = build_system_prompt("test_user", {}, ws)
+            assert "system information" in prompt.lower() or "系统信息" in prompt
+
+    def test_prompt_contains_env_secrets_refusal(self):
+        with tempfile.TemporaryDirectory() as td:
+            ws = _make_workspace(Path(td))
+            prompt = build_system_prompt("test_user", {}, ws)
+            assert "configuration" in prompt.lower() or "配置" in prompt
+
+    def test_prompt_contains_deployment_refusal(self):
+        with tempfile.TemporaryDirectory() as td:
+            ws = _make_workspace(Path(td))
+            prompt = build_system_prompt("test_user", {}, ws)
+            assert "deployment" in prompt.lower() or "部署" in prompt
+
+    def test_prompt_contains_architecture_refusal(self):
+        with tempfile.TemporaryDirectory() as td:
+            ws = _make_workspace(Path(td))
+            prompt = build_system_prompt("test_user", {}, ws)
+            assert "implementation detail" in prompt.lower() or "实现细节" in prompt
+
+    def test_prompt_contains_config_refusal(self):
+        with tempfile.TemporaryDirectory() as td:
+            ws = _make_workspace(Path(td))
+            prompt = build_system_prompt("test_user", {}, ws)
+            assert "configuration file" in prompt.lower() or "配置文件" in prompt
+
+    def test_security_section_appears_before_skills(self):
+        with tempfile.TemporaryDirectory() as td:
+            ws = _make_workspace(Path(td))
+            prompt = build_system_prompt("test_user", {}, ws)
+            security_idx = prompt.find("Information Disclosure")
+            skills_idx = prompt.find("Available Skills")
+            if security_idx >= 0 and skills_idx >= 0:
+                assert security_idx < skills_idx
+
+    def test_security_prompt_english(self):
+        with tempfile.TemporaryDirectory() as td:
+            ws = _make_workspace(Path(td))
+            prompt = build_system_prompt("test_user", {}, ws, language="en")
+            assert "NEVER" in prompt or "MUST" in prompt
+
+    def test_security_prompt_chinese(self):
+        with tempfile.TemporaryDirectory() as td:
+            ws = _make_workspace(Path(td))
+            prompt = build_system_prompt("test_user", {}, ws, language="zh")
+            assert "无法" in prompt or "禁止" in prompt or "切勿" in prompt or "不能" in prompt
