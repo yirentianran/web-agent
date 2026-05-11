@@ -69,7 +69,6 @@ CREATE TABLE IF NOT EXISTS sessions (
 
 CREATE INDEX IF NOT EXISTS idx_sessions_user_created ON sessions(user_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_sessions_user_status ON sessions(user_id, status);
-CREATE INDEX IF NOT EXISTS idx_sessions_not_deleted ON sessions(user_id, created_at DESC) WHERE deleted_at IS NULL;
 
 -- Messages table
 CREATE TABLE IF NOT EXISTS messages (
@@ -315,6 +314,14 @@ class Database:
         try:
             await self._conn.execute(
                 "ALTER TABLE sessions ADD COLUMN deleted_at REAL"
+            )
+        except Exception:
+            pass
+        # Create partial index for non-deleted sessions (requires deleted_at column)
+        try:
+            await self._conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_sessions_not_deleted "
+                "ON sessions(user_id, created_at DESC) WHERE deleted_at IS NULL"
             )
         except Exception:
             pass
