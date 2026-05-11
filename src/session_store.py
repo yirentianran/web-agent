@@ -181,7 +181,7 @@ class SessionStore:
         return count[0] > 0
 
     async def delete_session(self, user_id: str, session_id: str) -> None:
-        """Delete a session and all its messages. Verifies ownership."""
+        """Delete a session and all associated data. Verifies ownership."""
         async with self.db.connection() as conn:
             cursor = await conn.execute(
                 "SELECT session_id FROM sessions WHERE session_id = ? AND user_id = ?",
@@ -193,6 +193,12 @@ class SessionStore:
 
             await conn.execute(
                 "DELETE FROM messages WHERE session_id = ?", (session_id,)
+            )
+            await conn.execute(
+                "DELETE FROM uploads WHERE session_id = ?", (session_id,)
+            )
+            await conn.execute(
+                "DELETE FROM generated_files WHERE session_id = ?", (session_id,)
             )
             await conn.execute("DELETE FROM sessions WHERE session_id = ?", (session_id,))
             await conn.commit()
