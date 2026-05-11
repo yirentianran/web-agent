@@ -14,28 +14,37 @@ WORKDIR /app
 # Install uv (via Tsinghua PyPI mirror)
 RUN pip install --no-cache-dir -i https://pypi.tuna.tsinghua.edu.cn/simple uv
 
-# Install Python dependencies (layer cached when pyproject.toml/uv.lock unchanged)
+# Create app user first so files get correct ownership automatically
+RUN useradd --create-home --uid 1000 appuser && \
+    mkdir -p /data /app/logs && \
+    chown -R appuser:appuser /app /data /app/logs
+
+# Switch to appuser — COPY and RUN commands inherit appuser ownership
+USER appuser
+
+# Install Python dependencies (cached when pyproject.toml/uv.lock unchanged)
 COPY pyproject.toml uv.lock ./
 ENV UV_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
-RUN uv sync --frozen --no-dev
+RUN uv sync --frozen --no-dev && \
+    rm -rf $(uv cache dir)
 
 # Copy backend source
 COPY main_server.py ./
 COPY src/ ./src/
 
 # Copy built frontend from Stage 1
-COPY --from=frontend-build /build/frontend/dist/ ./src/static/
+COPY --from=frontend-build --chown=appuser:appuser /build/frontend/dist/ ./src/static/
 
-# Non-root user
-RUN useradd --create-home --uid 1000 appuser && \
-    mkdir -p /data /app/logs && \
-    chown -R appuser:appuser /data /app /app/logs
+# Switch back to root for HEALTHCHECK (avoids permission issues on probe),
+# then CMD runs as appuser
+USER root
 
 HEALTHCHECK --interval=30s --timeout=10s --retries=3 \
     CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')" || exit 1
 
 ENV PROD=true \
-    PYTHONUNBUFFERED=1
+    PYTHONUNBUFFERED=1 \
+    UV_FROZEN=true
 
 EXPOSE 8000
 USER appuser

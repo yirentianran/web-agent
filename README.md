@@ -307,20 +307,29 @@ The Docker image includes a health check at `/api/health`. Data persists in the 
 
 ### Docker issues in China
 
-1. **Registry mirror** — add to `~/.docker/daemon.json`:
+1. **Registry mirror** — add to Docker Desktop Settings → Docker Engine (or `~/.docker/daemon.json` on Linux):
    ```json
    {
      "registry-mirrors": [
-       "https://docker.1ms.run",
-       "https://docker.xuanyuan.me"
+       "https://mirror.ccs.tencentyun.com"
      ]
    }
    ```
-   Restart Docker Desktop after saving.
+   Restart Docker Desktop after saving. For Alibaba Cloud, use your personal mirror: `https://<your-id>.mirror.aliyuncs.com`.
 
-2. **PyPI mirror** — the Dockerfile uses Tsinghua mirror by default. To change, edit the index URLs in `Dockerfile`.
+2. **PyPI mirror** — both Dockerfiles use `pypi.tuna.tsinghua.edu.cn` by default. If the mirror is unreachable, you can switch to `https://mirrors.aliyun.com/pypi/simple/`.
 
-3. **Clash/VPN interference** — TUN-mode proxies can block Docker outbound traffic. Temporarily disable them before building.
+3. **npm mirror** — the Dockerfile uses `registry.npmmirror.com` (China CDN). No change needed.
+
+4. **apt mirror** — `Dockerfile.user` uses `mirrors.aliyun.com` for Debian packages. No change needed.
+
+5. **Build with host network** — if Docker bridge network has DNS issues, use `--network=host`:
+   ```bash
+   docker build --network=host -t web-agent .
+   docker build --network=host -t web-agent-user:latest -f Dockerfile.user .
+   ```
+
+6. **Clash/VPN interference** — TUN-mode proxies can block Docker outbound traffic. Temporarily disable them before building.
 
 ## License
 

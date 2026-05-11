@@ -25,32 +25,36 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     npm \
     && rm -rf /var/lib/apt/lists/*
 
-# Create non-root agent user (uid 1000 matches host useradd convention).
-# Workspace and .claude directories are provided via volume mounts at
-# runtime; the agent user's home directory (/home/agent) is created by
-# --create-home as a fallback for standalone testing.
-RUN useradd --create-home --uid 1000 agent && \
-    chown -R agent:agent /home/agent /app
+# Install uv as root
+RUN pip install --no-cache-dir -i https://pypi.tuna.tsinghua.edu.cn/simple uv
 
-# Copy backend source (for hooks, utilities, agent server)
-COPY pyproject.toml uv.lock ./
+# Create agent user and prepare /app for non-root usage
+RUN useradd --create-home --uid 1000 agent && \
+    chown -R agent:agent /app /home/agent
+
+# Switch to agent — COPY and RUN commands inherit agent ownership
+USER agent
 
 # Install Python deps via uv (cached unless pyproject.toml/uv.lock change)
-RUN pip install --no-cache-dir uv && \
-    uv sync --frozen --no-dev
+COPY pyproject.toml uv.lock ./
+ENV UV_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
+RUN uv sync --frozen --no-dev && \
+    rm -rf $(uv cache dir)
 
-# Copy source code and agent entry point (does not invalidate uv sync cache)
+# Copy source code
 COPY src/ ./src/
 COPY agent_server.py ./
-RUN chown -R agent:agent /app
 
-# Copy agent server entry point and container entrypoint
-COPY agent_server.py ./
+# Switch back to root for entrypoint (UID/GID adaptation requires root)
+USER root
+
+# Copy container entrypoint
 COPY entrypoint.sh /
 
 ENV PYTHONUNBUFFERED=1 \
     HOME=/home/agent \
-    WORKSPACE=/workspace
+    WORKSPACE=/workspace \
+    UV_FROZEN=true
 
 EXPOSE 8000
 # Don't set USER — entrypoint.sh runs as root to adapt agent UID/GID,
