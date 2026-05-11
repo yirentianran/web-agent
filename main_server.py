@@ -2239,7 +2239,7 @@ async def run_agent_task(
                 len(full_prompt),
                 len(history),
             )
-            logger.info("[AGENT_TASK] Prompt preview: %s", full_prompt[:500])
+            logger.debug("[AGENT_TASK] Full prompt (session=%s, len=%d): %s", session_id, len(full_prompt), full_prompt)
             await client.connect(prompt=prompt_stream())
             logger.info("[AGENT_TASK] Client connected (continuation), starting receive_response")
         else:
@@ -2517,6 +2517,9 @@ async def run_agent_task_container(
             prompt = _build_history_prompt(history, user_message, language=language)
         else:
             prompt = _format_first_message_prompt(user_message, attached_files, language)
+
+        # Log the full prompt for debugging
+        logger.debug("Prompt start (session=%s, len=%d): %s", session_id, len(prompt), prompt)
 
         await bridge.run_and_stream(prompt, options_dict)
         logger.info(
