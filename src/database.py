@@ -162,7 +162,7 @@ CREATE INDEX IF NOT EXISTS idx_audit_log_user ON audit_log(user_id, created_at D
 CREATE TABLE IF NOT EXISTS uploads (
     id          TEXT PRIMARY KEY,
     user_id     TEXT NOT NULL REFERENCES users(user_id),
-    session_id  TEXT NOT NULL REFERENCES sessions(session_id),
+    session_id  TEXT NOT NULL,
     filename    TEXT NOT NULL,
     stored_name TEXT NOT NULL,
     file_size   INTEGER NOT NULL DEFAULT 0,
@@ -178,7 +178,7 @@ CREATE INDEX IF NOT EXISTS idx_uploads_session ON uploads(session_id);
 CREATE TABLE IF NOT EXISTS generated_files (
     id          TEXT PRIMARY KEY,
     user_id     TEXT NOT NULL REFERENCES users(user_id),
-    session_id  TEXT NOT NULL REFERENCES sessions(session_id),
+    session_id  TEXT NOT NULL,
     filename    TEXT NOT NULL,
     stored_name TEXT NOT NULL,
     file_size   INTEGER NOT NULL DEFAULT 0,
@@ -302,6 +302,13 @@ class Database:
         except Exception:
             pass
 
+        # Remove FK constraints on uploads and generated_files session_id columns
+        # by recreating tables without the constraints (SQLite limitation).
+        try:
+            await self._migrate_drop_session_fks()
+        except Exception:
+            pass
+
         self._checkpoint_task = asyncio.create_task(self._checkpoint_loop())
         self._initialized = True
 
@@ -319,6 +326,73 @@ class Database:
                     await self._conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
                 except Exception:
                     pass
+
+    async def _migrate_drop_session_fks(self) -> None:
+        """Drop FK constraints on uploads/generated_files session_id columns.
+
+        SQLite cannot DROP CONSTRAINT directly, so we recreate the tables
+        without the FK references while preserving all existing data.
+        """
+        # Check if migration is needed by inspecting table SQL
+        row = await self._conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='uploads'"
+        ).fetchone()
+        if row and "REFERENCES sessions" not in row[0]:
+            return  # Already migrated
+
+        await self._conn.execute("PRAGMA foreign_keys=OFF")
+        await self._conn.execute("BEGIN TRANSACTION")
+
+        # Recreate uploads
+        await self._conn.execute("ALTER TABLE uploads RENAME TO uploads_old")
+        await self._conn.execute(
+            "CREATE TABLE uploads ("
+            "id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(user_id), "
+            "session_id TEXT NOT NULL, filename TEXT NOT NULL, stored_name TEXT NOT NULL, "
+            "file_size INTEGER NOT NULL DEFAULT 0, mime_type TEXT NOT NULL DEFAULT '', "
+            "url TEXT NOT NULL DEFAULT '', created_at REAL NOT NULL DEFAULT (strftime('%s', 'now'))"
+            ")"
+        )
+        await self._conn.execute(
+            "INSERT INTO uploads SELECT id, user_id, session_id, filename, stored_name, "
+            "file_size, mime_type, url, created_at FROM uploads_old"
+        )
+        await self._conn.execute("DROP TABLE uploads_old")
+
+        # Recreate generated_files
+        await self._conn.execute(
+            "ALTER TABLE generated_files RENAME TO generated_files_old"
+        )
+        await self._conn.execute(
+            "CREATE TABLE generated_files ("
+            "id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(user_id), "
+            "session_id TEXT NOT NULL, filename TEXT NOT NULL, stored_name TEXT NOT NULL, "
+            "file_size INTEGER NOT NULL DEFAULT 0, mime_type TEXT NOT NULL DEFAULT '', "
+            "url TEXT NOT NULL DEFAULT '', created_at REAL NOT NULL DEFAULT (strftime('%s', 'now'))"
+            ")"
+        )
+        await self._conn.execute(
+            "INSERT INTO generated_files SELECT id, user_id, session_id, filename, "
+            "stored_name, file_size, mime_type, url, created_at FROM generated_files_old"
+        )
+        await self._conn.execute("DROP TABLE generated_files_old")
+
+        # Recreate indexes
+        await self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_uploads_user ON uploads(user_id, created_at DESC)"
+        )
+        await self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_uploads_session ON uploads(session_id)"
+        )
+        await self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_generated_files_user ON generated_files(user_id, created_at DESC)"
+        )
+        await self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_generated_files_session ON generated_files(session_id)"
+        )
+
+        await self._conn.execute("COMMIT")
+        await self._conn.execute("PRAGMA foreign_keys=ON")
 
     @asynccontextmanager
     async def connection(self) -> AsyncIterator[aiosqlite.Connection]:
@@ -378,7 +452,7 @@ class Database:
                 CREATE TABLE IF NOT EXISTS uploads (
                     id TEXT PRIMARY KEY,
                     user_id TEXT NOT NULL REFERENCES users(user_id),
-                    session_id TEXT NOT NULL REFERENCES sessions(session_id),
+                    session_id TEXT NOT NULL,
                     filename TEXT NOT NULL,
                     stored_name TEXT NOT NULL,
                     file_size INTEGER NOT NULL DEFAULT 0,
@@ -392,7 +466,7 @@ class Database:
                 CREATE TABLE IF NOT EXISTS generated_files (
                     id TEXT PRIMARY KEY,
                     user_id TEXT NOT NULL REFERENCES users(user_id),
-                    session_id TEXT NOT NULL REFERENCES sessions(session_id),
+                    session_id TEXT NOT NULL,
                     filename TEXT NOT NULL,
                     stored_name TEXT NOT NULL,
                     file_size INTEGER NOT NULL DEFAULT 0,
