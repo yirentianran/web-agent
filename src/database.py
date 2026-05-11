@@ -63,11 +63,13 @@ CREATE TABLE IF NOT EXISTS sessions (
     cost_usd     REAL NOT NULL DEFAULT 0,
     message_count INTEGER NOT NULL DEFAULT 0,
     created_at   REAL NOT NULL DEFAULT (strftime('%s', 'now')),
-    last_active_at REAL NOT NULL DEFAULT (strftime('%s', 'now'))
+    last_active_at REAL NOT NULL DEFAULT (strftime('%s', 'now')),
+    deleted_at   REAL
 );
 
 CREATE INDEX IF NOT EXISTS idx_sessions_user_created ON sessions(user_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_sessions_user_status ON sessions(user_id, status);
+CREATE INDEX IF NOT EXISTS idx_sessions_not_deleted ON sessions(user_id, created_at DESC) WHERE deleted_at IS NULL;
 
 -- Messages table
 CREATE TABLE IF NOT EXISTS messages (
@@ -306,6 +308,14 @@ class Database:
         # by recreating tables without the constraints (SQLite limitation).
         try:
             await self._migrate_drop_session_fks()
+        except Exception:
+            pass
+
+        # Add deleted_at column for soft-deleted sessions
+        try:
+            await self._conn.execute(
+                "ALTER TABLE sessions ADD COLUMN deleted_at REAL"
+            )
         except Exception:
             pass
 

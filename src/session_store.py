@@ -91,11 +91,11 @@ class SessionStore:
         return {"session_id": session_id, "title": ""}
 
     async def list_sessions(self, user_id: str) -> list[dict[str, Any]]:
-        """List all sessions for a user, sorted by created_at DESC."""
+        """List all active sessions for a user, sorted by created_at DESC."""
         async with self.db.connection() as conn:
             cursor = await conn.execute(
                 """SELECT session_id, title, status, cost_usd, message_count, created_at, last_active_at
-                   FROM sessions WHERE user_id = ?
+                   FROM sessions WHERE user_id = ? AND deleted_at IS NULL
                    ORDER BY created_at DESC""",
                 (user_id,),
             )
@@ -181,10 +181,10 @@ class SessionStore:
         return count[0] > 0
 
     async def delete_session(self, user_id: str, session_id: str) -> None:
-        """Delete a session and all its messages. Verifies ownership."""
+        """Soft-delete a session. Messages and associated data are preserved."""
         async with self.db.connection() as conn:
             cursor = await conn.execute(
-                "SELECT session_id FROM sessions WHERE session_id = ? AND user_id = ?",
+                "SELECT session_id FROM sessions WHERE session_id = ? AND user_id = ? AND deleted_at IS NULL",
                 (session_id, user_id),
             )
             existing = await cursor.fetchone()
@@ -192,9 +192,10 @@ class SessionStore:
                 raise HTTPException(status_code=404, detail="Session not found")
 
             await conn.execute(
-                "DELETE FROM messages WHERE session_id = ?", (session_id,)
+                "UPDATE sessions SET deleted_at = ?, status = 'deleted' "
+                "WHERE session_id = ? AND user_id = ?",
+                (time.time(), session_id, user_id),
             )
-            await conn.execute("DELETE FROM sessions WHERE session_id = ?", (session_id,))
             await conn.commit()
 
     async def update_session_title(
@@ -204,7 +205,7 @@ class SessionStore:
         async def _do():
             async with self.db.connection() as conn:
                 await conn.execute(
-                    "UPDATE sessions SET title = ? WHERE session_id = ? AND user_id = ?",
+                    "UPDATE sessions SET title = ? WHERE session_id = ? AND user_id = ? AND deleted_at IS NULL",
                     (title, session_id, user_id),
                 )
                 await conn.commit()
@@ -219,7 +220,7 @@ class SessionStore:
             async with self.db.connection() as conn:
                 await conn.execute(
                     "UPDATE sessions SET status = ?, last_active_at = ? "
-                    "WHERE session_id = ? AND user_id = ?",
+                    "WHERE session_id = ? AND user_id = ? AND deleted_at IS NULL",
                     (status, time.time(), session_id, user_id),
                 )
                 await conn.commit()
@@ -234,7 +235,7 @@ class SessionStore:
             async with self.db.connection() as conn:
                 await conn.execute(
                     "UPDATE sessions SET cost_usd = ?, last_active_at = ? "
-                    "WHERE session_id = ? AND user_id = ?",
+                    "WHERE session_id = ? AND user_id = ? AND deleted_at IS NULL",
                     (cost_usd, time.time(), session_id, user_id),
                 )
                 await conn.commit()
@@ -249,7 +250,7 @@ class SessionStore:
             async with self.db.connection() as conn:
                 await conn.execute(
                     "UPDATE sessions SET message_count = ?, cost_usd = ?, "
-                    "last_active_at = ? WHERE session_id = ? AND user_id = ?",
+                    "last_active_at = ? WHERE session_id = ? AND user_id = ? AND deleted_at IS NULL",
                     (message_count, cost_usd, time.time(), session_id, user_id),
                 )
                 await conn.commit()
@@ -257,12 +258,12 @@ class SessionStore:
         await self._retry_on_lock(_do)
 
     async def add_message(self, user_id: str, session_id: str, message: dict) -> None:
-        """Append a message to a session. Verifies session belongs to user_id."""
+        """Append a message to a session. Verifies session belongs to user_id and is not deleted."""
         async def _do():
             async with self.db.connection() as conn:
-                # Verify session ownership
+                # Verify session ownership and not deleted
                 cursor = await conn.execute(
-                    "SELECT session_id FROM sessions WHERE session_id = ? AND user_id = ?",
+                    "SELECT session_id FROM sessions WHERE session_id = ? AND user_id = ? AND deleted_at IS NULL",
                     (session_id, user_id),
                 )
                 if await cursor.fetchone() is None:

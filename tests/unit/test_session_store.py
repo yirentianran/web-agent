@@ -354,19 +354,36 @@ class TestGetSessionHistory:
 
 class TestDeleteSession:
     @pytest.mark.asyncio
-    async def test_deletes_session_and_messages(self, store: SessionStore) -> None:
+    async def test_soft_deletes_session(self, store: SessionStore) -> None:
         await store.create_session(user_id="u1", session_id="s1")
         await store.add_message(user_id="u1", session_id="s1", message={"type": "user", "content": "hi"})
         await store.delete_session(user_id="u1", session_id="s1")
 
-        history = await store.get_session_history(user_id="u1", session_id="s1")
-        assert history == []
+        # Session no longer appears in list
+        sessions = await store.list_sessions(user_id="u1")
+        assert sessions == []
+
+        # Messages are preserved (soft delete)
+        async with store.db.connection() as conn:
+            cursor = await conn.execute(
+                "SELECT COUNT(*) FROM messages WHERE session_id = ?", ("s1",)
+            )
+            count = await cursor.fetchone()
+            assert count[0] == 1
 
     @pytest.mark.asyncio
     async def test_delete_nonexistent_raises(self, store: SessionStore) -> None:
         from fastapi import HTTPException
         with pytest.raises(HTTPException):
             await store.delete_session(user_id="u1", session_id="nonexistent")
+
+    @pytest.mark.asyncio
+    async def test_double_delete_raises(self, store: SessionStore) -> None:
+        from fastapi import HTTPException
+        await store.create_session(user_id="u1", session_id="s1")
+        await store.delete_session(user_id="u1", session_id="s1")
+        with pytest.raises(HTTPException):
+            await store.delete_session(user_id="u1", session_id="s1")
 
 
 # ── update_session_title ─────────────────────────────────────────
