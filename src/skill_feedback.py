@@ -1,16 +1,10 @@
 """Skill feedback collection, rating aggregation, and evolution pipeline.
 
-Collects user feedback per skill, aggregates ratings over time, and suggests
-prompt improvements.
+All feedback is stored in SQLite (skill_feedback table). No file-based storage.
 
 Usage:
-    # File-based (legacy)
-    from src.skill_feedback import SkillFeedbackManager
-    mgr = SkillFeedbackManager()
-    mgr.submit_feedback("audit-pdf", user_id="alice", rating=4, comment="Good coverage")
-
-    # SQLite-backed (new)
     from src.skill_feedback import DBSkillFeedbackManager
+
     mgr = DBSkillFeedbackManager(db=db)
     await mgr.submit_feedback("audit-pdf", user_id="alice", rating=4, comment="Good coverage")
 """
@@ -19,138 +13,15 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import time
-from pathlib import Path
+from datetime import UTC
 from typing import Any
 
 logger = logging.getLogger(__name__)
 
-DATA_ROOT = Path(os.getenv("DATA_ROOT", "/data"))
-
-
-class SkillFeedbackManager:
-    """Per-skill feedback collection and analytics."""
-
-    def __init__(self, data_root: Path = DATA_ROOT) -> None:
-        self.feedback_dir = data_root / "training" / "skill-feedback"
-        self.feedback_dir.mkdir(parents=True, exist_ok=True)
-
-    def submit_feedback(
-        self,
-        skill_name: str,
-        *,
-        user_id: str,
-        rating: int,
-        comment: str = "",
-        session_id: str | None = None,
-    ) -> dict[str, Any]:
-        """Submit feedback for a skill. Rating is 1-5."""
-        if not 1 <= rating <= 5:
-            raise ValueError("Rating must be between 1 and 5")
-
-        entry = {
-            "skill_name": skill_name,
-            "user_id": user_id,
-            "rating": rating,
-            "comment": comment[:500],
-            "session_id": session_id,
-            "timestamp": time.time(),
-        }
-
-        feedback_file = self.feedback_dir / f"{time.time()}_{skill_name}.jsonl"
-        feedback_file.write_text(json.dumps(entry, ensure_ascii=False))
-        return entry
-
-    def get_analytics(self, skill_name: str) -> dict[str, Any]:
-        """Get aggregated analytics for a skill."""
-        feedbacks = self._load_feedback(skill_name)
-        if not feedbacks:
-            return {
-                "skill_name": skill_name,
-                "total_feedbacks": 0,
-                "average_rating": 0,
-                "rating_distribution": {},
-                "recent_comments": [],
-            }
-
-        ratings = [f["rating"] for f in feedbacks]
-        distribution: dict[int, int] = {}
-        for r in ratings:
-            distribution[r] = distribution.get(r, 0) + 1
-
-        recent = sorted(
-            [f for f in feedbacks if f.get("comment")],
-            key=lambda f: f.get("timestamp", 0),
-            reverse=True,
-        )[:5]
-
-        return {
-            "skill_name": skill_name,
-            "total_feedbacks": len(feedbacks),
-            "average_rating": round(sum(ratings) / len(ratings), 2),
-            "rating_distribution": {str(k): v for k, v in sorted(distribution.items())},
-            "recent_comments": [
-                {"user_id": c["user_id"], "comment": c["comment"], "rating": c["rating"]}
-                for c in recent
-            ],
-        }
-
-    def get_all_analytics(self) -> dict[str, dict[str, Any]]:
-        """Get analytics for all skills."""
-        skills: set[str] = set()
-        for f in self.feedback_dir.glob("*.jsonl"):
-            try:
-                data = json.loads(f.read_text())
-                skills.add(data["skill_name"])
-            except (json.JSONDecodeError, KeyError, OSError):
-                continue
-
-        return {skill: self.get_analytics(skill) for skill in sorted(skills)}
-
-    def suggest_improvements(self, skill_name: str) -> list[str]:
-        """Generate improvement suggestions based on low-rated feedback."""
-        feedbacks = self._load_feedback(skill_name)
-        suggestions: list[str] = []
-
-        low_rated = [f for f in feedbacks if f["rating"] <= 2]
-        if len(low_rated) > len(feedbacks) * 0.5 and len(feedbacks) >= 3:
-            suggestions.append(
-                f"50%+ of {len(feedbacks)} feedbacks are rated 2 or below. "
-                "Consider reviewing the skill's SKILL.md for gaps."
-            )
-
-        common_keywords = ["missing", "wrong", "incorrect", "outdated", "confusing"]
-        for fb in low_rated:
-            comment = fb.get("comment", "").lower()
-            for kw in common_keywords:
-                if kw in comment:
-                    suggestions.append(
-                        f"Feedback mentions '{kw}': \"{fb['comment'][:100]}\""
-                    )
-                    break
-
-        return suggestions
-
-    def _load_feedback(self, skill_name: str) -> list[dict[str, Any]]:
-        """Load all feedback entries for a skill."""
-        entries: list[dict[str, Any]] = []
-        for f in self.feedback_dir.glob(f"*_{skill_name}.jsonl"):
-            try:
-                entries.append(json.loads(f.read_text()))
-            except (json.JSONDecodeError, OSError):
-                continue
-        return entries
-
-
-# ── SQLite-backed feedback manager ─────────────────────────────────
-
 
 class DBSkillFeedbackManager:
-    """Per-skill feedback collection and analytics using SQLite.
-
-    Replaces the file-based SkillFeedbackManager with DB persistence.
-    """
+    """Per-skill feedback collection and analytics using SQLite."""
 
     def __init__(self, db: Any) -> None:  # Database from src.database
         self.db = db
@@ -178,7 +49,16 @@ class DBSkillFeedbackManager:
                 """INSERT INTO skill_feedback
                    (skill_name, user_id, session_id, rating, comment, user_edits, skill_version, conversation_snippet)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-                (skill_name, user_id, session_id, rating, truncated_comment, user_edits, skill_version, truncated_snippet),
+                (
+                    skill_name,
+                    user_id,
+                    session_id,
+                    rating,
+                    truncated_comment,
+                    user_edits,
+                    skill_version,
+                    truncated_snippet,
+                ),
             )
             feedback_id = cursor.lastrowid
 
@@ -424,13 +304,14 @@ class DBSkillFeedbackManager:
         self,
         skill_name: str,
         version_number: int,
-        skills_dir: Path,
+        skills_dir,
     ) -> dict[str, Any] | None:
         """Activate a specific pending version, replacing SKILL.md.
 
         Backs up the current SKILL.md before replacing.
         Returns dict with activated=True, version_number, backup path.
         """
+
         skill_dir = skills_dir / skill_name
         skill_file = skill_dir / "SKILL.md"
         version_path = skill_dir / f"SKILL_v{version_number}.md"
@@ -439,8 +320,6 @@ class DBSkillFeedbackManager:
             return None
         if not skill_file.exists():
             return None
-
-        new_content = version_path.read_text()
 
         # Backup current version
         existing_backups = list(skill_dir.glob("SKILL_backup_v*.md"))
@@ -460,12 +339,13 @@ class DBSkillFeedbackManager:
     async def rollback_version(
         self,
         skill_name: str,
-        skills_dir: Path,
+        skills_dir,
     ) -> dict[str, Any] | None:
         """Rollback to the most recent backup version.
 
         Returns dict with rolled_back=True and restored_version.
         """
+
         skill_dir = skills_dir / skill_name
         skill_file = skill_dir / "SKILL.md"
 
@@ -489,13 +369,14 @@ class DBSkillFeedbackManager:
         }
 
     async def list_versions(
-        self, skill_name: str, skills_dir: Path
+        self, skill_name: str, skills_dir
     ) -> list[dict[str, Any]]:
         """List all version files for a skill.
 
         Supports both legacy file-based versions (SKILL_v*.md) and
         new directory-based versions (versions/vN/).
         """
+
         skill_dir = skills_dir / skill_name
         if not skill_dir.exists():
             return []
@@ -535,12 +416,13 @@ class DBSkillFeedbackManager:
         return versions
 
     async def get_version_content(
-        self, skill_name: str, version_name: str, skills_dir: Path
+        self, skill_name: str, version_name: str, skills_dir
     ) -> str | None:
         """Get the content of a specific version file.
 
         Supports both legacy file-based versions and new directory-based versions.
         """
+
         skill_dir = skills_dir / skill_name
         if version_name == "current":
             target = skill_dir / "SKILL.md"
@@ -556,12 +438,13 @@ class DBSkillFeedbackManager:
         return target.read_text()
 
     async def list_version_files(
-        self, skill_name: str, version_number: int, skills_dir: Path
+        self, skill_name: str, version_number: int, skills_dir
     ) -> list[dict[str, Any]] | None:
         """List all files in a specific version directory.
 
         Returns None if the version doesn't exist.
         """
+
         skill_dir = skills_dir / skill_name
         version_dir = skill_dir / "versions" / f"v{version_number}"
 
@@ -583,7 +466,7 @@ class DBSkillFeedbackManager:
         self,
         skill_name: str,
         version_number: int,
-        skills_dir: Path,
+        skills_dir,
     ) -> dict[str, Any] | None:
         """Activate a directory-based version.
 
@@ -591,6 +474,7 @@ class DBSkillFeedbackManager:
         backing up current files first.
         """
         import shutil
+        from datetime import datetime
 
         skill_dir = skills_dir / skill_name
         version_dir = skill_dir / "versions" / f"v{version_number}"
@@ -618,12 +502,12 @@ class DBSkillFeedbackManager:
         meta: dict[str, Any] = {}
         if meta_path.exists():
             meta = json.loads(meta_path.read_text())
-        meta["last_evolved_at"] = datetime.now(timezone.utc).isoformat()
+        meta["last_evolved_at"] = datetime.now(UTC).isoformat()
         meta["current_version"] = version_number
         meta["evolution_history"] = meta.get("evolution_history", [])
         meta["evolution_history"].append({
             "version": version_number,
-            "activated_at": datetime.now(timezone.utc).isoformat(),
+            "activated_at": datetime.now(UTC).isoformat(),
             "source": "admin_review",
         })
         meta_path.write_text(json.dumps(meta, indent=2))
@@ -633,27 +517,3 @@ class DBSkillFeedbackManager:
             "version_number": version_number,
             "backup": str(backup_dir),
         }
-
-    async def migrate_from_jsonl(self, feedback_dir: Path) -> int:
-        """Migrate existing JSONL files to SQLite. Returns count of migrated entries."""
-        migrated = 0
-        for f in feedback_dir.glob("*.jsonl"):
-            try:
-                content = f.read_text(encoding="utf-8")
-                for line in content.splitlines():
-                    line = line.strip()
-                    if not line:
-                        continue
-                    entry = json.loads(line)
-                    await self.submit_feedback(
-                        entry["skill_name"],
-                        user_id=entry.get("user_id", "anonymous"),
-                        rating=entry["rating"],
-                        comment=entry.get("comment", ""),
-                        session_id=entry.get("session_id"),
-                    )
-                    migrated += 1
-                f.unlink()
-            except (json.JSONDecodeError, OSError, KeyError):
-                continue
-        return migrated

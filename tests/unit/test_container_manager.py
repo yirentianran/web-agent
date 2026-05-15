@@ -62,8 +62,6 @@ class TestUserPaths:
         cm.ensure_user_dirs("alice")
         workspace = tmp_data_root / "users" / "alice" / "workspace" / "uploads"
         assert workspace.exists()
-        reports = tmp_data_root / "users" / "alice" / "workspace" / "reports"
-        assert reports.exists()
 
     def test_ensure_user_dirs_idempotent(self, tmp_data_root: Path) -> None:
         cm.ensure_user_dirs("alice")
@@ -80,7 +78,6 @@ class TestUserVolumes:
 
         workspace_key = str(tmp_data_root / "users" / "alice" / "workspace")
         claude_key = str(tmp_data_root / "users" / "alice" / ".claude")
-        skills_key = str(tmp_data_root / "users" / "alice" / "skills")
         shared_key = str(tmp_data_root / "shared-skills")
 
         # Workspace — rw, bind target matches source
@@ -97,11 +94,6 @@ class TestUserVolumes:
         assert shared_key in volumes
         assert volumes[shared_key]["bind"] == shared_key
         assert volumes[shared_key]["mode"] == "ro"
-
-        # Personal skills — rw, bind target matches source
-        assert skills_key in volumes
-        assert volumes[skills_key]["bind"] == skills_key
-        assert volumes[skills_key]["mode"] == "rw"
 
 
 # ── environment ───────────────────────────────────────────────────
@@ -123,7 +115,7 @@ class TestUserEnv:
         env = cm.get_user_env("alice")
         skills = env["CLAUDE_SKILLS_DIRS"].split(",")
         assert str(tmp_data_root / "shared-skills") in skills
-        assert str(tmp_data_root / "users" / "alice" / "skills") in skills
+        assert str(tmp_data_root / "users" / "alice" / "workspace" / ".claude" / "skills") in skills
 
     def test_env_falls_back_to_shared_api_key(self, tmp_data_root: Path) -> None:
         """When user-specific key is absent, falls back to ANTHROPIC_API_KEY."""
@@ -147,15 +139,6 @@ class TestUserEnv:
         assert "MCP_CONFIG_JSON" in env
         parsed = json.loads(env["MCP_CONFIG_JSON"])
         assert parsed == mcp
-
-    def test_settings_json_written(self, tmp_data_root: Path) -> None:
-        cm.get_user_env("alice")
-        settings_path = cm.user_data_dir("alice") / ".claude" / "settings.json"
-        assert settings_path.exists()
-        data = json.loads(settings_path.read_text())
-        assert "allowedTools" in data
-        assert "disallowedTools" in data
-
 
 # ── container lifecycle ───────────────────────────────────────────
 

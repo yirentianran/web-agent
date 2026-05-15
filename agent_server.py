@@ -558,21 +558,6 @@ async def agent_ws(websocket: WebSocket) -> None:
                 os.getenv("ANTHROPIC_BASE_URL", "default"),
             )
 
-            # Ensure API credentials in OS environment
-            if not os.getenv("ANTHROPIC_AUTH_TOKEN") and not os.getenv(
-                "ANTHROPIC_API_KEY"
-            ):
-                sdk_env_dict = options_dict.get("env") or {}
-                fallback_key = (
-                    sdk_env_dict.get("ANTHROPIC_AUTH_TOKEN")
-                    or sdk_env_dict.get("ANTHROPIC_API_KEY")
-                    or ""
-                )
-                if fallback_key:
-                    os.environ["ANTHROPIC_AUTH_TOKEN"] = fallback_key
-                    os.environ["ANTHROPIC_API_KEY"] = fallback_key
-                    logger.info("Set API credentials from options.env")
-
             # Check if system prompt is long — write to temp file
             sp_file: str | None = None
             sp_text = options_dict.get("system_prompt")

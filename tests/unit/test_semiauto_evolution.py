@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
-from unittest.mock import patch
-
-import pytest
+from typing import TYPE_CHECKING
 
 from src.database import Database
+
+if TYPE_CHECKING:
+    from src.skill_feedback import DBSkillFeedbackManager
 
 
 def _init_db(tmp_path: Path) -> Database:
@@ -17,95 +18,9 @@ def _init_db(tmp_path: Path) -> Database:
     return db
 
 
-def _make_manager(db: Database) -> "DBSkillFeedbackManager":
+def _make_manager(db: Database) -> DBSkillFeedbackManager:
     from src.skill_feedback import DBSkillFeedbackManager
     return DBSkillFeedbackManager(db=db)
-
-
-class MockProcess:
-    """Mock subprocess for claude CLI."""
-    returncode = 0
-
-    async def communicate(self):
-        return (b"# Test Skill\nImproved content.", b"")
-
-
-# ── Test: Preview Evolution (generate without activating) ───────
-
-
-class TestPreviewEvolution:
-    """Preview evolution should generate SKILL_vN.md but NOT replace SKILL.md."""
-
-    def test_preview_creates_version_without_activating(self, tmp_path: Path) -> None:
-        """Preview should create SKILL_v1.md but keep SKILL.md unchanged."""
-        db = _init_db(tmp_path)
-        try:
-            mgr = _make_manager(db)
-            loop = asyncio.get_event_loop()
-
-            # Add feedback to trigger evolution
-            for i in range(12):
-                loop.run_until_complete(
-                    mgr.submit_feedback("test-skill", user_id=f"user{i}", rating=2, comment=f"Bad {i}")
-                )
-
-            skill_dir = tmp_path / "skills" / "test-skill"
-            skill_dir.mkdir(parents=True)
-            original_content = "# Test Skill\nOriginal content."
-            (skill_dir / "SKILL.md").write_text(original_content)
-
-            with patch("shutil.which", return_value="/usr/bin/claude"):
-                with patch("asyncio.create_subprocess_exec", return_value=MockProcess()):
-                    result = loop.run_until_complete(
-                        mgr.preview_evolution("test-skill", skills_dir=tmp_path / "skills")
-                    )
-
-            # Preview should succeed
-            assert result is not None
-            assert result["version_number"] == 1
-            assert result["activated"] is False
-
-            # SKILL.md should be UNCHANGED
-            assert (skill_dir / "SKILL.md").read_text() == original_content
-
-            # SKILL_v1.md should exist with new content
-            assert (skill_dir / "SKILL_v1.md").exists()
-            assert (skill_dir / "SKILL_v1.md").read_text() == "# Test Skill\nImproved content."
-        finally:
-            asyncio.get_event_loop().run_until_complete(db.close())
-
-    def test_preview_returns_none_when_no_skill_file(self, tmp_path: Path) -> None:
-        """Preview should return None if SKILL.md doesn't exist."""
-        db = _init_db(tmp_path)
-        try:
-            mgr = _make_manager(db)
-            loop = asyncio.get_event_loop()
-
-            result = loop.run_until_complete(
-                mgr.preview_evolution("missing-skill", skills_dir=tmp_path / "skills")
-            )
-            assert result is None
-        finally:
-            asyncio.get_event_loop().run_until_complete(db.close())
-
-    def test_preview_returns_none_when_no_feedback(self, tmp_path: Path) -> None:
-        """Preview should return None if there's no feedback to drive evolution."""
-        db = _init_db(tmp_path)
-        try:
-            mgr = _make_manager(db)
-            loop = asyncio.get_event_loop()
-
-            skill_dir = tmp_path / "skills" / "test-skill"
-            skill_dir.mkdir(parents=True)
-            (skill_dir / "SKILL.md").write_text("# Test")
-
-            with patch("shutil.which", return_value="/usr/bin/claude"):
-                result = loop.run_until_complete(
-                    mgr.preview_evolution("test-skill", skills_dir=tmp_path / "skills")
-                )
-            assert result is None
-        finally:
-            asyncio.get_event_loop().run_until_complete(db.close())
 
 
 # ── Test: Activate Version ─────────────────────────────────────
@@ -260,7 +175,7 @@ class TestVersionHistory:
             asyncio.get_event_loop().run_until_complete(db.close())
 
     def test_list_versions_with_files(self, tmp_path: Path) -> None:
-        """Should list all versions found on disk."""
+        """Should list all version files found on disk."""
         db = _init_db(tmp_path)
         try:
             mgr = _make_manager(db)
@@ -277,12 +192,11 @@ class TestVersionHistory:
                 mgr.list_versions("test-skill", skills_dir=tmp_path / "skills")
             )
 
-            assert len(versions) == 4
-            names = [v["name"] for v in versions]
-            assert "SKILL" in names  # SKILL.md -> "SKILL"
+            # Only SKILL_v*.md files are listed as versions
+            assert len(versions) == 2
+            names = {v["name"] for v in versions}
             assert "SKILL_v1" in names
             assert "SKILL_v2" in names
-            assert "SKILL_backup_v1" in names
         finally:
             asyncio.get_event_loop().run_until_complete(db.close())
 
@@ -333,37 +247,6 @@ class TestSkillEvolutionManagerDBPreview:
         db = Database(db_path=tmp_path / "test.db")
         asyncio.get_event_loop().run_until_complete(db.init())
         return db
-
-    def test_db_preview_evolution(self, tmp_path: Path) -> None:
-        """DB-backed preview should call DBSkillFeedbackManager.preview_evolution."""
-        from src.skill_evolution import SkillEvolutionManager
-        from src.skill_feedback import DBSkillFeedbackManager
-
-        db = self._init_db(tmp_path)
-        try:
-            loop = asyncio.get_event_loop()
-            db_mgr = DBSkillFeedbackManager(db=db)
-            for i in range(12):
-                loop.run_until_complete(
-                    db_mgr.submit_feedback("test", user_id=f"user{i}", rating=2, comment="Bad")
-                )
-
-            skill_dir = tmp_path / "skills" / "test"
-            skill_dir.mkdir(parents=True)
-            (skill_dir / "SKILL.md").write_text("# Test\nContent")
-
-            mgr = SkillEvolutionManager(db=db)
-
-            with patch("shutil.which", return_value="/usr/bin/claude"):
-                with patch("asyncio.create_subprocess_exec", return_value=MockProcess()):
-                    result = loop.run_until_complete(
-                        mgr.db_preview_evolution("test", skills_dir=tmp_path / "skills")
-                    )
-
-            assert result is not None
-            assert result["activated"] is False
-        finally:
-            asyncio.get_event_loop().run_until_complete(db.close())
 
     def test_db_activate_version(self, tmp_path: Path) -> None:
         """DB-backed activate should call DBSkillFeedbackManager.activate_version."""

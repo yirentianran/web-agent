@@ -22,8 +22,6 @@ from pathlib import Path
 
 import docker
 
-from src.constants import BUILTIN_TOOLS, DISABLED_TOOLS
-
 logger = logging.getLogger(__name__)
 if not logger.handlers:
     logger.addHandler(logging.StreamHandler())
@@ -94,8 +92,6 @@ def ensure_user_dirs(user_id: str) -> None:
     """Create all per-user directories on the host."""
     dirs = [
         user_data_dir(user_id) / "workspace" / "uploads",
-        user_data_dir(user_id) / "workspace" / "reports",
-        user_data_dir(user_id) / "skills",
         user_data_dir(user_id) / ".claude" / "memory",
         user_data_dir(user_id) / ".cache" / "uv",
         user_data_dir(user_id) / "logs",
@@ -106,10 +102,14 @@ def ensure_user_dirs(user_id: str) -> None:
     # Ensure .claude.json exists so the CLI inside the container can find it
     claude_json = user_data_dir(user_id) / ".claude.json"
     if not claude_json.exists():
-        claude_json.write_text(json.dumps({
-            "firstStartTime": datetime.now(timezone.utc).isoformat(),
-            "migrationVersion": 11,
-        }))
+        claude_json.write_text(
+            json.dumps(
+                {
+                    "firstStartTime": datetime.now(timezone.utc).isoformat(),
+                    "migrationVersion": 11,
+                }
+            )
+        )
 
 
 # ── volume configuration ──────────────────────────────────────────
@@ -124,10 +124,15 @@ def get_user_volumes(user_id: str) -> dict[str, dict[str, str]]:
     base = container_user_dir(user_id)
     # When running inside Docker, Path(__file__).parent (/app/src/) refers to
     # a path inside the container, not on the host. Docker volume mount source
-    # paths are always resolved on the host, so we must use HOST_DATA_ROOT
-    # which points to the actual host data directory.
+    # paths are always resolved on the host, so we derive the host-side hooks
+    # path from HOST_DATA_ROOT. Assumes src/ and data/ are siblings on the host.
     if _running_in_docker():
-        hooks_dir = Path(os.getenv("HOST_DATA_ROOT", str(DATA_ROOT))) / "hooks"
+        hooks_dir = Path(os.getenv("HOST_DATA_ROOT", str(DATA_ROOT)))
+        # HOST_DATA_ROOT points to data/; hooks live in sibling src/ directory
+        if hooks_dir.name == "data":
+            hooks_dir = hooks_dir.parent / "src" / "hooks"
+        else:
+            hooks_dir = hooks_dir / "hooks"
     else:
         hooks_dir = (Path(__file__).parent / "hooks").resolve()
     return {
@@ -135,11 +140,6 @@ def get_user_volumes(user_id: str) -> dict[str, dict[str, str]]:
         str(HOST_DATA_ROOT / "shared-skills"): {
             "bind": str(HOST_DATA_ROOT / "shared-skills"),
             "mode": "ro",
-        },
-        # Personal Skills — read-write
-        str(base / "skills"): {
-            "bind": str(base / "skills"),
-            "mode": "rw",
         },
         # Workspace
         str(base / "workspace"): {
@@ -195,10 +195,7 @@ def get_user_env(user_id: str, mcp_config: dict | None = None) -> dict[str, str]
         ),
         "ANTHROPIC_BASE_URL": os.getenv("ANTHROPIC_BASE_URL", ""),
         "CLAUDE_AGENT_SDK_SKIP_VERSION_CHECK": "true",
-        "CLAUDE_SKILLS_DIRS": (
-            f"{HOST_DATA_ROOT}/shared-skills,"
-            f"{base}/skills"
-        ),
+        "CLAUDE_SKILLS_DIRS": (f"{HOST_DATA_ROOT}/shared-skills,{base}/workspace/.claude/skills"),
         "UV_CACHE_DIR": str(base / ".cache" / "uv"),
         "LOG_DIR": str(base / "logs"),
         # UID/GID for entrypoint.sh to adapt the agent user at container startup
@@ -208,31 +205,7 @@ def get_user_env(user_id: str, mcp_config: dict | None = None) -> dict[str, str]
     if mcp_config:
         env["MCP_CONFIG_JSON"] = json.dumps(mcp_config)
 
-    # Write settings.json into the container's .claude directory.
-    # Hooks and tool permissions are now managed programmatically through the
-    # SDK API in agent_server.py — no longer set via settings.json.
-    settings_json = json.dumps({
-        "allowedTools": _build_allowed_tools(mcp_config),
-        "disallowedTools": list(DISABLED_TOOLS),
-    })
-    settings_path = user_data_dir(user_id) / ".claude" / "settings.json"
-    settings_path.parent.mkdir(parents=True, exist_ok=True)
-    settings_path.write_text(settings_json)
-
     return env
-
-
-def _build_allowed_tools(mcp_config: dict | None) -> list[str]:
-    """Expand all MCP tool names to their fully-qualified form."""
-    disabled = set(DISABLED_TOOLS)
-    tools = [t for t in BUILTIN_TOOLS if t not in disabled]
-    if mcp_config:
-        for server_name, cfg in mcp_config.get("mcpServers", {}).items():
-            if not cfg.get("enabled", True):
-                continue
-            for tool_name in cfg.get("tools", []):
-                tools.append(f"mcp__{server_name}__{tool_name}")
-    return tools
 
 
 # ── container lifecycle ───────────────────────────────────────────
@@ -257,14 +230,14 @@ def wait_for_container_ready(container_url: str, timeout: float = 30.0) -> None:
                 if resp.status == 200:
                     data = json.loads(resp.read())
                     if data.get("status") == "ok":
-                        logger.debug("Container %s healthy after %.1fs", container_url, time.time() - (deadline - timeout))
+                        logger.debug(
+                            "Container %s healthy after %.1fs", container_url, time.time() - (deadline - timeout)
+                        )
                         return
         except (urllib.error.URLError, OSError, ConnectionError, json.JSONDecodeError) as exc:
             last_error = exc
         time.sleep(0.5)
-    raise TimeoutError(
-        f"Container at {container_url} not healthy after {timeout}s"
-    ) from last_error
+    raise TimeoutError(f"Container at {container_url} not healthy after {timeout}s") from last_error
 
 
 def ensure_container(user_id: str, mcp_config: dict | None = None) -> str:
@@ -319,20 +292,21 @@ def ensure_container(user_id: str, mcp_config: dict | None = None) -> str:
             entrypoint="",
             user="0:0",
             command=[
-                "/bin/sh", "-c",
+                "/bin/sh",
+                "-c",
                 "target_gid=" + str(os.getgid()) + "; "
                 "target_uid=" + str(os.getuid()) + "; "
-                "if [ \"$(id -u agent 2>/dev/null)\" != \"$target_uid\" ]"
-                " || [ \"$(id -g agent 2>/dev/null)\" != \"$target_gid\" ]; then "
-                "  if getent group \"$target_gid\" >/dev/null 2>&1; then "
-                "    agent_group=$(getent group \"$target_gid\" | cut -d: -f1); "
+                'if [ "$(id -u agent 2>/dev/null)" != "$target_uid" ]'
+                ' || [ "$(id -g agent 2>/dev/null)" != "$target_gid" ]; then '
+                '  if getent group "$target_gid" >/dev/null 2>&1; then '
+                '    agent_group=$(getent group "$target_gid" | cut -d: -f1); '
                 "  else "
-                "    groupmod -g \"$target_gid\" agent 2>/dev/null && agent_group=agent || agent_group=agent; "
+                '    groupmod -g "$target_gid" agent 2>/dev/null && agent_group=agent || agent_group=agent; '
                 "  fi; "
-                "  usermod -u \"$target_uid\" -g \"$agent_group\" agent 2>/dev/null; "
+                '  usermod -u "$target_uid" -g "$agent_group" agent 2>/dev/null; '
                 "  chown -R agent:agent /app /home/agent 2>/dev/null || true; "
                 "fi; "
-                "chown -R agent:agent \"$LOG_DIR\" 2>/dev/null || true; "
+                'chown -R agent:agent "$LOG_DIR" 2>/dev/null || true; '
                 "exec runuser -u agent -- /app/.venv/bin/python -m uvicorn "
                 "agent_server:app --host 0.0.0.0 --port " + str(CONTAINER_PORT),
             ],
@@ -459,7 +433,4 @@ def list_active_containers() -> list[dict[str, str]]:
     """Return list of running user containers."""
     client = get_client()
     containers = client.containers.list(filters={"ancestor": CONTAINER_IMAGE})
-    return [
-        {"name": c.name.replace("web-agent-", ""), "status": c.status}
-        for c in containers
-    ]
+    return [{"name": c.name.replace("web-agent-", ""), "status": c.status} for c in containers]

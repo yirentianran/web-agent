@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import asyncio
-import os
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
 
 from src.database import Database
+
+if TYPE_CHECKING:
+    from src.skill_feedback import DBSkillFeedbackManager
 
 
 @pytest.fixture()
@@ -24,16 +27,32 @@ async def db(db_path: Path) -> Database:
     await database.close()
 
 
+def _create_user(db: Database, user_id: str) -> None:
+    """Create a test user to satisfy the FK constraint."""
+    conn = db.connection()
+    loop = asyncio.get_event_loop()
+
+    async def _insert():
+        async with conn as c:
+            await c.execute(
+                "INSERT OR IGNORE INTO users (user_id) VALUES (?)",
+                (user_id,),
+            )
+
+    loop.run_until_complete(_insert())
+
+
 # ── SkillFeedbackManager (DB-backed) ─────────────────────────────
 
 
 class TestSkillFeedbackManagerDB:
 
-    def _make_manager(self, db: Database) -> "DBSkillFeedbackManager":
+    def _make_manager(self, db: Database) -> DBSkillFeedbackManager:
         from src.skill_feedback import DBSkillFeedbackManager
         return DBSkillFeedbackManager(db=db)
 
     def test_submit_feedback_writes_to_db(self, db: Database) -> None:
+        _create_user(db, "alice")
         mgr = self._make_manager(db)
         entry = asyncio.get_event_loop().run_until_complete(
             mgr.submit_feedback("audit-pdf", user_id="alice", rating=4, comment="Good")
@@ -43,6 +62,7 @@ class TestSkillFeedbackManagerDB:
         assert entry["user_id"] == "alice"
 
     def test_invalid_rating_raises(self, db: Database) -> None:
+        _create_user(db, "alice")
         mgr = self._make_manager(db)
         loop = asyncio.get_event_loop()
         with pytest.raises(ValueError, match="Rating must be between"):
@@ -62,6 +82,8 @@ class TestSkillFeedbackManagerDB:
         assert analytics["average_rating"] == 0
 
     def test_get_analytics_with_feedback(self, db: Database) -> None:
+        for uid in ("alice", "bob", "carol"):
+            _create_user(db, uid)
         mgr = self._make_manager(db)
         loop = asyncio.get_event_loop()
         loop.run_until_complete(mgr.submit_feedback("audit-pdf", user_id="alice", rating=5))
@@ -74,6 +96,8 @@ class TestSkillFeedbackManagerDB:
         assert "5" in analytics["rating_distribution"]
 
     def test_get_user_feedback(self, db: Database) -> None:
+        for uid in ("alice", "bob"):
+            _create_user(db, uid)
         mgr = self._make_manager(db)
         loop = asyncio.get_event_loop()
         loop.run_until_complete(mgr.submit_feedback("skill-a", user_id="alice", rating=5))
@@ -85,6 +109,8 @@ class TestSkillFeedbackManagerDB:
         assert all(item["user_id"] == "alice" for item in items)
 
     def test_get_all_analytics(self, db: Database) -> None:
+        for uid in ("alice", "bob"):
+            _create_user(db, uid)
         mgr = self._make_manager(db)
         loop = asyncio.get_event_loop()
         loop.run_until_complete(mgr.submit_feedback("skill-a", user_id="alice", rating=4))
@@ -96,6 +122,7 @@ class TestSkillFeedbackManagerDB:
         assert result["skill-a"]["average_rating"] == 4.0
 
     def test_comment_truncated(self, db: Database) -> None:
+        _create_user(db, "alice")
         mgr = self._make_manager(db)
         loop = asyncio.get_event_loop()
         long_comment = "x" * 1000
@@ -105,6 +132,7 @@ class TestSkillFeedbackManagerDB:
         assert len(entry["comment"]) <= 500
 
     def test_user_edits_stored(self, db: Database) -> None:
+        _create_user(db, "alice")
         mgr = self._make_manager(db)
         loop = asyncio.get_event_loop()
         entry = loop.run_until_complete(
@@ -116,6 +144,7 @@ class TestSkillFeedbackManagerDB:
         assert entry["user_edits"] == "Fixed formatting"
 
     def test_get_user_feedback_stats(self, db: Database) -> None:
+        _create_user(db, "alice")
         mgr = self._make_manager(db)
         loop = asyncio.get_event_loop()
         loop.run_until_complete(mgr.submit_feedback("skill-a", user_id="alice", rating=5))
@@ -136,12 +165,14 @@ class TestSkillFeedbackManagerDB:
 
 class TestDBEvolutionMethods:
 
-    def _make_manager(self, db: Database) -> "DBSkillFeedbackManager":
+    def _make_manager(self, db: Database) -> DBSkillFeedbackManager:
         from src.skill_feedback import DBSkillFeedbackManager
         return DBSkillFeedbackManager(db=db)
 
     def test_get_evolution_candidates(self, db: Database) -> None:
         """Skills with >= 10 feedback and avg < 4.5 should be candidates."""
+        for i in range(12):
+            _create_user(db, f"user{i}")
         mgr = self._make_manager(db)
         loop = asyncio.get_event_loop()
         # Bad skill: 12 entries, avg 2.0
@@ -162,6 +193,8 @@ class TestDBEvolutionMethods:
 
     def test_get_feedback_for_evolution(self, db: Database) -> None:
         """Should return high-quality, low-rated, and user_edits entries."""
+        _create_user(db, "alice")
+        _create_user(db, "bob")
         mgr = self._make_manager(db)
         loop = asyncio.get_event_loop()
         loop.run_until_complete(
@@ -180,6 +213,8 @@ class TestDBEvolutionMethods:
 
     def test_get_all_feedback_returns_entries_from_all_users(self, db: Database) -> None:
         """Should return feedback entries from all users, not just one."""
+        for uid in ("alice", "bob", "carol"):
+            _create_user(db, uid)
         mgr = self._make_manager(db)
         loop = asyncio.get_event_loop()
         loop.run_until_complete(mgr.submit_feedback("skill-a", user_id="alice", rating=5))

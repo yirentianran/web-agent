@@ -144,51 +144,6 @@ session_store: SessionStore | None = None  # Initialized at startup if DATA_DB_P
 active_tasks: dict[str, asyncio.Task] = {}
 pending_answers: dict[str, asyncio.Future] = {}
 _task_locks: dict[str, asyncio.Lock] = {}
-# Maps our session_id → CLI-generated session UUID for native SDK resume
-_cli_session_map: dict[str, str] = {}
-# Persisted in DATA_ROOT across all users; shared path by design to allow
-# session resume regardless of which user owns the session.
-_CLI_SESSION_MAP_FILE = DATA_ROOT / "cli_sessions.json"
-
-
-def _load_cli_session_map() -> None:
-    """Load persisted CLI session UUID map from disk."""
-    global _cli_session_map
-    try:
-        if _CLI_SESSION_MAP_FILE.exists():
-            _cli_session_map = json.loads(_CLI_SESSION_MAP_FILE.read_text())
-    except (json.JSONDecodeError, OSError):
-        _cli_session_map = {}
-
-
-def _save_cli_session_map() -> None:
-    """Persist CLI session UUID map to disk."""
-    try:
-        _CLI_SESSION_MAP_FILE.parent.mkdir(parents=True, exist_ok=True)
-        _CLI_SESSION_MAP_FILE.write_text(json.dumps(_cli_session_map, ensure_ascii=False))
-    except OSError as e:
-        logger.warning("Failed to persist CLI session map: %s", e)
-
-
-def _store_cli_session(our_session_id: str, cli_uuid: str) -> None:
-    """Store mapping so future turns can identify the CLI session.
-
-    Only stores if no mapping exists yet — subsequent turns create new CLI
-    UUIDs, and overwriting would lose the original reference.
-    """
-    if our_session_id and cli_uuid and our_session_id != cli_uuid:
-        if our_session_id not in _cli_session_map:
-            _cli_session_map[our_session_id] = cli_uuid
-            _save_cli_session_map()
-
-
-def _get_cli_session_uuid(our_session_id: str) -> str | None:
-    """Get the CLI-generated session UUID for a given web-agent session."""
-    return _cli_session_map.get(our_session_id)
-
-
-# Load persisted mappings on module init
-_load_cli_session_map()
 
 
 async def _emit_synthetic_state_change_if_missing(
@@ -2320,11 +2275,6 @@ async def run_agent_task(
                     if content and len(content) > 1000:
                         event["content"] = truncate_tool_output(content)
                 buffer.add_message(session_id, event, user_id)
-
-        # Persist CLI-generated session UUID as soon as the receive_response
-        # loop succeeds, before files-scan code that could throw.
-        if buffered_result and buffered_result.get("session_id"):
-            _store_cli_session(session_id, buffered_result["session_id"])
 
         # Detect files created/modified by the agent since the task started
         task_end = time.time()
@@ -4687,17 +4637,6 @@ async def submit_skill_feedback(
             skill_version=req.skill_version or "",
             conversation_snippet=req.conversation_snippet,
         )
-    else:
-        from src.skill_feedback import SkillFeedbackManager
-
-        mgr = SkillFeedbackManager()
-        entry = mgr.submit_feedback(
-            skill_name,
-            user_id=user_id,
-            rating=req.rating,
-            comment=req.comment,
-            session_id=req.session_id,
-        )
     return {"status": "ok", "feedback": entry}
 
 
@@ -4721,11 +4660,6 @@ async def get_skill_analytics(
         except Exception:
             pass  # Usage data is optional
 
-    if not result:
-        from src.skill_feedback import SkillFeedbackManager
-        mgr = SkillFeedbackManager()
-        result = mgr.get_analytics(skill_name)
-
     return result
 
 
@@ -4746,10 +4680,6 @@ async def get_all_skills_analytics(
         except Exception:
             pass
 
-    if not result:
-        from src.skill_feedback import SkillFeedbackManager
-        result = SkillFeedbackManager().get_all_analytics()
-
     return result
 
 
@@ -4759,14 +4689,10 @@ async def get_skill_suggestions(
     current_user: str = Depends(get_current_user),
 ) -> dict[str, list[str]]:
     """Get improvement suggestions for a skill based on feedback."""
-    if _db is not None:
-        from src.skill_feedback import DBSkillFeedbackManager
+    from src.skill_feedback import DBSkillFeedbackManager
 
-        suggestions = await DBSkillFeedbackManager(db=_db).suggest_improvements(skill_name)
-        return {"suggestions": suggestions}
-    from src.skill_feedback import SkillFeedbackManager
-
-    return {"suggestions": SkillFeedbackManager().suggest_improvements(skill_name)}
+    suggestions = await DBSkillFeedbackManager(db=_db).suggest_improvements(skill_name)
+    return {"suggestions": suggestions}
 
 
 # ── Skill Evolution & A/B Testing ────────────────────────────────
@@ -5239,10 +5165,7 @@ async def list_evolution_candidates(
     from src.skill_evolution import SkillEvolutionManager
 
     mgr = SkillEvolutionManager(db=_db)
-    if _db is not None:
-        candidates = await mgr.db_get_evolution_candidates()
-    else:
-        candidates = mgr.get_evolution_candidates()
+    candidates = await mgr.db_get_evolution_candidates()
     return {
         "candidates": [
             {
@@ -5299,10 +5222,7 @@ async def get_skill_versions(skill_name: str) -> dict[str, Any]:
     from src.skill_evolution import SkillEvolutionManager
 
     mgr = SkillEvolutionManager(db=_db)
-    if _db is not None:
-        stats = await mgr.db_get_feedback_stats(skill_name)
-    else:
-        stats = mgr.get_feedback_stats(skill_name)
+    stats = await mgr.db_get_feedback_stats(skill_name)
     skill_file = mgr.skills_dir / skill_name / "SKILL.md"
     current_exists = skill_file.exists()
 
@@ -5782,32 +5702,6 @@ def save_mcp_config(config: dict[str, Any]) -> None:
 # ── Feedback API ─────────────────────────────────────────────────
 
 
-@app.post("/api/users/{user_id}/feedback")
-async def submit_feedback(
-    user_id: str,
-    feedback: dict[str, Any],
-    current_user: str = Depends(get_current_user),
-) -> dict[str, str]:
-    """Collect user feedback for skill evolution."""
-    verify_path_user(user_id, current_user)
-    training_dir = DATA_ROOT / "training" / "qa"
-    training_dir.mkdir(parents=True, exist_ok=True)
-
-    feedback_file = training_dir / f"{time.time()}_{feedback.get('session_id', 'unknown')}.jsonl"
-    with open(feedback_file, "w", encoding="utf-8") as f:
-        f.write(
-            json.dumps(
-                {
-                    **feedback,
-                    "user_id": user_id,
-                    "timestamp": time.time(),
-                },
-                ensure_ascii=False,
-            )
-        )
-    return {"status": "ok"}
-
-
 @app.get("/api/users/{user_id}/feedback")
 async def get_user_feedback(
     user_id: str,
@@ -5815,16 +5709,12 @@ async def get_user_feedback(
 ) -> dict[str, Any]:
     """Get user's feedback records and stats."""
     verify_path_user(user_id, current_user)
-    if _db is not None:
-        from src.skill_feedback import DBSkillFeedbackManager
+    from src.skill_feedback import DBSkillFeedbackManager
 
-        mgr = DBSkillFeedbackManager(db=_db)
-        items = await mgr.get_user_feedback(user_id)
-        stats_result = await mgr.get_user_feedback_stats(user_id)
-        return {"stats": stats_result["stats"], "items": items, "total_count": stats_result["total_count"]}
-
-    # Fallback: empty response when no DB available
-    return {"stats": [], "items": [], "total_count": 0}
+    mgr = DBSkillFeedbackManager(db=_db)
+    items = await mgr.get_user_feedback(user_id)
+    stats_result = await mgr.get_user_feedback_stats(user_id)
+    return {"stats": stats_result["stats"], "items": items, "total_count": stats_result["total_count"]}
 
 
 # ── Authentication ───────────────────────────────────────────────
@@ -6041,16 +5931,6 @@ async def health() -> dict[str, str]:
 @app.on_event("startup")
 async def startup() -> None:
     """Start background cleanup tasks and initialize DB if configured."""
-    # Ensure training data directories exist
-    for subdir in [
-        "training/qa",
-        "training/skill-feedback",
-        "training/preferences",
-        "training/skill_outcomes",
-        "training/corrections",
-    ]:
-        (DATA_ROOT / subdir).mkdir(parents=True, exist_ok=True)
-
     # Initialize SQLite + SessionStore if DATA_DB_PATH is set
     global _db, _mcp_store, buffer, session_store, _skill_manager
     db_path_env = os.getenv("DATA_DB_PATH", "")
@@ -6089,18 +5969,6 @@ async def startup() -> None:
         except Exception:
             logger.exception("MCP migration failed, falling back to file storage")
             _mcp_store = None
-
-        # Migrate any existing JSONL feedback files to SQLite
-        try:
-            from src.skill_feedback import DBSkillFeedbackManager
-
-            feedback_dir = DATA_ROOT / "training" / "skill-feedback"
-            mgr = DBSkillFeedbackManager(db=_db)
-            migrated = await mgr.migrate_from_jsonl(feedback_dir)
-            if migrated > 0:
-                logger.info("Migrated %d JSONL feedback entries to SQLite", migrated)
-        except Exception:
-            logger.exception("Feedback JSONL migration failed")
 
         # Migrate existing skills from filesystem to DB
         try:
