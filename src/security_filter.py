@@ -20,8 +20,9 @@ class OutputFilter:
     _PATTERNS: Final[list[tuple[re.Pattern[str], str]]] = [
         # API keys: sk-..., anth-..., openai-...
         (re.compile(r"(?:sk|anth|openai)[\-_][a-zA-Z0-9]{20,}"), "*** (hidden) ***"),
-        # Env var assignments: KEY=value, SECRET=value, etc.
-        (re.compile(r"(?:KEY|SECRET|TOKEN|PASSWORD|CREDENTIAL|AUTH)[=:]\s*\S+", re.IGNORECASE), "*** (hidden) ***"),
+        # Env var assignments: KEY=value, SECRET=value, MODEL=value, etc.
+        # Matches uppercase env var names (≥3 chars) with any non-empty value.
+        (re.compile(r"\b([A-Z_]{3,}[A-Z0-9])\s*[=:]\s*\S+"), r"\1=*** (hidden) ***"),
         # Internal project paths
         (re.compile(r"/Users/\w+/Documents/Projects/web-agent[^\s]*"), "*** (hidden) ***"),
         # Container/infrastructure identifiers
@@ -35,6 +36,8 @@ class OutputFilter:
         re.compile(r"\buname\b"),
         re.compile(r"/etc/(?:passwd|shadow|hosts)"),
         re.compile(r"/proc/"),
+        # Environment variable assignments (env-dump output)
+        re.compile(r"^[A-Z_]{3,}[A-Z0-9]\s*[=:]\s*\S+", re.MULTILINE),
     ]
 
     _BLOCKED_MARKER: Final[str] = "[Content blocked]"
@@ -104,6 +107,16 @@ class BashCommandFilter:
         re.compile(r"^\s*cat\s+/etc/(?:passwd|shadow|hosts)\b"),
         re.compile(r"^\s*cat\s+\.env"),
         re.compile(r"^\s*(env|printenv)\b"),
+        # Env-probing via scripting languages
+        re.compile(
+            r"""^\s*(python3?|ruby|perl|node)\s+(-[ce]|-c\s|"|')""",
+            re.IGNORECASE,
+        ),
+        re.compile(r"""^\s*(python3?|ruby|perl|node)\s+--.*-[ce]\b""", re.IGNORECASE),
+        # os.environ / process.env / ENV / %ENV access via interpreter flags
+        re.compile(r"""os\.environ|process\.environ|process\.env\b|["']ENV["']|["']%ENV["']"""),
+        # Shell variable expansion that could leak secrets
+        re.compile(r"""\$\{?(?:PATH|HOME|USER|ANTHROPIC|API_KEY|SECRET|TOKEN|PASSWORD)"""),
     ]
 
     @classmethod
@@ -134,9 +147,11 @@ class BashCommandFilter:
             if base in cls._DENY_COMMANDS:
                 return False, "This operation is not permitted."
 
-            # Check deny patterns
+            # Check deny patterns (anchored patterns use match, unanchored use search)
             for pattern in cls._DENY_PATTERNS:
-                if pattern.match(segment):
+                if (pattern.pattern.startswith("^") and pattern.match(segment)) or (
+                    not pattern.pattern.startswith("^") and pattern.search(segment)
+                ):
                     return False, "This operation is not permitted."
 
         return True, ""

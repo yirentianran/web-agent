@@ -85,6 +85,88 @@ class TestOutputFilter:
         avg_ms = (elapsed / 100) * 1000
         assert avg_ms < 1.0, f"Average scan time {avg_ms:.3f}ms exceeds 1ms"
 
+    def test_hides_env_dump_model(self):
+        """MODEL=deepseek-v4-pro from env dump should be hidden."""
+        text = "MODEL=deepseek-v4-pro"
+        result = OutputFilter.scan(text)
+        assert "deepseek-v4-pro" not in result
+        assert "[Content blocked]" in result
+
+    def test_hides_env_dump_container_mode(self):
+        """CONTAINER_MODE=false should be hidden."""
+        text = "CONTAINER_MODE=false"
+        result = OutputFilter.scan(text)
+        assert "false" not in result
+        assert "[Content blocked]" in result
+
+    def test_hides_env_dump_max_turns(self):
+        """MAX_TURNS=500 should be hidden."""
+        text = "MAX_TURNS=500"
+        result = OutputFilter.scan(text)
+        assert "500" not in result
+        assert "[Content blocked]" in result
+
+    def test_hides_env_dump_data_root(self):
+        """DATA_ROOT=./data should be hidden."""
+        text = "DATA_ROOT=./data"
+        result = OutputFilter.scan(text)
+        assert "./data" not in result
+        assert "[Content blocked]" in result
+
+    def test_hides_env_dump_jwt_secret(self):
+        """JWT_SECRET value should be hidden."""
+        text = "JWT_SECRET=web-agent-dev-secret-2026"
+        result = OutputFilter.scan(text)
+        assert "web-agent-dev-secret-2026" not in result
+        assert "[Content blocked]" in result
+
+    def test_hides_env_dump_log_level(self):
+        """LOG_LEVEL=DEBUG should be hidden."""
+        text = "LOG_LEVEL=DEBUG"
+        result = OutputFilter.scan(text)
+        assert "DEBUG" not in result
+        assert "[Content blocked]" in result
+
+    def test_hides_env_dump_enforce_auth(self):
+        """ENFORCE_AUTH=true should be hidden."""
+        text = "ENFORCE_AUTH=true"
+        result = OutputFilter.scan(text)
+        assert "true" not in result
+        assert "[Content blocked]" in result
+
+    def test_hides_full_env_dump_block(self):
+        """Multi-line env dump should have all lines completely blocked."""
+        text = (
+            "HOME=/home/agent\n"
+            "MODEL=deepseek-v4-pro\n"
+            "LOG_LEVEL=DEBUG\n"
+            "CONTAINER_MODE=false\n"
+            "DATA_ROOT=./data\n"
+            "MAX_TURNS=500\n"
+            "JWT_SECRET=web-agent-dev-secret"
+        )
+        result = OutputFilter.scan(text)
+        # Values should all be hidden
+        assert "/home/agent" not in result
+        assert "deepseek-v4-pro" not in result
+        assert "web-agent-dev-secret" not in result
+        assert "500" not in result
+        # Variable names should NOT be visible either
+        assert "HOME=" not in result
+        assert "MODEL=" not in result
+        assert "JWT_SECRET=" not in result
+        # Each env var line becomes [Content blocked]
+        assert "[Content blocked]" in result
+
+    def test_env_var_mixed_with_safe_text(self):
+        """Env vars should be blocked, safe text should remain."""
+        text = "Here are the variables:\nMODEL=deepseek-v4-pro\nEnd of dump.\n"
+        result = OutputFilter.scan(text)
+        assert "MODEL=deepseek-v4-pro" not in result
+        assert "Here are the variables:" in result
+        assert "End of dump." in result
+        assert "[Content blocked]" in result
+
 
 class TestBashCommandFilter:
     def test_blocks_env_command(self):
@@ -133,6 +215,86 @@ class TestBashCommandFilter:
 
     def test_blocks_sudo_env(self):
         allowed, reason = BashCommandFilter.check("sudo env")
+        assert not allowed
+
+    def test_blocks_python_c(self):
+        """python3 -c with inline code should be blocked."""
+        allowed, reason = BashCommandFilter.check('python3 -c "import os; print(os.environ)"')
+        assert not allowed
+
+    def test_blocks_python_c_single_quote(self):
+        allowed, reason = BashCommandFilter.check("python3 -c 'import os; print(os.environ)'")
+        assert not allowed
+
+    def test_blocks_python_e_flag(self):
+        """python -e should be blocked."""
+        allowed, reason = BashCommandFilter.check('python -e "print(1)"')
+        assert not allowed
+
+    def test_blocks_node_e(self):
+        """node -e with inline code should be blocked."""
+        allowed, reason = BashCommandFilter.check('node -e "console.log(process.env)"')
+        assert not allowed
+
+    def test_blocks_perl_e(self):
+        """perl -e should be blocked."""
+        allowed, reason = BashCommandFilter.check('perl -e "print %ENV"')
+        assert not allowed
+
+    def test_blocks_ruby_e(self):
+        """ruby -e should be blocked."""
+        allowed, reason = BashCommandFilter.check('ruby -e "puts ENV"')
+        assert not allowed
+
+    def test_blocks_python_dash_dash_e_c(self):
+        """python3 --foo -c should be blocked."""
+        allowed, reason = BashCommandFilter.check('python3 --warn -c "import os"')
+        assert not allowed
+
+    def test_blocks_python_dash_c_space(self):
+        """python3 -c with space after flag should be blocked."""
+        allowed, reason = BashCommandFilter.check('python3 -c "import os"')
+        assert not allowed
+
+    def test_blocks_os_environ_content(self):
+        """Commands containing os.environ should be blocked."""
+        allowed, reason = BashCommandFilter.check("python3 script.py")
+        # script.py alone is allowed, but os.environ in the command should not appear
+        assert allowed
+
+    def test_blocks_shell_var_expansion(self):
+        """$ANTHROPIC and similar should be blocked."""
+        allowed, reason = BashCommandFilter.check("echo $ANTHROPIC_AUTH_TOKEN")
+        assert not allowed
+
+    def test_blocks_shell_var_brace_expansion(self):
+        """${ANTHROPIC_BASE_URL} should be blocked."""
+        allowed, reason = BashCommandFilter.check("echo ${ANTHROPIC_BASE_URL}")
+        assert not allowed
+
+    def test_blocks_shell_var_secret(self):
+        """$SECRET, $TOKEN, $PASSWORD should be blocked."""
+        allowed, reason = BashCommandFilter.check("echo $SECRET_KEY")
+        assert not allowed
+
+    def test_blocks_process_env(self):
+        """process.env access should be blocked."""
+        allowed, reason = BashCommandFilter.check('node -e "console.log(process.env.API_KEY)"')
+        assert not allowed
+
+    def test_allows_python_script_file(self):
+        """Running a .py file without -c should be allowed."""
+        allowed, reason = BashCommandFilter.check("python3 src/main.py --port 8000")
+        assert allowed
+
+    def test_allows_node_script_file(self):
+        """Running a .js file without -e should be allowed."""
+        allowed, reason = BashCommandFilter.check("node src/server.js")
+        assert allowed
+
+    def test_blocks_env_in_pipeline(self):
+        """env in a pipeline should be blocked."""
+        allowed, reason = BashCommandFilter.check("cat config.txt | env | grep API")
         assert not allowed
 
 
