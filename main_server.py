@@ -616,6 +616,9 @@ def _scan_workspace_for_generated_files(
     claiming another session's files. No time windows, snapshots, or DB
     ownership checks are needed.
 
+    Each file is renamed to a unique physical name: {stem}__{uuid8}{ext}.
+    The display name (filename) stays as the original name without path.
+
     Returns the list of discovered file dicts.
     """
     session_outputs = workspace / "outputs" / session_id
@@ -626,19 +629,31 @@ def _scan_workspace_for_generated_files(
     for f in session_outputs.rglob("*"):
         if not f.is_file() or not should_include_generated_file(f.name):
             continue
-        rel = f.relative_to(workspace).as_posix()  # e.g. "outputs/sess_abc123/report.pdf"
-        st = f.stat()
+
+        # Generate unique physical name and rename on disk
+        stored_name = _generate_stored_name(f.name)
+        dest = f.parent / stored_name
+        try:
+            f.rename(dest)
+        except OSError:
+            continue
+
+        # filename = display name (no path prefix)
+        # stored_name = physical UUID-based filename
+        # rel_path = path relative to workspace for download URL
+        rel_path = dest.relative_to(workspace).as_posix()
+        st = dest.stat()
         file_size = st.st_size
-        download_url = build_download_url(user_id, rel)
+        download_url = build_download_url(user_id, rel_path)
         entry = {
-            "filename": rel,
-            "stored_name": f.name,
+            "filename": f.name,
+            "stored_name": stored_name,
             "size": file_size,
             "generated_at": datetime.fromtimestamp(st.st_mtime, tz=UTC).isoformat(),
             "download_url": download_url,
         }
         files.append(entry)
-        _insert_generated_file(user_id, session_id, rel, f.name, file_size, rel)
+        _insert_generated_file(user_id, session_id, f.name, stored_name, file_size, rel_path)
 
     return files
 
@@ -2142,32 +2157,27 @@ async def run_agent_task(
                         # shared-skills/, not in outputs/, so download URLs would 404.
                         if ".claude/skills/" in file_path or "shared-skills/" in file_path:
                             continue
-                        # Preserve subdirectory path (e.g. outputs/reports/report.docx)
-                        # so the filename field matches the disk scan format.
-                        if Path(file_path).is_absolute():
-                            try:
-                                filename = Path(file_path).relative_to(workspace).as_posix()
-                            except ValueError:
-                                filename = Path(file_path).name
-                        else:
-                            filename = file_path.replace("\\", "/")
+                        # filename = display name (basename only, no path prefix)
+                        display_name = Path(file_path).name
                         content = tool_input.get("content", "")
                         try:
                             size = len(content.encode("utf-8"))
                         except Exception:
                             size = len(content)
+                        # download_url uses full relative path for routing
+                        download_url = build_download_url(user_id, file_path, directory="outputs")
                         generated_files.append(
                             {
-                                "filename": filename,
+                                "filename": display_name,
                                 "size": size,
                                 "generated_at": datetime.now(UTC).isoformat(),
-                                "download_url": build_download_url(user_id, file_path, directory="outputs"),
+                                "download_url": download_url,
                             }
                         )
                         # Dedup: if agent writes the same file twice in one turn,
                         # keep only the latest version (overwrite the old entry).
                         dup_idx = next(
-                            (i for i, g in enumerate(generated_files[:-1]) if g["filename"] == filename),
+                            (i for i, g in enumerate(generated_files[:-1]) if g["filename"] == display_name),
                             None,
                         )
                         if dup_idx is not None:

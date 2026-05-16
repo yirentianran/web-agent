@@ -106,14 +106,18 @@ class TestScanWorkspaceForGeneratedFiles:
             workspace, "alice", sid_a
         )
         assert len(result) == 1
-        assert result[0]["filename"] == f"outputs/{sid_a}/report.pdf"
+        assert result[0]["filename"] == "report.pdf"  # basename only, no path
+        assert "__" in result[0]["stored_name"]  # UUID suffix present
+        assert result[0]["stored_name"].startswith("report__")  # original stem preserved
+        assert result[0]["stored_name"].endswith(".pdf")  # extension preserved
 
         # Scan for session B
         result_b = main_server._scan_workspace_for_generated_files(
             workspace, "alice", sid_b
         )
         assert len(result_b) == 1
-        assert result_b[0]["filename"] == f"outputs/{sid_b}/other.pdf"
+        assert result_b[0]["filename"] == "other.pdf"
+        assert "__" in result_b[0]["stored_name"]
 
     def test_returns_empty_for_nonexistent_session_dir(self, tmp_path: Path) -> None:
         """Nonexistent session dir should return empty list."""
@@ -122,6 +126,30 @@ class TestScanWorkspaceForGeneratedFiles:
             workspace, "alice", "sess_nonexistent123"
         )
         assert result == []
+
+    def test_file_renamed_on_disk_with_uuid(self, tmp_path: Path) -> None:
+        """Scan should rename the file on disk with UUID suffix."""
+        workspace = tmp_path
+        sid = "sess_aaa111bbb222"
+        (workspace / "outputs" / sid).mkdir(parents=True)
+
+        original = workspace / "outputs" / sid / "report.pdf"
+        original.write_text("content")
+
+        result = main_server._scan_workspace_for_generated_files(
+            workspace, "alice", sid
+        )
+
+        # Original file should no longer exist (was renamed)
+        assert not original.exists()
+
+        # Renamed file should exist with UUID suffix
+        stored = result[0]["stored_name"]
+        assert (workspace / "outputs" / sid / stored).exists()
+
+        # filename should be the original basename, not a path
+        assert "/" not in result[0]["filename"]
+        assert result[0]["filename"] == "report.pdf"
 
 
 # ── Write tool path redirection ─────────────────────────────────────
