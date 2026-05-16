@@ -614,139 +614,38 @@ def _scan_workspace_for_generated_files(
     workspace: Path,
     user_id: str,
     session_id: str,
-    workspace_snapshot: dict[str, float],
-    start_time: float,
-    task_end: float,
-    existing_files: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    """Scan workspace for files created/modified during an agent task.
+    """Scan only the session's outputs/{session_id}/ directory for generated files.
 
-    Two scan phases:
-    1. outputs/ recursive — new or modified files
-    2. workspace root — data files moved to outputs/
+    Because each session has its own isolated directory, there is no risk of
+    claiming another session's files. No time windows, snapshots, or DB
+    ownership checks are needed.
 
-    Each file is renamed to a unique UUID-based physical name (stored_name).
-    The original name is kept as the display name (filename).
-
-    Only files created/modified within [start_time, task_end + 5s]
-    AND not present in the pre-task snapshot are attributed to this
-    session. This prevents concurrent sessions from claiming each
-    other's files in the shared per-user workspace.
-
-    Returns the updated file list (existing_files with new entries appended).
+    Returns the list of discovered file dicts.
     """
-    seen_filenames: set[str] = {f["filename"] for f in existing_files}
-    outputs_dir = workspace / "outputs"
+    session_outputs = workspace / "outputs" / session_id
+    if not session_outputs.exists():
+        return []
 
-    def _is_session_file(mtime: float) -> bool:
-        """File must have been created/modified during this session's task window."""
-        return start_time - 2 <= mtime <= task_end + 5
-
-    def _process_file(file_path: Path, display_name: str) -> None:
-        """Rename file to unique physical name, record in DB and file list.
-
-        When *display_name* is already in *seen_filenames* (e.g. the file was
-        tracked by Write tool events), the file is still renamed and inserted
-        into the database, but the existing entry is updated in-place instead
-        of appending a duplicate.
-        """
-        already_tracked = display_name in seen_filenames
-        stored_name = _generate_stored_name(display_name)
-        dest = file_path.parent / stored_name
-        try:
-            file_path.rename(dest)
-        except OSError:
-            return
-
-        seen_filenames.add(display_name)
-        rel_stored = dest.relative_to(workspace).as_posix()
-        st = dest.stat()
-        file_size = st.st_size
-        generated_at = datetime.fromtimestamp(st.st_mtime, tz=UTC).isoformat()
-        download_url = build_download_url(user_id, rel_stored)
-
-        if already_tracked:
-            for entry in existing_files:
-                if entry["filename"] == display_name:
-                    entry["stored_name"] = stored_name
-                    entry["size"] = file_size
-                    entry["generated_at"] = generated_at
-                    entry["download_url"] = download_url
-                    break
-        else:
-            existing_files.append(
-                {
-                    "filename": display_name,
-                    "stored_name": stored_name,
-                    "size": file_size,
-                    "generated_at": generated_at,
-                    "download_url": download_url,
-                }
-            )
-        _insert_generated_file(user_id, session_id, display_name, stored_name, file_size, rel_stored)
-
-    # 1. Scan outputs/ recursively
-    if outputs_dir.exists():
-        for f in outputs_dir.rglob("*"):
-            if not f.is_file() or not should_include_generated_file(f.name):
-                continue
-            rel = f.relative_to(workspace).as_posix()
-            mtime = f.stat().st_mtime
-            if _is_session_file(mtime) and (rel not in workspace_snapshot or mtime > workspace_snapshot[rel]):
-                _process_file(f, rel)
-
-    # 2. Scan workspace root for data files
-    if workspace.exists():
-        for f in workspace.iterdir():
-            if not f.is_file() or f.name.startswith("."):
-                continue
-            rel = f.relative_to(workspace).as_posix()
-            mtime = f.stat().st_mtime
-            if (
-                _is_session_file(mtime)
-                and (rel not in workspace_snapshot or mtime > workspace_snapshot[rel])
-                and rel not in seen_filenames
-            ):
-                if f.suffix.lower() in DATA_EXTS:
-                    dest_dir = outputs_dir
-                    # Move to outputs/ first, then rename
-                    try:
-                        intermediate = dest_dir / f.name
-                        shutil.move(str(f), str(intermediate))
-                        _process_file(intermediate, rel)
-                    except Exception as e:
-                        logger.warning("Failed to relocate data file %s to outputs/: %s", f, e)
-
-    # 3. Post-scan: exclude files already owned by another session in DB.
-    # Batch query: fetch all stored_name → session_id mappings in one call.
-    stored_names = [e["stored_name"] for e in existing_files if e.get("stored_name")]
-    if stored_names and _db is not None:
-        try:
-            import sqlite3 as _sqlite3
-
-            conn = _sqlite3.connect(str(_db.db_path))
-            placeholders = ",".join("?" for _ in stored_names)
-            rows = conn.execute(
-                f"SELECT stored_name, session_id FROM generated_files WHERE user_id = ? AND stored_name IN ({placeholders})",
-                (user_id, *stored_names),
-            ).fetchall()
-            conn.close()
-            owned = {row[0]: row[1] for row in rows}
-        except Exception:
-            owned = {}
-    else:
-        owned = {}
-
-    for entry in list(existing_files):
-        stored = entry.get("stored_name")
-        if not stored:
+    files: list[dict[str, Any]] = []
+    for f in session_outputs.rglob("*"):
+        if not f.is_file() or not should_include_generated_file(f.name):
             continue
-        owner = owned.get(stored)
-        if owner is not None and owner != session_id:
-            existing_files.remove(entry)
-            seen_filenames.discard(entry.get("filename", ""))
+        rel = f.relative_to(workspace).as_posix()  # e.g. "outputs/sess_abc123/report.pdf"
+        st = f.stat()
+        file_size = st.st_size
+        download_url = build_download_url(user_id, rel)
+        entry = {
+            "filename": rel,
+            "stored_name": f.name,
+            "size": file_size,
+            "generated_at": datetime.fromtimestamp(st.st_mtime, tz=UTC).isoformat(),
+            "download_url": download_url,
+        }
+        files.append(entry)
+        _insert_generated_file(user_id, session_id, rel, f.name, file_size, rel)
 
-    return existing_files
+    return files
 
 
 def _insert_upload_file(
