@@ -3038,6 +3038,10 @@ async def handle_ws(websocket: WebSocket) -> None:
                     if not is_continuation and session_store is not None:
                         await session_store.create_session(user_id, session_id)
 
+                    # Create per-session output directory
+                    session_dir = user_workspace_dir(user_id) / "outputs" / session_id
+                    session_dir.mkdir(parents=True, exist_ok=True)
+
                     # Buffer user message BEFORE agent task starts — ensures recovery
                     # includes the user message even during the race window before
                     # run_agent_task reaches its add_message call.
@@ -3378,6 +3382,10 @@ async def create_session(
     verify_path_user(user_id, current_user)
     session_id = f"sess_{uuid.uuid4().hex[:12]}"
     buffer._ensure_buf(session_id)
+
+    # Create per-session output directory
+    session_dir = user_workspace_dir(user_id) / "outputs" / session_id
+    session_dir.mkdir(parents=True, exist_ok=True)
 
     # Persist to DB
     if session_store is not None:
