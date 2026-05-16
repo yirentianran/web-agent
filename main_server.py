@@ -600,8 +600,13 @@ def _insert_generated_file(
 
 
 def _generate_stored_name(original_name: str) -> str:
-    """Generate a unique physical filename: {name}__{uuid8}{ext}."""
+    """Generate a unique physical filename: {name}__{uuid8}{ext}.
+
+    Any existing __{uuid8} suffix is stripped first so that re-scanning
+    an already-renamed file does not produce a double-wrapped name.
+    """
     name, ext = Path(original_name).stem, Path(original_name).suffix
+    name = re.sub(r"__[0-9a-f]{8}$", "", name)
     return f"{name}__{uuid.uuid4().hex[:8]}{ext}"
 
 
@@ -626,9 +631,12 @@ def _scan_workspace_for_generated_files(
         return []
 
     files: list[dict[str, Any]] = []
+    _already_renamed = re.compile(r"__[0-9a-f]{8}\.").search
     for f in session_outputs.rglob("*"):
         if not f.is_file() or not should_include_generated_file(f.name):
             continue
+        if _already_renamed(f.name):
+            continue  # already processed in a previous scan
 
         # Generate unique physical name and rename on disk
         stored_name = _generate_stored_name(f.name)
@@ -3388,7 +3396,7 @@ async def get_session_files(
                         # Use stored URL for generated files (includes session path);
                         # fallback to construction for uploads or legacy records without url
                         if table == "generated_files":
-                            download_url = row.get("url")
+                            download_url = dict(row).get("url", "")
                             if not download_url:
                                 download_url = f"/api/users/{user_id}/download/outputs/{stored}"
                         else:

@@ -151,6 +151,42 @@ class TestScanWorkspaceForGeneratedFiles:
         assert "/" not in result[0]["filename"]
         assert result[0]["filename"] == "report.pdf"
 
+    def test_already_renamed_file_not_double_wrapped(self, tmp_path: Path) -> None:
+        """A file with an existing __{uuid8} suffix should be skipped, not re-renamed."""
+        workspace = tmp_path
+        sid = "sess_aaa111bbb222"
+        (workspace / "outputs" / sid).mkdir(parents=True)
+
+        # Simulate a file already processed in a previous scan
+        already_renamed = workspace / "outputs" / sid / "report__9a21ed5e.pdf"
+        already_renamed.write_text("old content")
+
+        # And a new file from the current task
+        new_file = workspace / "outputs" / sid / "report.pdf"
+        new_file.write_text("new content")
+
+        result = main_server._scan_workspace_for_generated_files(
+            workspace, "alice", sid
+        )
+
+        # Only the new file should be picked up
+        assert len(result) == 1
+        assert result[0]["filename"] == "report.pdf"
+        # The already-renamed file should still exist with its original name
+        assert already_renamed.exists()
+        # And its name should not have a double UUID
+        assert already_renamed.name == "report__9a21ed5e.pdf"
+
+    def test_generate_stored_name_strips_existing_uuid(self) -> None:
+        """_generate_stored_name should strip existing UUID suffix before adding new one."""
+        import re
+
+        result = main_server._generate_stored_name("report__9a21ed5e.pdf")
+        # Should have exactly one UUID suffix, not two
+        assert re.match(r"^report__[0-9a-f]{8}\.pdf$", result), (
+            f"Expected 'report__{{uuid8}}.pdf', got '{result}'"
+        )
+
 
 # ── Write tool path redirection ─────────────────────────────────────
 
