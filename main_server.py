@@ -554,25 +554,6 @@ def should_include_generated_file(filename: str) -> bool:
     return ext in DATA_EXTS
 
 
-def snapshot_workspace(workspace: Path) -> dict[str, float]:
-    """Snapshot files in workspace to detect newly generated files later.
-
-    Scans outputs/ recursively and workspace root non-recursively.
-    Returns a mapping of relative_path -> mtime.
-    """
-    snap: dict[str, float] = {}
-    outputs_dir = workspace / "outputs"
-    if outputs_dir.exists():
-        for f in outputs_dir.rglob("*"):
-            if f.is_file():
-                snap[f.relative_to(workspace).as_posix()] = f.stat().st_mtime
-    if workspace.exists():
-        for f in workspace.iterdir():
-            if f.is_file():
-                snap[f.relative_to(workspace).as_posix()] = f.stat().st_mtime
-    return snap
-
-
 def _insert_generated_file(
     user_id: str, session_id: str, filename: str, stored_name: str, file_size: int, rel_path: str
 ) -> None:
@@ -2039,10 +2020,6 @@ async def run_agent_task(
         agent_log.tool_result(tool_name, str(result), session_id=session_id)
         return result
 
-    # Snapshot workspace files before the agent task — used to detect
-    # files created by Bash commands after the task ends.
-    workspace_snapshot = snapshot_workspace(workspace)
-
     # Continuation turns always use history prompt from our own message
     # store. --resume is NOT used because it only loads ONE CLI session's
     # JSONL, but multi-turn conversations span multiple CLI sessions (each
@@ -2175,16 +2152,11 @@ async def run_agent_task(
                         event["content"] = truncate_tool_output(content)
                 buffer.add_message(session_id, event, user_id)
 
-        # Detect files created/modified by the agent since the task started
-        task_end = time.time()
+        # Scan session output directory for generated files
         generated_files = _scan_workspace_for_generated_files(
             workspace,
             user_id,
             session_id,
-            workspace_snapshot,
-            start_time,
-            task_end,
-            generated_files,
         )
 
         # Emit "file_result", then title, then completion state.
@@ -2352,7 +2324,6 @@ async def run_agent_task_container(
 
     start_time = time.time()
     workspace = user_workspace_dir(user_id)
-    workspace_snapshot = snapshot_workspace(workspace)
     generated_files: list[dict[str, Any]] = []
     msg_count = 0
 
@@ -2380,15 +2351,10 @@ async def run_agent_task_container(
         # ── After bridge completes: scan for generated files ─────
         # Workspace is a mounted host volume, so files created inside the
         # container are visible from the host at the same paths.
-        task_end = time.time()
         generated_files = _scan_workspace_for_generated_files(
             workspace,
             user_id,
             session_id,
-            workspace_snapshot,
-            start_time,
-            task_end,
-            generated_files,
         )
 
         # Emit file_result, then title, then completion state.
