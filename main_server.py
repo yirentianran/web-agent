@@ -491,6 +491,20 @@ def build_download_url(user_id: str, file_path: str, *, directory: str | None = 
     return f"/api/users/{user_id}/download/{prefix}/{filename}"
 
 
+def _normalize_write_path(file_path: str, session_id: str) -> str:
+    """Redirect a write path to the session's outputs directory.
+
+    Ensures all agent writes land under outputs/{session_id}/ regardless
+    of what path the agent specifies. This prevents concurrent sessions
+    from interfering with each other's files.
+    """
+    if file_path.startswith(f"outputs/{session_id}/"):
+        return file_path
+    if file_path.startswith("outputs/"):
+        return f"outputs/{session_id}/{file_path[len('outputs/'):]}".lstrip("/")
+    return f"outputs/{session_id}/{file_path}"
+
+
 # File types that are infrastructure/intermediate — never offered as user-facing results
 IGNORED_FILE_EXTS = {".log", ".pyc", ".pyo", ".pid", ".lock"}
 
@@ -2107,6 +2121,9 @@ async def run_agent_task(
                 if event.get("type") == "tool_use" and event.get("name") == "Write":
                     tool_input = event.get("input") or {}
                     file_path = tool_input.get("file_path", "")
+                    if file_path:
+                        file_path = _normalize_write_path(file_path, session_id)
+                        tool_input["file_path"] = file_path
                     if file_path and should_include_generated_file(Path(file_path).name):
                         # Skip skill-related files — they live in .claude/skills/ or
                         # shared-skills/, not in outputs/, so download URLs would 404.
