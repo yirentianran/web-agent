@@ -3368,7 +3368,7 @@ async def get_session_files(
             for table, source in [("uploads", "upload"), ("generated_files", "generated")]:
                 if table == "generated_files":
                     rows = conn.execute(
-                        "SELECT filename, stored_name, file_size, created_at FROM generated_files WHERE session_id = ? ORDER BY created_at DESC",
+                        "SELECT filename, stored_name, file_size, created_at, url FROM generated_files WHERE session_id = ? ORDER BY created_at DESC",
                         (session_id,),
                     ).fetchall()
                 else:
@@ -3381,14 +3381,26 @@ async def get_session_files(
                     stored = dict(row).get("stored_name", row["filename"])
                     if stored not in seen:
                         seen.add(stored)
+                        # Strip any path prefix from filename (legacy records stored full path)
+                        display_name = str(row["filename"])
+                        if "/" in display_name:
+                            display_name = display_name.rsplit("/", 1)[-1]
+                        # Use stored URL for generated files (includes session path);
+                        # fallback to construction for uploads or legacy records without url
+                        if table == "generated_files":
+                            download_url = row.get("url")
+                            if not download_url:
+                                download_url = f"/api/users/{user_id}/download/outputs/{stored}"
+                        else:
+                            download_url = f"/api/users/{user_id}/download/uploads/{stored}"
                         files.append(
                             {
-                                "filename": row["filename"],
+                                "filename": display_name,
                                 "stored_name": stored,
                                 "size": row["file_size"],
                                 "source": source,
                                 "generated_at": datetime.fromtimestamp(row["created_at"], tz=UTC).isoformat(),
-                                "download_url": f"/api/users/{user_id}/download/{source == 'upload' and 'uploads' or 'outputs'}/{stored}",
+                                "download_url": download_url,
                             }
                         )
         except sqlite3.OperationalError:
