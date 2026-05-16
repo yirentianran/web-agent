@@ -1658,7 +1658,7 @@ MAX_PROMPT_LENGTH = int(os.getenv("MAX_PROMPT_LENGTH", "32000"))
 _TOOL_RESULT_MAX_CHARS = int(os.getenv("TOOL_RESULT_MAX_CHARS", "500"))
 
 
-def _build_history_prompt(history: list[dict[str, Any]], user_message: str, language: str | None = None) -> str:
+def _build_history_prompt(history: list[dict[str, Any]], user_message: str, language: str | None = None, session_id: str | None = None) -> str:
     """Build a multi-turn conversation prompt from history + new message.
 
     Controls:
@@ -1749,6 +1749,11 @@ def _build_history_prompt(history: list[dict[str, Any]], user_message: str, lang
             f"if they are in the wrong language.\n"
         )
     preamble += "---\n"
+    if session_id:
+        preamble += (
+            f"Your working directory is the user's workspace. "
+            f"All generated files must be written to: outputs/{session_id}/\n"
+        )
     # Avoid duplicating the user message — it may already be in history
     # if the sync-persist in handle_ws completed before we queried SQLite.
     last_part = parts[-1] if parts else ""
@@ -1775,6 +1780,7 @@ def _format_first_message_prompt(
     user_message: str,
     attached_files: list[str] | None,
     language: str | None = None,
+    session_id: str | None = None,
 ) -> str:
     """Build the first-message prompt, including file paths if files were uploaded.
 
@@ -1792,12 +1798,19 @@ def _format_first_message_prompt(
     else:
         prefix = ""
 
+    session_guidance = ""
+    if session_id:
+        session_guidance = (
+            f"Your working directory is the user's workspace. "
+            f"All generated files must be written to: outputs/{session_id}/\n\n"
+        )
+
     if not attached_files:
-        return prefix + user_message
+        return prefix + session_guidance + user_message
     paths = ", ".join(
         f if f.startswith("uploads/") or f.startswith("outputs/") else f"uploads/{f}" for f in attached_files
     )
-    return f"{prefix}{user_message}\n\n(Attached files: {paths})"
+    return f"{prefix}{session_guidance}{user_message}\n\n(Attached files: {paths})"
 
 
 def _build_conversation_summary_text(history: list[dict[str, Any]]) -> str:
@@ -2061,7 +2074,7 @@ async def run_agent_task(
                 history = await session_store.get_session_history(user_id, session_id, after_index=0)
             else:
                 history = await buffer.get_history(session_id, after_index=0, user_id=user_id)
-            full_prompt = _build_history_prompt(history, user_message, language=language)
+            full_prompt = _build_history_prompt(history, user_message, language=language, session_id=session_id)
             if language:
                 lang_name = "中文" if language == "zh" else "English"
                 full_prompt = (
@@ -2092,7 +2105,7 @@ async def run_agent_task(
             logger.info("[AGENT_TASK] Connecting client (first message)")
             await client.connect()
             # Include file attachment info so the agent knows what files were uploaded
-            prompt = _format_first_message_prompt(user_message, attached_files, language)
+            prompt = _format_first_message_prompt(user_message, attached_files, language, session_id)
             logger.info("[AGENT_TASK] Sending query: prompt=%s", prompt[:100])
             await client.query(prompt)
             logger.info("[AGENT_TASK] Query sent, starting receive_response")
@@ -2351,9 +2364,9 @@ async def run_agent_task_container(
                 history = await session_store.get_session_history(user_id, session_id, after_index=0)
             else:
                 history = await buffer.get_history(session_id, after_index=0, user_id=user_id)
-            prompt = _build_history_prompt(history, user_message, language=language)
+            prompt = _build_history_prompt(history, user_message, language=language, session_id=session_id)
         else:
-            prompt = _format_first_message_prompt(user_message, attached_files, language)
+            prompt = _format_first_message_prompt(user_message, attached_files, language, session_id)
 
         # Log the full prompt for debugging
         logger.debug("Prompt start (session=%s, len=%d): %s", session_id, len(prompt), prompt)
