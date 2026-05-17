@@ -1034,6 +1034,22 @@ def build_system_prompt(
     if agent_memory:
         parts.append(f"\n{agent_memory}")
 
+    # ── L3: LLM Wiki context ──
+    try:
+        wiki_ctx = _load_wiki_context(user_id, "", max_tokens=1000)
+        if wiki_ctx:
+            parts.append(wiki_ctx)
+    except Exception:
+        pass
+
+    # ── L5: Pattern context ──
+    try:
+        pattern_ctx = _load_pattern_context(user_id, max_tokens=500)
+        if pattern_ctx:
+            parts.append(pattern_ctx)
+    except Exception:
+        pass
+
     # Final language enforcement — placed at the very end to leverage
     # recency bias. Qwen models weight the last instruction more heavily.
     parts.append(
@@ -1045,6 +1061,62 @@ def build_system_prompt(
     )
 
     return "\n".join(parts)
+
+
+def _load_wiki_context(user_id: str, current_message: str, max_tokens: int = 1000) -> str:
+    """Load relevant Wiki page summaries into the system prompt."""
+    try:
+        from src.semantic_search import SemanticSearch
+
+        ss = SemanticSearch(_db)
+        loop = asyncio.new_event_loop()
+        results = loop.run_until_complete(ss.search_wiki_pages(current_message, top_k=2))
+        loop.close()
+
+        if not results:
+            return ""
+
+        parts = ["## Collective Knowledge\n\n"]
+        for r in results:
+            parts.append(
+                f"### {r['title']}\n"
+                f"- Confidence: {r['confidence']:.0%}\n"
+                f"- Validated by {r['validation_count']} users\n"
+                f"- Summary: {r['body_preview']}\n\n"
+            )
+        return "\n".join(parts)[:max_tokens]
+    except Exception:
+        return ""
+
+
+def _load_pattern_context(user_id: str, max_tokens: int = 500) -> str:
+    """Load active tool patterns into the system prompt."""
+    try:
+        from src.database import connect_sync
+
+        conn = connect_sync(_db.db_path)
+        cursor = conn.execute(
+            """SELECT pattern_data FROM learned_patterns
+               WHERE pattern_type = 'tool_cooccurrence'
+               ORDER BY updated_at DESC LIMIT 1"""
+        )
+        row = cursor.fetchone()
+        conn.close()
+
+        if not row:
+            return ""
+
+        data = json.loads(row[0])
+        top_tools = data.get("tool_success_rates", {})
+        if not top_tools:
+            return ""
+
+        parts = ["## Active Tool Patterns\n\n"]
+        for tool, stats in list(top_tools.items())[:5]:
+            parts.append(f"- **{tool}**: used {stats['count']} times\n")
+        return "\n".join(parts)[:max_tokens]
+    except Exception:
+        return ""
 
 
 async def load_mcp_config() -> dict[str, Any]:
@@ -5922,6 +5994,16 @@ async def startup() -> None:
         from src.skill_manager import SkillManager
 
         _skill_manager = SkillManager(db=_db)
+
+        # Start collective intelligence background jobs
+        try:
+            from src.collective_intelligence import CollectiveIntelligenceEngine
+
+            _ci_engine = CollectiveIntelligenceEngine(db=_db, data_root=DATA_ROOT)
+            asyncio.create_task(_ci_engine.start_background_jobs())
+            logger.info("Collective intelligence engine initialized")
+        except Exception:
+            logger.exception("Failed to start collective intelligence engine")
     else:
         logger.info("No DATA_DB_PATH set — using file-based storage")
 
