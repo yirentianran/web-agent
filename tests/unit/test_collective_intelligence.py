@@ -148,7 +148,7 @@ class TestAutoPromotion:
 
         mock_cursor = MagicMock()
         mock_cursor.fetchall = AsyncMock(return_value=[])
-        mock_db.execute = MagicMock(return_value=mock_cursor)
+        mock_db.execute = AsyncMock(return_value=mock_cursor)
         mock_db.connection = MagicMock(return_value=FakeConn())
 
         mgr = SkillManager(db=mock_db)

@@ -225,6 +225,71 @@ class SkillManager:
             rows = await cursor.fetchall()
         return [{"skill_name": r[0], "uses": r[1], "unique_users": r[2]} for r in rows]
 
+    # ── Auto-Promotion ──────────────────────────────────────────────
+
+    AUTO_PROMOTE_MIN_USES = 10
+    AUTO_PROMOTE_MIN_USERS = 3
+    AUTO_PROMOTE_MIN_AVG_RATING = 4.0
+    AUTO_PROMOTE_WINDOW_DAYS = 30
+
+    async def check_auto_promotion(self) -> list[dict[str, Any]]:
+        """Scan personal skills for auto-promotion candidates.
+
+        Returns skills that meet all thresholds:
+        - uses >= AUTO_PROMOTE_MIN_USES
+        - unique_users >= AUTO_PROMOTE_MIN_USERS
+        - avg_rating >= AUTO_PROMOTE_MIN_AVG_RATING
+        - within AUTO_PROMOTE_WINDOW_DAYS
+        """
+        async with self.db.connection() as conn:
+            cursor = await conn.execute(
+                """SELECT s.skill_name, s.owner_id,
+                          COUNT(DISTINCT su.id) as uses_count,
+                          COUNT(DISTINCT su.user_id) as unique_users,
+                          AVG(sf.rating) as avg_rating
+                   FROM skills s
+                   JOIN skill_usage su ON su.skill_name = s.skill_name
+                   LEFT JOIN skill_feedback sf ON sf.skill_name = s.skill_name
+                   WHERE s.source = 'personal'
+                     AND s.status = 'active'
+                     AND su.created_at > strftime('%s', 'now') - (? * 86400)
+                   GROUP BY s.skill_name, s.owner_id
+                   HAVING uses_count >= ?
+                      AND unique_users >= ?
+                      AND avg_rating >= ?""",
+                (
+                    self.AUTO_PROMOTE_WINDOW_DAYS,
+                    self.AUTO_PROMOTE_MIN_USES,
+                    self.AUTO_PROMOTE_MIN_USERS,
+                    self.AUTO_PROMOTE_MIN_AVG_RATING,
+                ),
+            )
+            rows = await cursor.fetchall()
+
+        candidates = []
+        for row in rows:
+            candidates.append({
+                "skill_name": row[0],
+                "owner_id": row[1],
+                "uses_count": row[2],
+                "unique_users": row[3],
+                "avg_rating": row[4],
+            })
+
+        # Mark candidates in promotion queue
+        for c in candidates:
+            async with self.db.connection() as conn:
+                await conn.execute(
+                    """INSERT OR IGNORE INTO skill_promotion_queue
+                       (skill_name, original_owner_id, uses_count, unique_users_count, avg_rating)
+                       VALUES (?, ?, ?, ?, ?)""",
+                    (c["skill_name"], c["owner_id"], c["uses_count"],
+                     c["unique_users"], c["avg_rating"]),
+                )
+                await conn.commit()
+
+        return candidates
+
     # ── Versions ──────────────────────────────────────────────────────
 
     async def record_version(
