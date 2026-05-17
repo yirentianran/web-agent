@@ -169,7 +169,8 @@ class TestPatternLearner:
         mock_conn = MagicMock()
         mock_cursor = MagicMock()
         mock_cursor.fetchall = AsyncMock(return_value=[])
-        mock_conn.execute = MagicMock(return_value=mock_cursor)
+        mock_conn.execute = AsyncMock(return_value=mock_cursor)
+        mock_conn.commit = AsyncMock(return_value=None)
 
         class FakeConn:
             async def __aenter__(self):
