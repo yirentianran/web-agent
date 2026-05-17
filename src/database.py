@@ -326,6 +326,12 @@ class Database:
         except Exception:
             pass
 
+        # Add collective intelligence tables
+        try:
+            await self.migrate_collective_intelligence()
+        except Exception:
+            pass
+
         self._checkpoint_task = asyncio.create_task(self._checkpoint_loop())
         self._initialized = True
 
@@ -535,6 +541,70 @@ class Database:
                     await conn.execute("DROP TABLE skills_old")
             except Exception:
                 pass  # Already migrated
+
+    async def migrate_collective_intelligence(self) -> None:
+        """Add collective intelligence tables and FTS5 indexes.
+
+        Phase 1: Only FTS5 full-text search. No sqlite-vec embeddings.
+        Safe to run on already-migrated databases.
+        """
+        async with self.connection() as conn:
+            # 1. Wiki pages table
+            await conn.execute("""CREATE TABLE IF NOT EXISTS wiki_pages (
+                id TEXT PRIMARY KEY,
+                title TEXT NOT NULL,
+                body TEXT NOT NULL,
+                category TEXT NOT NULL,
+                tags TEXT NOT NULL DEFAULT '[]',
+                status TEXT NOT NULL DEFAULT 'draft',
+                source TEXT NOT NULL DEFAULT 'auto-generated',
+                confidence REAL NOT NULL DEFAULT 0.5,
+                validation_count INTEGER NOT NULL DEFAULT 0,
+                created_at REAL NOT NULL DEFAULT (strftime('%s', 'now')),
+                updated_at REAL NOT NULL DEFAULT (strftime('%s', 'now'))
+            )""")
+
+            # 2. Session summaries
+            await conn.execute("""CREATE TABLE IF NOT EXISTS session_summaries (
+                session_id TEXT PRIMARY KEY,
+                summary TEXT NOT NULL,
+                user_id TEXT NOT NULL,
+                created_at REAL NOT NULL DEFAULT (strftime('%s', 'now'))
+            )""")
+
+            # 3. FTS5 full-text indexes
+            await conn.execute("""CREATE VIRTUAL TABLE IF NOT EXISTS wiki_fts
+                USING fts5(title, body, tags, content='wiki_pages')""")
+
+            await conn.execute("""CREATE VIRTUAL TABLE IF NOT EXISTS session_summary_fts
+                USING fts5(summary, content='session_summaries')""")
+
+            # 4. Skill promotion queue
+            await conn.execute("""CREATE TABLE IF NOT EXISTS skill_promotion_queue (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                skill_name TEXT NOT NULL,
+                original_owner_id TEXT NOT NULL,
+                uses_count INTEGER NOT NULL,
+                unique_users_count INTEGER NOT NULL,
+                avg_rating REAL NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending',
+                admin_review_comment TEXT,
+                reviewed_at REAL,
+                reviewed_by TEXT,
+                created_at REAL NOT NULL DEFAULT (strftime('%s', 'now'))
+            )""")
+
+            # 5. Learned patterns
+            await conn.execute("""CREATE TABLE IF NOT EXISTS learned_patterns (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                pattern_type TEXT NOT NULL,
+                pattern_data TEXT NOT NULL,
+                confidence REAL NOT NULL,
+                created_at REAL NOT NULL DEFAULT (strftime('%s', 'now')),
+                updated_at REAL NOT NULL DEFAULT (strftime('%s', 'now'))
+            )""")
+
+            await conn.commit()
 
     async def close(self) -> None:
         """Close the connection and stop the checkpoint loop."""
