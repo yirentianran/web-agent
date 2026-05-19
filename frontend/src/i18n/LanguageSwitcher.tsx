@@ -13,10 +13,10 @@ export default function LanguageSwitcher({ userId, authToken }: LanguageSwitcher
     if (!userId) return
     const headers: Record<string, string> = { 'Content-Type': 'application/json' }
     if (authToken) headers['Authorization'] = `Bearer ${authToken}`
-    fetch(`/api/users/${userId}/memory`, {
+    fetch(`/api/users/${userId}/language`, {
       method: 'PUT',
       headers,
-      body: JSON.stringify({ preferences: { language } }),
+      body: JSON.stringify({ language }),
     }).catch((err) => {
       console.error('[LanguageSwitcher] Failed to sync language to backend:', err)
     })

@@ -6,6 +6,7 @@ import asyncio
 import logging
 from pathlib import Path
 
+from src.auto_evolve import AutoEvolvePolicy
 from src.pattern_learner import PatternLearner
 from src.semantic_search import SemanticSearch
 from src.wiki_generator import WikiGenerator
@@ -27,12 +28,14 @@ class CollectiveIntelligenceEngine:
         self.semantic_search = SemanticSearch(db)
         self.pattern_learner = PatternLearner(db)
         self.skill_manager = SkillManager(db)
+        self.auto_evolve = AutoEvolvePolicy(db)
 
     async def start_background_jobs(self) -> None:
         """Launch all background intelligence loops."""
         asyncio.create_task(self._wiki_mining_loop())
         asyncio.create_task(self._pattern_extraction_loop())
         asyncio.create_task(self._auto_promotion_loop())
+        asyncio.create_task(self._auto_evolve_loop())
         logger.info("Collective intelligence background jobs started")
 
     async def _wiki_mining_loop(self) -> None:
@@ -65,6 +68,64 @@ class CollectiveIntelligenceEngine:
                         f"Auto-promotion candidates: "
                         f"{[c['skill_name'] for c in candidates]}"
                     )
+
+                # Clean up expired promotions
+                expired = await self.skill_manager.cleanup_expired_promotions()
+                if expired:
+                    logger.info(f"Auto-rejected {expired} expired promotions")
             except Exception:
                 logger.exception("Auto-promotion check failed")
             await asyncio.sleep(2 * 3600)
+
+    async def _auto_evolve_loop(self) -> None:
+        """Analyze evolution candidates and apply safe auto-fixes.
+
+        Applies user edits directly (safest). AUTO_FIX attempts LLM-generated
+        repairs. Other actions (PROPOSE, REQUIRE_REVIEW) are logged for admin review.
+        """
+        from src.auto_evolve import EvolveAction
+
+        while True:
+            try:
+                decisions = await self.auto_evolve.analyze_all_candidates()
+                for decision in decisions:
+                    if decision.action == EvolveAction.APPLY_EDITS:
+                        # Safest: apply user edits directly
+                        edits = (decision.data or {}).get("user_edits", "")
+                        if edits:
+                            result = await self.auto_evolve.apply_user_edits(
+                                decision.skill_name, edits
+                            )
+                            if result:
+                                logger.info(
+                                    f"Auto-evolved {decision.skill_name}: "
+                                    f"applied user edits (v{result['version']})"
+                                )
+                            else:
+                                logger.warning(
+                                    f"Failed to apply user edits for {decision.skill_name}"
+                                )
+                    elif decision.action == EvolveAction.AUTO_FIX:
+                        bugs = (decision.data or {}).get("bugs", [])
+                        if bugs:
+                            result = await self.auto_evolve.auto_fix_skill(
+                                decision.skill_name, bugs
+                            )
+                            if result:
+                                logger.info(
+                                    f"Auto-fixed {decision.skill_name}: "
+                                    f"v{result['version']} ({decision.reason})"
+                                )
+                            else:
+                                logger.warning(
+                                    f"Failed to auto-fix {decision.skill_name}"
+                                )
+                    else:
+                        # Log other actions for admin review
+                        logger.info(
+                            f"Auto-evolve candidate: {decision.skill_name} — "
+                            f"action={decision.action.value}, reason={decision.reason}"
+                        )
+            except Exception:
+                logger.exception("Auto-evolve loop failed")
+            await asyncio.sleep(4 * 3600)

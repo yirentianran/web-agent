@@ -11,6 +11,7 @@ function renderInputBar(props: Partial<React.ComponentProps<typeof InputBar>> = 
       onStop={() => {}}
       disabled={false}
       userId="test-user"
+      sessionId="test-session-123"
       {...props}
     />
   )
@@ -99,7 +100,7 @@ describe('InputBar - file upload on send', () => {
     // Sending should trigger upload first
     const textarea = screen.getByPlaceholderText(/Enter instruction/)
     fireEvent.change(textarea, { target: { value: 'process this' } })
-    mockFetch.mockResolvedValueOnce({ ok: true })
+    mockFetch.mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ filename: 'test.pdf', size: 100 }) })
     fireEvent.submit(document.querySelector('form')!)
 
     await waitFor(() => {
@@ -179,7 +180,7 @@ describe('InputBar - file upload on send', () => {
     })
 
     // Set up successful mock BEFORE clicking retry
-    mockFetch.mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ stored_name: 'abc123__report.xlsx', size: 4 }) })
+    mockFetch.mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ filename: 'report.xlsx', size: 4 }) })
 
     // Click retry — this triggers upload which will hit the success mock
     fireEvent.click(screen.getByLabelText(/retry.*report\.xlsx/i))
@@ -197,7 +198,7 @@ describe('InputBar - file upload on send', () => {
     fireEvent.submit(document.querySelector('form')!)
 
     await waitFor(() => {
-      expect(onSend).toHaveBeenCalledWith('@report.xlsx summarize', [file], [{ stored_name: 'abc123__report.xlsx', filename: 'report.xlsx', size: 4 }])
+      expect(onSend).toHaveBeenCalledWith('@report.xlsx summarize', [file], [{ filename: 'report.xlsx', size: 100 }])
     })
   })
 

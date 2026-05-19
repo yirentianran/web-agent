@@ -98,69 +98,6 @@ class UsageRecord(BaseModel):
     action: str = "use"
 
 
-# ── Memory Models ───────────────────────────────────────────────────
-
-
-class UserPreferences(BaseModel):
-    model: str = "claude-sonnet-4-6"
-    max_budget_usd: float = 2.0
-    language: str = "zh"
-    audit_detail_level: str = "standard"  # standard | detailed
-
-
-class KeyContact(BaseModel):
-    name: str
-    role: str
-
-
-class EntityMemory(BaseModel):
-    company_name: str = ""
-    credit_code: str = ""
-    fiscal_year: str = ""
-    accounting_standard: str = "CAS"  # CAS | IFRS | US GAAP
-    industry: str = ""
-    last_audit_date: str = ""
-    key_contacts: list[KeyContact] = []
-
-
-class PriorFinding(BaseModel):
-    session: str
-    date: str
-    item: str
-    standard: str
-    status: str = "待整改跟踪"
-
-
-class AuditContext(BaseModel):
-    prior_findings: list[PriorFinding] = []
-    risk_areas: list[str] = []
-    prior_sessions: list[str] = []
-
-
-class FileMemory(BaseModel):
-    filename: str
-    path: str
-    last_used: str = ""
-
-
-class UserMemory(BaseModel):
-    user_id: str
-    preferences: UserPreferences = Field(default_factory=UserPreferences)
-    entity_memory: EntityMemory = Field(default_factory=EntityMemory)
-    audit_context: AuditContext = Field(default_factory=AuditContext)
-    file_memory: list[FileMemory] = []
-    updated_at: str = ""
-
-
-class MemoryUpdate(BaseModel):
-    """Partial memory update — only set fields are merged."""
-
-    preferences: Optional[dict[str, Any]] = None
-    entity_memory: Optional[dict[str, Any]] = None
-    audit_context: Optional[dict[str, Any]] = None
-    file_memory: Optional[list[dict[str, Any]]] = None
-
-
 # ── MCP Models ──────────────────────────────────────────────────────
 
 

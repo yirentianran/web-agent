@@ -6,11 +6,10 @@ interface SettingsMenuProps {
   onOpenFeedback: () => void
   onOpenEvolution: () => void
   onOpenMCP: () => void
-  onOpenMemory: () => void
   userRole: string
 }
 
-export default function SettingsMenu({ onOpenSkills, onOpenFeedback, onOpenEvolution, onOpenMCP, onOpenMemory, userRole }: SettingsMenuProps) {
+export default function SettingsMenu({ onOpenSkills, onOpenFeedback, onOpenEvolution, onOpenMCP, userRole }: SettingsMenuProps) {
   const { t } = useTranslation()
   const [open, setOpen] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
@@ -65,10 +64,6 @@ export default function SettingsMenu({ onOpenSkills, onOpenFeedback, onOpenEvolu
               {t('header.skillEvolution')}
             </button>
           )}
-          <button className="settings-menu-item" role="menuitem" onClick={() => handleAction(onOpenMemory)} type="button">
-            <span className="settings-menu-item-icon">🧠</span>
-            {t('header.memoryManagement')}
-          </button>
         </div>
       )}
     </div>

@@ -198,28 +198,28 @@ class TestWriteToolPathRedirection:
         """Agent writing to outputs/report.pdf should be redirected to outputs/{sid}/report.pdf."""
         sid = "sess_aaa111bbb222"
         original = "outputs/report.pdf"
-        redirected = main_server._normalize_write_path(original, sid)
+        redirected = main_server.normalize_write_path(original, sid)
         assert redirected == f"outputs/{sid}/report.pdf"
 
     def test_root_file_redirected_to_session_dir(self) -> None:
         """Agent writing to report.pdf should be redirected to outputs/{sid}/report.pdf."""
         sid = "sess_aaa111bbb222"
         original = "report.pdf"
-        redirected = main_server._normalize_write_path(original, sid)
+        redirected = main_server.normalize_write_path(original, sid)
         assert redirected == f"outputs/{sid}/report.pdf"
 
     def test_already_correct_path_unchanged(self) -> None:
         """Agent writing to outputs/{sid}/report.pdf should not be modified."""
         sid = "sess_aaa111bbb222"
         original = f"outputs/{sid}/report.pdf"
-        redirected = main_server._normalize_write_path(original, sid)
+        redirected = main_server.normalize_write_path(original, sid)
         assert redirected == original
 
     def test_subdir_outputs_redirected(self) -> None:
         """Agent writing to outputs/reports/report.pdf should redirect to outputs/{sid}/reports/report.pdf."""
         sid = "sess_aaa111bbb222"
         original = "outputs/reports/report.pdf"
-        redirected = main_server._normalize_write_path(original, sid)
+        redirected = main_server.normalize_write_path(original, sid)
         assert redirected == f"outputs/{sid}/reports/report.pdf"
 
 

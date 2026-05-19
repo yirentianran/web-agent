@@ -100,10 +100,11 @@ class TestCreateSession:
         assert data["session_id"].startswith("sess_")
         assert len(data["session_id"]) == 17
 
-    def test_create_session_initialises_buffer(self, client: TestClient) -> None:
+    @pytest.mark.asyncio
+    async def test_create_session_initialises_buffer(self, client: TestClient) -> None:
         resp = client.post("/api/users/bob/sessions")
         sid = resp.json()["session_id"]
-        state = main_server.buffer.get_session_state(sid)
+        state = await main_server.buffer.get_session_state(sid)
         assert state["state"] == "idle"
 
 
@@ -141,7 +142,8 @@ class TestDeleteSession:
 
 
 class TestCancelSession:
-    def test_cancel_marks_session_done(self, client: TestClient) -> None:
+    @pytest.mark.asyncio
+    async def test_cancel_marks_session_done(self, client: TestClient) -> None:
         resp = client.post("/api/users/alice/sessions")
         sid = resp.json()["session_id"]
 
@@ -149,10 +151,11 @@ class TestCancelSession:
         assert resp.status_code == 200
         assert resp.json()["status"] == "ok"
 
-        state = main_server.buffer.get_session_state(sid)
+        state = await main_server.buffer.get_session_state(sid)
         assert state["state"] == "cancelled"
 
-    def test_cancel_awaits_task_completion(self, client: TestClient) -> None:
+    @pytest.mark.asyncio
+    async def test_cancel_awaits_task_completion(self, client: TestClient) -> None:
         """Cancel endpoint must wait for the task's CancelledError handler
         to finish before returning, so the buffer state is final and
         consistent when the client reads it.
@@ -173,15 +176,15 @@ class TestCancelSession:
             try:
                 await asyncio.sleep(10)
             except asyncio.CancelledError:
-                main_server.buffer.add_message(
+                await main_server.buffer.add_message(
                     sid,
                     {"type": "system", "subtype": "session_cancelled", "message": "Cancelled"},
                 )
-                main_server.buffer.add_message(
+                await main_server.buffer.add_message(
                     sid,
                     {"type": "system", "subtype": "session_state_changed", "state": "cancelled"},
                 )
-                main_server.buffer.mark_done(sid)
+                await main_server.buffer.mark_done(sid)
                 handler_done.set()
                 raise
 
@@ -192,7 +195,7 @@ class TestCancelSession:
         main_server.active_tasks[f"task_{sid}"] = None  # Placeholder
 
         # Set buffer to running first (simulates active agent)
-        main_server.buffer.add_message(sid, {"type": "system", "subtype": "progress"})
+        await main_server.buffer.add_message(sid, {"type": "system", "subtype": "progress"})
 
         # Register the slow handler to be scheduled when cancel is called.
         # This mimics the real run_agent_task being already running.
@@ -200,15 +203,15 @@ class TestCancelSession:
 
         async def mock_handler():
             await asyncio.sleep(0.05)  # Small delay to simulate work
-            main_server.buffer.add_message(
+            await main_server.buffer.add_message(
                 sid,
                 {"type": "system", "subtype": "session_cancelled", "message": "Cancelled"},
             )
-            main_server.buffer.add_message(
+            await main_server.buffer.add_message(
                 sid,
                 {"type": "system", "subtype": "session_state_changed", "state": "cancelled"},
             )
-            main_server.buffer.mark_done(sid)
+            await main_server.buffer.mark_done(sid)
             handler_done.set()
 
         # Store a task that the cancel endpoint will cancel.
@@ -240,7 +243,7 @@ class TestCancelSession:
         assert handler_done.wait(timeout=2), (
             "cancel_session returned before the task's CancelledError handler finished"
         )
-        state = main_server.buffer.get_session_state(sid)
+        state = await main_server.buffer.get_session_state(sid)
         assert state["state"] in ("cancelled", "completed", "idle"), (
             f"Buffer state should be terminal after cancel, got: {state['state']}"
         )
@@ -263,11 +266,12 @@ class TestSessionStatus:
         assert data["state"] == "idle"
         assert data["cost_usd"] == 0.0
 
-    def test_status_after_activity(self, client: TestClient) -> None:
+    @pytest.mark.asyncio
+    async def test_status_after_activity(self, client: TestClient) -> None:
         resp = client.post("/api/users/alice/sessions")
         sid = resp.json()["session_id"]
         # Simulate activity
-        main_server.buffer.add_message(sid, {
+        await main_server.buffer.add_message(sid, {
             "type": "system", "subtype": "progress"
         })
 
@@ -298,13 +302,14 @@ class TestWebSocketEndpoint:
             # Either an error message or the server closed cleanly
             assert "type" in result or result is not None
 
-    def test_ws_recover_sends_replay_messages(self, client: TestClient) -> None:
+    @pytest.mark.asyncio
+    async def test_ws_recover_sends_replay_messages(self, client: TestClient) -> None:
         """Send recover — verify replay messages are sent with correct flags."""
         buf = main_server.buffer
         sid = "session_recover_test"
-        buf.add_message(sid, {"type": "user", "content": "hello"})
-        buf.add_message(sid, {"type": "assistant", "content": "hi back"})
-        buf.mark_done(sid)
+        await buf.add_message(sid, {"type": "user", "content": "hello"})
+        await buf.add_message(sid, {"type": "assistant", "content": "hi back"})
+        await buf.mark_done(sid)
 
         with client.websocket_connect("/ws") as ws:
             ws.send_text(json.dumps({
@@ -331,13 +336,14 @@ class TestWebSocketEndpoint:
             # The connection should close cleanly.
             # We don't assert on close because TestClient behavior varies.
 
-    def test_ws_recover_partial_from_index(self, client: TestClient) -> None:
+    @pytest.mark.asyncio
+    async def test_ws_recover_partial_from_index(self, client: TestClient) -> None:
         """Recover with last_index > 0 — only newer messages are replayed."""
         buf = main_server.buffer
         sid = "session_recover_partial"
         for i in range(4):
-            buf.add_message(sid, {"type": "user", "content": f"msg-{i}"})
-        buf.mark_done(sid)
+            await buf.add_message(sid, {"type": "user", "content": f"msg-{i}"})
+        await buf.mark_done(sid)
 
         with client.websocket_connect("/ws") as ws:
             ws.send_text(json.dumps({
@@ -356,13 +362,14 @@ class TestWebSocketEndpoint:
             assert msg2["index"] == 3
             assert msg2["replay"] is True
 
-    def test_ws_recover_includes_session_id(self, client: TestClient) -> None:
+    @pytest.mark.asyncio
+    async def test_ws_recover_includes_session_id(self, client: TestClient) -> None:
         """Recover replay messages must include session_id so frontend
         can derive session state from session_state_changed messages."""
         buf = main_server.buffer
         sid = "session_recover_state_test"
-        buf.add_message(sid, {"type": "user", "content": "hello"})
-        buf.add_message(sid, {
+        await buf.add_message(sid, {"type": "user", "content": "hello"})
+        await buf.add_message(sid, {
             "type": "system",
             "subtype": "session_state_changed",
             "state": "running",
@@ -386,7 +393,8 @@ class TestWebSocketEndpoint:
             assert msg2["state"] == "running"
             assert msg2["replay"] is True
 
-    def test_ws_recover_emits_terminal_state_when_no_state_change(self, client: TestClient) -> None:
+    @pytest.mark.asyncio
+    async def test_ws_recover_emits_terminal_state_when_no_state_change(self, client: TestClient) -> None:
         """When the buffer is done with a terminal state but no
         session_state_changed message exists in the buffer, the recover
         loop must emit a synthetic session_state_changed so the frontend
@@ -395,9 +403,9 @@ class TestWebSocketEndpoint:
         sid = "session_terminal_safety_test"
 
         # Set up a completed session without any session_state_changed message
-        buf.add_message(sid, {"type": "user", "content": "hello"})
-        buf.add_message(sid, {"type": "assistant", "content": "done"})
-        buf.mark_done(sid)
+        await buf.add_message(sid, {"type": "user", "content": "hello"})
+        await buf.add_message(sid, {"type": "assistant", "content": "done"})
+        await buf.mark_done(sid)
 
         with client.websocket_connect("/ws") as ws:
             ws.send_text(json.dumps({
@@ -434,19 +442,20 @@ class TestWebSocketEndpoint:
             assert state_msgs[0]["state"] == "completed"
             assert state_msgs[0]["replay"] is False
 
-    def test_ws_recover_no_duplicate_state_change(self, client: TestClient) -> None:
+    @pytest.mark.asyncio
+    async def test_ws_recover_no_duplicate_state_change(self, client: TestClient) -> None:
         """When a session_state_changed message already exists in the buffer,
         the recover loop must NOT emit a duplicate synthetic one."""
         buf = main_server.buffer
         sid = "session_no_duplicate_state_test"
 
-        buf.add_message(sid, {"type": "user", "content": "hello"})
-        buf.add_message(sid, {
+        await buf.add_message(sid, {"type": "user", "content": "hello"})
+        await buf.add_message(sid, {
             "type": "system",
             "subtype": "session_state_changed",
             "state": "completed",
         })
-        buf.mark_done(sid)
+        await buf.mark_done(sid)
 
         with client.websocket_connect("/ws") as ws:
             ws.send_text(json.dumps({
@@ -1046,38 +1055,40 @@ class TestUserFeedbackQuery:
 
 
 class TestUserMessagePersistence:
-    def test_user_message_persisted_on_first_session(self, client: TestClient) -> None:
+    @pytest.mark.asyncio
+    async def test_user_message_persisted_on_first_session(self, client: TestClient) -> None:
         """User messages should be written to buffer on session start so they survive page refresh."""
         # Create a session and get its ID
         resp = client.post("/api/users/alice/sessions")
         sid = resp.json()["session_id"]
 
         # The session buffer should exist
-        state = main_server.buffer.get_session_state(sid)
+        state = await main_server.buffer.get_session_state(sid)
         assert state["state"] == "idle"
 
 
 # ── MessageBuffer: result message sets done flag ──────────────────
 
 class TestResultMessageSetsDone:
-    def test_result_message_marks_buffer_done(self) -> None:
+    @pytest.mark.asyncio
+    async def test_result_message_marks_buffer_done(self) -> None:
         """When a result message arrives, the buffer should be marked done so
         the WebSocket polling loop exits and the frontend stops showing 'Agent is working...'."""
         sid = "session_test_result_done"
-        main_server.buffer.add_message(sid, {
+        await main_server.buffer.add_message(sid, {
             "type": "system",
             "subtype": "progress",
         })
-        assert main_server.buffer.get_session_state(sid)["state"] == "running"
-        assert main_server.buffer.is_done(sid) is False
+        assert (await main_server.buffer.get_session_state(sid))["state"] == "running"
+        assert await main_server.buffer.is_done(sid) is False
 
-        main_server.buffer.add_message(sid, {
+        await main_server.buffer.add_message(sid, {
             "type": "result",
             "subtype": "success",
             "session_id": sid,
         })
-        assert main_server.buffer.get_session_state(sid)["state"] == "completed"
-        assert main_server.buffer.is_done(sid) is True
+        assert (await main_server.buffer.get_session_state(sid))["state"] == "completed"
+        assert await main_server.buffer.is_done(sid) is True
 
 
 # ── MAX_TURNS default value ────────────────────────────────────────
@@ -1118,36 +1129,38 @@ class TestMessageToDicts:
         import inspect
         assert inspect.isgeneratorfunction(main_server.message_to_dicts)
 
-    def test_tool_result_message_buffer_fields(self) -> None:
+    @pytest.mark.asyncio
+    async def test_tool_result_message_buffer_fields(self) -> None:
         """A tool_result message should carry content, name, and is_error fields
         so the frontend can render Bash output."""
         sid = "session_test_tool_result"
         # Simulate what message_to_dicts produces for a ToolResultBlock
-        main_server.buffer.add_message(sid, {
+        await main_server.buffer.add_message(sid, {
             "type": "tool_result",
             "name": "Bash",
             "tool_use_id": "toolu_01abc",
             "content": "hello from bash",
             "is_error": False,
         })
-        msgs = main_server.buffer.get_history(sid)
+        msgs = await main_server.buffer.get_history(sid)
         tool_result = msgs[0]
         assert tool_result["type"] == "tool_result"
         assert tool_result["name"] == "Bash"
         assert tool_result["content"] == "hello from bash"
         assert tool_result["is_error"] is False
 
-    def test_tool_result_error_flag(self) -> None:
+    @pytest.mark.asyncio
+    async def test_tool_result_error_flag(self) -> None:
         """tool_result messages should preserve is_error=True."""
         sid = "session_test_tool_result_error"
-        main_server.buffer.add_message(sid, {
+        await main_server.buffer.add_message(sid, {
             "type": "tool_result",
             "name": "Bash",
             "tool_use_id": "toolu_01xyz",
             "content": "command not found",
             "is_error": True,
         })
-        msgs = main_server.buffer.get_history(sid)
+        msgs = await main_server.buffer.get_history(sid)
         assert msgs[0]["is_error"] is True
 
 
@@ -1160,7 +1173,8 @@ class TestAgentTaskErrorHandling:
     the state message MUST be in the buffer before `mark_done()` sets done=True.
     """
 
-    def test_completed_path_state_message_reachable_after_done(self) -> None:
+    @pytest.mark.asyncio
+    async def test_completed_path_state_message_reachable_after_done(self) -> None:
         """Normal completion: session_state_changed: completed must be
         added to buffer so the subscribe loop's final pull catches it.
         The state message must be visible in history after mark_done()."""
@@ -1168,17 +1182,18 @@ class TestAgentTaskErrorHandling:
         buf = main_server.buffer
 
         # Correct ordering (what the fix implements): state message first, then mark_done
-        buf.add_message(sid, {"type": "system", "subtype": "session_state_changed", "state": "completed"})
-        buf.mark_done(sid)
+        await buf.add_message(sid, {"type": "system", "subtype": "session_state_changed", "state": "completed"})
+        await buf.mark_done(sid)
 
         # The subscribe loop does: is_done() → True → final pull → get_history()
         # The state message must be in that final pull.
-        history = buf.get_history(sid)
+        history = await buf.get_history(sid)
         assert any(m.get("subtype") == "session_state_changed" for m in history)
-        assert buf.is_done(sid) is True
-        assert buf.get_session_state(sid)["state"] == "completed"
+        assert await buf.is_done(sid) is True
+        assert (await buf.get_session_state(sid))["state"] == "completed"
 
-    def test_error_path_error_and_state_reachable_after_done(self) -> None:
+    @pytest.mark.asyncio
+    async def test_error_path_error_and_state_reachable_after_done(self) -> None:
         """Error path: both the error message and session_state_changed: error
         must be visible in history after mark_done()."""
         sid = "session_test_error_ordering"
@@ -1186,43 +1201,45 @@ class TestAgentTaskErrorHandling:
 
         # Correct ordering (what the fix implements):
         # 1. Add error message (wakes consumers)
-        buf.add_message(sid, {"type": "error", "message": "Something failed"})
+        await buf.add_message(sid, {"type": "error", "message": "Something failed"})
         # 2. Add state change (wakes consumers)
-        buf.add_message(sid, {"type": "system", "subtype": "session_state_changed", "state": "error"})
+        await buf.add_message(sid, {"type": "system", "subtype": "session_state_changed", "state": "error"})
         # 3. Mark done (NO wake — relies on prior add_message wakes)
-        buf.mark_done(sid)
+        await buf.mark_done(sid)
 
         # Verify: both messages exist in buffer and are reachable
-        history = buf.get_history(sid)
+        history = await buf.get_history(sid)
         assert any(m["type"] == "error" for m in history)
         assert any(m.get("subtype") == "session_state_changed" and m.get("state") == "error" for m in history)
-        assert buf.is_done(sid) is True
+        assert await buf.is_done(sid) is True
 
-    def test_cancelled_path_state_reachable_after_done(self) -> None:
+    @pytest.mark.asyncio
+    async def test_cancelled_path_state_reachable_after_done(self) -> None:
         """Cancellation: session_state_changed: cancelled must be reachable
         in history after mark_done()."""
         sid = "session_test_cancelled_ordering"
         buf = main_server.buffer
 
-        buf.add_message(sid, {"type": "system", "subtype": "session_cancelled", "message": "Cancelled"})
-        buf.mark_done(sid)
-        buf.add_message(sid, {"type": "system", "subtype": "session_state_changed", "state": "cancelled"})
+        await buf.add_message(sid, {"type": "system", "subtype": "session_cancelled", "message": "Cancelled"})
+        await buf.mark_done(sid)
+        await buf.add_message(sid, {"type": "system", "subtype": "session_state_changed", "state": "cancelled"})
 
-        history = buf.get_history(sid)
+        history = await buf.get_history(sid)
         assert any(m.get("subtype") == "session_state_changed" and m.get("state") == "cancelled" for m in history)
-        assert buf.is_done(sid) is True
+        assert await buf.is_done(sid) is True
 
-    def test_state_message_wakes_consumers(self) -> None:
+    @pytest.mark.asyncio
+    async def test_state_message_wakes_consumers(self) -> None:
         """When a terminal state message is added to buffer, it must
         wake consumers via event.set(). The subscribe loop must not
         need to wait for a heartbeat to discover the state change."""
         sid = "session_test_consumer_wake"
         buf = main_server.buffer
 
-        event = buf.subscribe(sid)
+        event = await buf.subscribe(sid)
 
         # Add state change message — this should wake the consumer
-        buf.add_message(sid, {"type": "system", "subtype": "session_state_changed", "state": "completed"})
+        await buf.add_message(sid, {"type": "system", "subtype": "session_state_changed", "state": "completed"})
 
         # Event should be set (consumer was woken)
         assert event.is_set() is True
@@ -1373,17 +1390,18 @@ class TestFileResultDelivery:
     dropped from the WebSocket stream.
     """
 
-    def test_file_result_reachable_after_mark_done(self) -> None:
+    @pytest.mark.asyncio
+    async def test_file_result_reachable_after_mark_done(self) -> None:
         """A file_result appended before mark_done() should be reachable
         by the subscribe loop's final get_history call."""
         sid = "session_file_result_test"
         # Simulate: result message already in buffer (sent by subscribe loop)
-        main_server.buffer.add_message(sid, {
+        await main_server.buffer.add_message(sid, {
             "type": "result",
             "content": "Session completed",
         })
         # Append file_result BEFORE mark_done (matching the fixed code path)
-        main_server.buffer.add_message(sid, {
+        await main_server.buffer.add_message(sid, {
             "type": "file_result",
             "content": "",
             "session_id": sid,
@@ -1392,33 +1410,34 @@ class TestFileResultDelivery:
                 {"filename": "report.pdf", "size": 51200, "download_url": "/api/users/user-123/download/outputs/report.pdf"},
             ],
         })
-        main_server.buffer.add_message(sid, {
+        await main_server.buffer.add_message(sid, {
             "type": "system",
             "subtype": "session_state_changed",
             "state": "completed",
         })
-        main_server.buffer.mark_done(sid)
+        await main_server.buffer.mark_done(sid)
 
         # Subscribe loop's final pull: get all messages after the "result"
         # (simulating last_seen = 1, i.e., after the result was sent)
-        msgs = main_server.buffer.get_history(sid, after_index=1)
+        msgs = await main_server.buffer.get_history(sid, after_index=1)
         # Should contain file_result and session_state_changed
         types = [m.get("type") for m in msgs]
         assert "file_result" in types, f"file_result not reachable! Messages: {types}"
         assert "system" in types
 
-    def test_subscribe_loop_no_duplicate_result(self) -> None:
+    @pytest.mark.asyncio
+    async def test_subscribe_loop_no_duplicate_result(self) -> None:
         """Simulate the subscribe loop's two-phase pull (normal iteration
         + final pull after is_done). The "result" message must NOT appear
         in both phases."""
         sid = "session_no_duplicate_result"
 
         # Phase 1: Normal iteration sends messages up to and including "result"
-        main_server.buffer.add_message(sid, {"type": "assistant", "content": "Hello"})
-        main_server.buffer.add_message(sid, {"type": "result", "content": "Session completed"})
+        await main_server.buffer.add_message(sid, {"type": "assistant", "content": "Hello"})
+        await main_server.buffer.add_message(sid, {"type": "result", "content": "Session completed"})
 
         # Normal iteration pulls and sends both messages
-        normal_batch = main_server.buffer.get_history(sid, after_index=0)
+        normal_batch = await main_server.buffer.get_history(sid, after_index=0)
         normal_types = [m.get("type") for m in normal_batch]
         assert "result" in normal_types
         assert "file_result" not in normal_types  # Not added yet
@@ -1426,22 +1445,22 @@ class TestFileResultDelivery:
         last_seen = len(normal_batch)  # last_seen = 2
 
         # Phase 2: Agent task exits, adds file_result and state_change, marks done
-        main_server.buffer.add_message(sid, {
+        await main_server.buffer.add_message(sid, {
             "type": "file_result",
             "content": "",
             "session_id": sid,
             "user_id": "user-123",
             "data": [{"filename": "test.pdf", "size": 1024}],
         })
-        main_server.buffer.add_message(sid, {
+        await main_server.buffer.add_message(sid, {
             "type": "system",
             "subtype": "session_state_changed",
             "state": "completed",
         })
-        main_server.buffer.mark_done(sid)
+        await main_server.buffer.mark_done(sid)
 
         # Final pull: should only get NEW messages after last_seen
-        final_batch = main_server.buffer.get_history(sid, after_index=last_seen)
+        final_batch = await main_server.buffer.get_history(sid, after_index=last_seen)
         final_types = [m.get("type") for m in final_batch]
 
         # file_result and state_change should be present
@@ -1459,20 +1478,21 @@ class TestFileResultDelivery:
         assert all_types.count("result") == 1, "result appears more than once"
         assert all_types.count("file_result") == 1, "file_result appears more than once"
 
-    def test_file_result_wakes_consumers(self) -> None:
+    @pytest.mark.asyncio
+    async def test_file_result_wakes_consumers(self) -> None:
         """Appending file_result should wake up waiting consumers."""
         import asyncio
         from threading import Event, Thread
 
         sid = "session_file_result_wake"
-        buf = main_server.buffer._ensure_buf(sid)
+        buf = await main_server.buffer._ensure_buf(sid)
 
         # Simulate a waiting consumer
         event = Event()
         buf["consumers"].add(event)
 
         # Add file_result (this should wake the consumer)
-        main_server.buffer.add_message(sid, {
+        await main_server.buffer.add_message(sid, {
             "type": "file_result",
             "content": "",
             "session_id": sid,
@@ -1483,18 +1503,19 @@ class TestFileResultDelivery:
         # Consumer should have been woken
         assert event.is_set(), "file_result did not wake consumers"
 
-    def test_file_result_includes_user_id(self) -> None:
+    @pytest.mark.asyncio
+    async def test_file_result_includes_user_id(self) -> None:
         """file_result message should include user_id for download URL
         construction in the frontend."""
         sid = "session_file_result_userid"
-        main_server.buffer.add_message(sid, {
+        await main_server.buffer.add_message(sid, {
             "type": "file_result",
             "content": "",
             "session_id": sid,
             "user_id": "user-456",
             "data": [{"filename": "data.xlsx", "size": 2048}],
         })
-        msgs = main_server.buffer.get_history(sid)
+        msgs = await main_server.buffer.get_history(sid)
         assert msgs[0].get("user_id") == "user-456"
 
     def test_source_completed_file_result_before_mark_done(self) -> None:
@@ -1558,7 +1579,8 @@ class TestFileResultBeforeResult:
     re-add the buffered result.
     """
 
-    def test_file_result_before_result_in_subscribe_output(self) -> None:
+    @pytest.mark.asyncio
+    async def test_file_result_before_result_in_subscribe_output(self) -> None:
         """Simulate the subscribe loop sending all messages.
         file_result must have a lower index than result so the
         file card appears above 'Session completed' in the UI.
@@ -1569,28 +1591,28 @@ class TestFileResultBeforeResult:
         # Simulate the CORRECT buffer state after the fix
         # (file_result added before result)
         sid = "session_order_correct"
-        main_server.buffer.add_message(sid, {"type": "assistant", "content": "Hello"})
-        main_server.buffer.add_message(sid, {
+        await main_server.buffer.add_message(sid, {"type": "assistant", "content": "Hello"})
+        await main_server.buffer.add_message(sid, {
             "type": "file_result",
             "content": "",
             "session_id": sid,
             "user_id": "user-123",
             "data": [{"filename": "calendar.docx", "size": 36000}],
         })
-        main_server.buffer.add_message(sid, {
+        await main_server.buffer.add_message(sid, {
             "type": "system",
             "subtype": "session_state_changed",
             "state": "completed",
         })
-        main_server.buffer.add_message(sid, {
+        await main_server.buffer.add_message(sid, {
             "type": "result",
             "subtype": "complete",
             "duration_ms": 64500,
             "total_cost_usd": 0.3835,
         })
-        main_server.buffer.mark_done(sid)
+        await main_server.buffer.mark_done(sid)
 
-        history = main_server.buffer.get_history(sid)
+        history = await main_server.buffer.get_history(sid)
         types = [m.get("type") for m in history]
 
         # Find indices
@@ -1601,7 +1623,8 @@ class TestFileResultBeforeResult:
             f"result (idx={result_idx}) — got order: {types}"
         )
 
-    def test_current_broken_ordering_result_before_file_result(self) -> None:
+    @pytest.mark.asyncio
+    async def test_current_broken_ordering_result_before_file_result(self) -> None:
         """This test documents the OLD broken ordering (result before file_result).
         After the fix to run_agent_task, the actual buffer ordering is now correct
         (file_result before result), verified by the test above.
@@ -1612,23 +1635,23 @@ class TestFileResultBeforeResult:
         """
         sid = "session_order_broken"
         # Simulate the BROKEN old state (result before file_result)
-        main_server.buffer.add_message(sid, {"type": "assistant", "content": "Hello"})
-        main_server.buffer.add_message(sid, {
+        await main_server.buffer.add_message(sid, {"type": "assistant", "content": "Hello"})
+        await main_server.buffer.add_message(sid, {
             "type": "result",
             "subtype": "complete",
             "duration_ms": 64500,
             "total_cost_usd": 0.3835,
         })
-        main_server.buffer.add_message(sid, {
+        await main_server.buffer.add_message(sid, {
             "type": "file_result",
             "content": "",
             "session_id": sid,
             "user_id": "user-123",
             "data": [{"filename": "calendar.docx", "size": 36000}],
         })
-        main_server.buffer.mark_done(sid)
+        await main_server.buffer.mark_done(sid)
 
-        history = main_server.buffer.get_history(sid)
+        history = await main_server.buffer.get_history(sid)
         types = [m.get("type") for m in history]
 
         result_idx = types.index("result")

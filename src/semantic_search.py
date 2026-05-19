@@ -116,3 +116,52 @@ class SemanticSearch:
             }
             for r in rows
         ]
+
+    async def list_top_wiki_pages(
+        self, top_k: int = 2
+    ) -> list[dict[str, Any]]:
+        """List top published Wiki pages by confidence (no query needed)."""
+        async with self.db.connection() as conn:
+            cursor = await conn.execute(
+                """SELECT id, title, body, confidence, validation_count
+                   FROM wiki_pages
+                   WHERE status = 'published'
+                   ORDER BY confidence DESC, validation_count DESC
+                   LIMIT ?""",
+                (top_k,),
+            )
+            rows = await cursor.fetchall()
+
+        return [
+            {
+                "id": r[0],
+                "title": r[1],
+                "body_preview": r[2][:300] if r[2] else "",
+                "confidence": r[3],
+                "validation_count": r[4],
+            }
+            for r in rows
+        ]
+
+    async def list_recent_sessions(
+        self, top_k: int = 3, exclude_user: str | None = None
+    ) -> list[dict[str, Any]]:
+        """List most recent session summaries (fallback when no query)."""
+        async with self.db.connection() as conn:
+            where = "user_id != ?" if exclude_user else "1=1"
+            params = (exclude_user,) if exclude_user else ()
+            cursor = await conn.execute(
+                f"SELECT session_id, summary, user_id, created_at FROM session_summaries WHERE {where} ORDER BY created_at DESC LIMIT ?",
+                (*params, top_k),
+            )
+            rows = await cursor.fetchall()
+
+        return [
+            {
+                "session_id": r[0],
+                "summary": anonymize_summary(r[1]),
+                "user_id": "other user",
+                "created_at": r[3],
+            }
+            for r in rows
+        ]

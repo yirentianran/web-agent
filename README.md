@@ -7,7 +7,7 @@ Multi-user web agent platform powered by Claude Agent SDK — isolated sessions,
 ## Features
 
 ### Core
-- **Multi-user isolation** — independent sessions, files, memory, and workspace per user
+- **Multi-user isolation** — independent sessions, files, and workspace per user
 - **Real-time streaming** — WebSocket chat with progressive text rendering and tool-call visualization
 - **Session management** — create, rename, fork, and delete sessions; auto-generated titles; full message history
 - **Sub-agent tasks** — TaskCreate / TaskUpdate / TaskList integration with lifecycle tracking
@@ -15,7 +15,7 @@ Multi-user web agent platform powered by Claude Agent SDK — isolated sessions,
 ### Auth & Security
 - **Password authentication** — register and login with bcrypt-hashed passwords; JWT tokens (24h expiry)
 - **Optional enforcement** — auth is opt-in via `ENFORCE_AUTH=true`; works without auth for local/dev use
-- **Per-user data isolation** — all sessions, files, skills, and memory are scoped to the authenticated user
+- **Per-user data isolation** — all sessions, files, and skills are scoped to the authenticated user
 
 ### File & Workspace
 - **File upload** — provide files as agent context (PDF, Excel, CSV supported)
@@ -24,11 +24,12 @@ Multi-user web agent platform powered by Claude Agent SDK — isolated sessions,
 ### Skills
 - **Skill sharing** — upload skills (ZIP), browse and install from the skill library
 - **Rating & feedback** — collect user ratings and comments per skill
+### Evolution System
+- **Wiki knowledge base** — LLM-generated pages from skill feedback
+- **Pattern learning** — tool co-occurrence and success rate analysis
+- **Semantic search** — FTS5 full-text search over past session summaries
+- **Skill auto-evolution** — automatic bug fixes and version management
 - **Evolution pipeline** — aggregate feedback over time with improvement suggestions
-
-### Memory
-- **L1 cross-session memory** — persistent user preferences and entity memory (SQLite)
-- **L2 agent memory** — Markdown files auto-loaded into the agent system prompt
 
 ### MCP Registry
 - **Admin-managed MCP servers** — register and configure MCP tool servers per user
@@ -109,7 +110,7 @@ Browser (React) ── REST / WebSocket ──► FastAPI (main_server.py)
                                            ├── Auth (JWT + bcrypt)
                                            ├── Session Store (SQLite)
                                            ├── Message Buffer (in-memory + JSONL disk)
-                                           ├── Memory Manager (L1 SQLite + L2 Markdown)
+                                           ├── Collective Intelligence (Wiki, Patterns, Auto-Evolve)
                                            ├── Skill Feedback & Evolution
                                            ├── MCP Server Store (SQLite)
                                            ├── Sub-Agent Task Manager
@@ -136,7 +137,7 @@ web-agent/
 │   ├── database.py             # SQLite with aiosqlite, WAL mode
 │   ├── session_store.py        # Session CRUD
 │   ├── message_buffer.py       # Message persistence and streaming
-│   ├── memory.py               # L1 + L2 user memory
+│   ├── semantic_search.py      # FTS5 search over sessions and wiki
 │   ├── mcp_store.py            # MCP server registry
 │   ├── skill_feedback.py       # Skill rating and aggregation
 │   ├── skill_evolution.py      # Feedback-driven improvement pipeline
@@ -181,7 +182,7 @@ docker compose up -d --build
 ### How it works
 
 - On first request, `container_manager.py` creates a container for the user (`web-agent-<user-id>`)
-- Volumes are mounted per-user: `/workspace`, `/home/agent/.claude` (sessions, memory, skills)
+- Volumes are mounted per-user: `/workspace`, `/home/agent/.claude` (sessions, skills)
 - A background idle monitor stops containers after `CONTAINER_IDLE_TTL` seconds of inactivity
 - When the user returns, the container is restarted automatically
 - Resource limits are configurable per container (CPU, memory, disk)
@@ -236,12 +237,11 @@ docker compose up -d --build
 | `POST` | `/api/skills/{name}/feedback` | Rate a skill |
 | `GET` | `/api/skills/{name}/evolution` | Get skill evolution data |
 
-### Memory
+### Language
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `GET` | `/api/users/{uid}/memory` | Get user memory |
-| `PUT` | `/api/users/{uid}/memory` | Update user memory |
+| `PUT` | `/api/users/{uid}/language` | Update user language preference |
 
 ### MCP (admin)
 

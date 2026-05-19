@@ -517,3 +517,194 @@ class DBSkillFeedbackManager:
             "version_number": version_number,
             "backup": str(backup_dir),
         }
+
+    @staticmethod
+    def next_version_number(versions_dir: Any) -> int:
+        """Return the next version number based on existing version directories.
+
+        Uses max(existing_versions) + 1 rather than len(existing_versions) + 1
+        to avoid collisions when versions are deleted.
+        """
+        from pathlib import Path
+
+        if not isinstance(versions_dir, Path) or not versions_dir.exists():
+            return 1
+        max_ver = 0
+        for entry in versions_dir.iterdir():
+            if entry.is_dir() and entry.name.startswith("v"):
+                try:
+                    ver = int(entry.name[1:])
+                    max_ver = max(max_ver, ver)
+                except ValueError:
+                    continue
+        return max_ver + 1
+
+    async def create_version(
+        self,
+        skill_name: str,
+        *,
+        new_content: str,
+        change_summary: str,
+        created_by: str = "auto-evolve",
+        skills_dir=None,
+    ) -> dict[str, Any] | None:
+        """Create a new skill version with backup and versioning.
+
+        1. Reads current SKILL.md from the skills directory
+        2. Computes next version number
+        3. Backs up current version as SKILL_backup_v{N}.md
+        4. Creates versions/v{N}/ directory with new SKILL.md
+        5. Records version in skill_versions table
+        6. Updates skills.version field
+        """
+        import shutil
+        from pathlib import Path
+
+        async with self.db.connection() as conn:
+            cursor = await conn.execute(
+                "SELECT path FROM skills WHERE skill_name = ?", (skill_name,)
+            )
+            row = await cursor.fetchone()
+            if row is None:
+                return None
+
+            skill_dir = Path(row["path"])
+            skill_file = skill_dir / "SKILL.md"
+            if not skill_file.exists():
+                return None
+
+            versions_dir = skill_dir / "versions"
+            next_version = self.next_version_number(versions_dir)
+
+            # Backup current version
+            backup_path = skill_dir / f"SKILL_backup_v{next_version}.md"
+            shutil.copy2(skill_file, backup_path)
+
+            # Create version directory with new content
+            version_dir = skill_dir.with_name(f"{skill_dir.name}@v{next_version}")
+            version_dir.mkdir(parents=True, exist_ok=True)
+            (version_dir / "SKILL.md").write_text(new_content)
+
+            await conn.execute(
+                """INSERT INTO skill_versions
+                   (skill_name, version_number, path, change_summary, created_by, file_count, status)
+                   VALUES (?, ?, ?, ?, ?, 1, 'active')""",
+                (skill_name, next_version, str(version_dir), change_summary, created_by),
+            )
+            await conn.execute(
+                "UPDATE skills SET version = ?, updated_at = strftime('%s', 'now') WHERE skill_name = ?",
+                (f"v{next_version}", skill_name),
+            )
+            await conn.commit()
+
+        return {
+            "skill_name": skill_name,
+            "version": next_version,
+            "backup": str(backup_path),
+        }
+
+    async def apply_user_edits(
+        self,
+        skill_name: str,
+        user_edits: str,
+        *,
+        skills_dir=None,
+    ) -> dict[str, Any] | None:
+        """Safely apply user-provided edits to a skill.
+
+        Creates a new version with the user's edits applied to SKILL.md.
+        This is the safest form of auto-evolution.
+        """
+        import os
+        from pathlib import Path
+
+        data_root = Path(os.environ.get("DATA_ROOT", "data")).resolve()
+        resolved = skills_dir or data_root / "shared-skills"
+
+        return await self.create_version(
+            skill_name,
+            new_content=user_edits,
+            change_summary="Applied user-provided edits",
+            created_by="auto-evolve-user-edits",
+            skills_dir=resolved,
+        )
+
+    async def auto_fix_skill(
+        self,
+        skill_name: str,
+        bugs: list[str],
+        *,
+        skills_dir=None,
+    ) -> dict[str, Any] | None:
+        """Auto-generate a fix for a skill based on identified bugs.
+
+        Calls an LLM to generate corrected SKILL.md content, then applies
+        it using the same versioning pipeline.
+        """
+        import os
+        from pathlib import Path
+
+        api_key = os.environ.get("ANTHROPIC_API_KEY")
+        if not api_key:
+            logger.warning("AUTO_FIX skipped: ANTHROPIC_API_KEY not set")
+            return None
+
+        # Read current skill content
+        async with self.db.connection() as conn:
+            cursor = await conn.execute(
+                "SELECT path FROM skills WHERE skill_name = ?", (skill_name,)
+            )
+            row = await cursor.fetchone()
+            if row is None:
+                return None
+            skill_dir = Path(row["path"])
+            skill_file = skill_dir / "SKILL.md"
+            if not skill_file.exists():
+                return None
+            current_content = skill_file.read_text()
+
+        bug_list = "\n".join(f"- {b}" for b in bugs)
+        prompt = (
+            f"You are fixing a skill definition for an AI agent system.\n\n"
+            f"Skill name: {skill_name}\n\n"
+            f"Current SKILL.md content:\n```markdown\n{current_content}\n```\n\n"
+            f"Identified bugs:\n{bug_list}\n\n"
+            f"Return ONLY the fixed SKILL.md content. Keep the same structure and format. "
+            f"Fix all the identified bugs. Do not add explanations."
+        )
+
+        try:
+            import httpx
+
+            resp = await httpx.AsyncClient().post(
+                "https://api.anthropic.com/v1/messages",
+                headers={
+                    "x-api-key": api_key,
+                    "anthropic-version": "2023-06-01",
+                    "content-type": "application/json",
+                },
+                json={
+                    "model": "claude-haiku-4-5-20251001",
+                    "max_tokens": 4000,
+                    "messages": [{"role": "user", "content": prompt}],
+                },
+                timeout=60.0,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            fixed_content = data["content"][0]["text"]
+
+            # Strip markdown code fences if present
+            if fixed_content.startswith("```"):
+                lines = fixed_content.split("\n")
+                if lines[0].startswith("```"):
+                    lines = lines[1:]
+                if lines and lines[-1].strip() == "```":
+                    lines = lines[:-1]
+                fixed_content = "\n".join(lines)
+
+            # Apply the fix
+            return await self.apply_user_edits(skill_name, fixed_content)
+        except Exception as e:
+            logger.error("AUTO_FIX failed for %s: %s", skill_name, e)
+            return None

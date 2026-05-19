@@ -6,7 +6,7 @@ Phase 2: Container orchestration with WebSocket bridging — agent tasks route
 
 Exposes:
 - WebSocket endpoint for browser → agent communication
-- REST APIs for sessions, files, skills, memory, MCP, admin
+- REST APIs for sessions, files, skills, MCP, admin
 """
 
 from __future__ import annotations
@@ -33,7 +33,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import httpx
-from fastapi import Depends, FastAPI, File, Header, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -41,11 +41,11 @@ from pydantic import BaseModel
 
 from src.admin_auth import require_admin
 from src.auth import create_token, get_current_user, verify_path_user, verify_token
+from src.workspace_enforcement import normalize_write_path
 from src.constants import BUILTIN_TOOLS, DISABLED_TOOLS
 from src.message_buffer import HEARTBEAT_INTERVAL, MessageBuffer, make_heartbeat
 from src.models import (
     McpServerConfig,
-    MemoryUpdate,
     SessionStatusResponse,
     SkillInfo,
     SkillsListResponse,
@@ -153,7 +153,7 @@ async def _emit_synthetic_state_change_if_missing(
 ) -> tuple[int, bool]:
     """Emit a synthetic session_state_changed if buffer is in a terminal
     state but the buffer contains no such message. Returns (updated last_seen, success)."""
-    buf_state = buffer.get_session_state(session_id)
+    buf_state = await buffer.get_session_state(session_id)
     if buf_state["state"] in ("completed", "error", "cancelled"):
         all_buffer_msgs = await buffer.get_history(session_id)
         has_state_change = any(
@@ -189,7 +189,7 @@ async def _handle_orphaned_running(
     doesn't spin forever. Returns (updated last_seen, ws_ok).
     """
     task_key = f"task_{session_id}"
-    buf_state = buffer.get_state(session_id)
+    buf_state = await buffer.get_state(session_id)
     task_exists = task_key in active_tasks and not active_tasks[task_key].done()
 
     if buf_state == "running" and not task_exists:
@@ -216,7 +216,7 @@ async def _handle_orphaned_running(
         buf = buffer.sessions.get(session_id)
         if buf:
             buf["state"] = "error"
-        buffer.mark_done(session_id)
+        await buffer.mark_done(session_id)
     return last_seen, True
 
 
@@ -327,11 +327,42 @@ def parse_skill_frontmatter(content: str) -> dict[str, str | None]:
     return result
 
 
-def load_skills(user_id: str) -> dict[str, dict[str, Any]]:
-    """Load all Skills for a user: shared + personal from workspace/.claude/skills."""
+async def _fetch_deprecated_skill_names() -> frozenset[str]:
+    """Return the set of skill names with status='deprecated' in DB.
+
+    Returns an empty frozenset when the DB is unavailable.
+    Callers pass this to ``_is_skill_active`` to avoid N+1 queries.
+    """
+    if _skill_manager is None:
+        return frozenset()
+    skills = await _skill_manager.list_skills(status="deprecated")
+    return frozenset(s["skill_name"] for s in skills)
+
+
+def _is_skill_active(skill_name: str, deprecated_names: frozenset[str] | None = None) -> bool:
+    """Return True if the skill is not known to be deprecated.
+
+    When *deprecated_names* is provided the check is O(1); otherwise
+    it falls back to an individual DB query.
+    """
+    if deprecated_names is not None:
+        return skill_name not in deprecated_names
+    return True  # caller must have checked already or accept the default
+
+
+async def load_skills(user_id: str) -> dict[str, dict[str, Any]]:
+    """Load all Skills for a user: shared + personal from workspace/.claude/skills.
+
+    Reads SKILL.md frontmatter from disk for the primary view, then supplements
+    with DB metadata (description, category, tags) when the DB has richer info.
+
+    Shared skills with status='deprecated' in the DB are excluded.
+    """
     user_dir = user_data_dir(user_id)
     workspace_skills = user_dir / "workspace" / ".claude" / "skills"
     shared_skills = DATA_ROOT / "shared-skills"
+
+    deprecated_names = await _fetch_deprecated_skill_names()
 
     all_skills: dict[str, dict[str, Any]] = {}
 
@@ -341,7 +372,9 @@ def load_skills(user_id: str) -> dict[str, dict[str, Any]]:
             if not skill_dir.is_dir():
                 continue
             if "@v" in skill_dir.name:
-                continue  # skip historical version directories
+                continue
+            if not _is_skill_active(skill_dir.name, deprecated_names):
+                continue
             skill_file = skill_dir / "SKILL.md"
             if skill_file.exists():
                 content = skill_file.read_text()
@@ -375,53 +408,33 @@ def load_skills(user_id: str) -> dict[str, dict[str, Any]]:
                     "version": frontmatter["version"],
                 }
 
+    # Supplement with DB metadata — fill in descriptions that were
+    # missing from SKILL.md frontmatter, and add category / tags.
+    if _db is not None and _db._initialized:
+        try:
+            from src.database import connect_sync
+
+            conn = connect_sync(_db.db_path)
+            rows = conn.execute(
+                "SELECT skill_name, description, category, tags FROM skills "
+                "WHERE status != 'deprecated'"
+            ).fetchall()
+            conn.close()
+            for row in rows:
+                name = row[0]
+                if name in all_skills:
+                    db_desc = row[1] or ""
+                    if db_desc and not all_skills[name]["description"]:
+                        all_skills[name]["description"] = db_desc
+                    if row[2]:
+                        all_skills[name]["category"] = row[2]
+                    if row[3]:
+                        all_skills[name]["tags"] = row[3]
+        except Exception:
+            pass  # DB unavailable — disk data is sufficient
+
     return all_skills
 
-
-def load_memory(user_id: str) -> str:
-    """Load L1 platform memory via MemoryManager (SQLite primary, file fallback)."""
-    from src.memory import MemoryManager
-
-    mgr = MemoryManager(user_id=user_id, data_root=DATA_ROOT, db=_db)
-    data = mgr.read()
-
-    parts: list[str] = []
-
-    entity = data.get("entity_memory", {})
-    if entity:
-        parts.append("## Enterprise Information\n")
-        for key, val in entity.items():
-            if val:
-                parts.append(f"- {key}: {val}\n")
-
-    audit_ctx = data.get("audit_context", {})
-    findings = audit_ctx.get("prior_findings", [])
-    if findings:
-        parts.append("\n## Prior Audit Findings\n")
-        for i, finding in enumerate(findings, 1):
-            parts.append(
-                f"{i}. {finding.get('item', '')} ({finding.get('standard', '')}, status: {finding.get('status', '')})\n"
-            )
-
-    risk = audit_ctx.get("risk_areas", [])
-    if risk:
-        parts.append(f"\n## Key Risk Areas: {', '.join(risk)}\n")
-
-    files = data.get("file_memory", [])
-    if files:
-        parts.append("\n## Frequently Used Files\n")
-        for f in files:
-            parts.append(f"- {f.get('filename', '')} (last used: {f.get('last_used', '')})\n")
-
-    prefs = data.get("preferences", {})
-    if prefs:
-        parts.append("\n## User Preferences\n")
-        for key, val in prefs.items():
-            if key == "language":
-                continue  # language is handled at ABSOLUTE PRIORITY level above
-            parts.append(f"- {key}: {val}\n")
-
-    return "\n".join(parts)
 
 
 def build_file_generation_rules_prompt(workspace: Path) -> str:
@@ -454,8 +467,7 @@ def is_path_within_user_dir(file_path: str, user_id: str) -> bool:
     """Check if a file path resolves within the user's data directory.
 
     Broader than is_path_within_workspace — also permits access to
-    the memory/ directory, which is outside workspace but within the
-    user's isolated data directory.
+    outputs/ and other subdirectories under the user's isolated data root.
     """
     user_dir = user_data_dir(user_id)
     workspace = user_workspace_dir(user_id)
@@ -465,6 +477,49 @@ def is_path_within_user_dir(file_path: str, user_id: str) -> bool:
     else:
         resolved = (workspace / path).resolve()
     return str(resolved).startswith(str(user_dir.resolve()))
+
+
+async def _summarize_and_store_session(session_id: str, user_id: str) -> None:
+    """Generate a brief summary of the session and store it for L4 retrieval."""
+    try:
+        from src.database import connect_sync
+        from src.semantic_search import anonymize_summary
+
+        conn = connect_sync(_db.db_path)
+        # Fetch user messages from this session
+        cursor = conn.execute(
+            "SELECT content FROM messages WHERE session_id = ? AND type = 'user' ORDER BY seq DESC LIMIT 5",
+            (session_id,),
+        )
+        user_msgs = [r[0] for r in cursor.fetchall() if r[0]]
+        conn.close()
+
+        if not user_msgs:
+            return
+
+        # Build a simple summary from the last few user messages
+        snippets = []
+        total_chars = 0
+        for msg in reversed(user_msgs):
+            stripped = msg.strip()[:200]
+            if stripped:
+                snippets.append(stripped)
+                total_chars += len(stripped)
+                if total_chars > 500:
+                    break
+
+        raw_summary = " | ".join(snippets)
+        summary = anonymize_summary(raw_summary)
+
+        conn = connect_sync(_db.db_path)
+        conn.execute(
+            "INSERT OR REPLACE INTO session_summaries (session_id, summary, user_id, created_at) VALUES (?, ?, ?, strftime('%s', 'now'))",
+            (session_id, summary, user_id),
+        )
+        conn.commit()
+        conn.close()
+    except Exception:
+        pass
 
 
 def build_download_url(user_id: str, file_path: str, *, directory: str | None = None) -> str:
@@ -489,20 +544,6 @@ def build_download_url(user_id: str, file_path: str, *, directory: str | None = 
     else:
         return f"/api/users/{user_id}/download/{path.name}"
     return f"/api/users/{user_id}/download/{prefix}/{filename}"
-
-
-def _normalize_write_path(file_path: str, session_id: str) -> str:
-    """Redirect a write path to the session's outputs directory.
-
-    Ensures all agent writes land under outputs/{session_id}/ regardless
-    of what path the agent specifies. This prevents concurrent sessions
-    from interfering with each other's files.
-    """
-    if file_path.startswith(f"outputs/{session_id}/"):
-        return file_path
-    if file_path.startswith("outputs/"):
-        return f"outputs/{session_id}/{file_path[len('outputs/'):]}".lstrip("/")
-    return f"outputs/{session_id}/{file_path}"
 
 
 # File types that are infrastructure/intermediate — never offered as user-facing results
@@ -568,8 +609,8 @@ def should_include_generated_file(filename: str) -> bool:
     return ext in DATA_EXTS
 
 
-def _insert_generated_file(
-    user_id: str, session_id: str, filename: str, stored_name: str, file_size: int, rel_path: str
+async def _insert_generated_file(
+    user_id: str, session_id: str, filename: str, file_size: int, rel_path: str
 ) -> None:
     """Insert a record into the generated_files table, ignoring duplicates."""
     if _db is None:
@@ -577,52 +618,38 @@ def _insert_generated_file(
     import uuid
 
     try:
-        import sqlite3 as _sqlite3
-
-        conn = _sqlite3.connect(str(_db.db_path))
-        conn.execute(
-            "INSERT OR IGNORE INTO generated_files (id, user_id, session_id, filename, stored_name, file_size, url) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (
-                str(uuid.uuid4()),
-                user_id,
-                session_id,
-                filename,
-                stored_name,
-                file_size,
-                f"/api/users/{user_id}/download/{rel_path}",
-            ),
-        )
-        conn.commit()
-        conn.close()
+        async with _db.connection() as conn:
+            await conn.execute(
+                "INSERT OR IGNORE INTO generated_files (id, user_id, session_id, filename, file_size, url) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    str(uuid.uuid4()),
+                    user_id,
+                    session_id,
+                    filename,
+                    file_size,
+                    f"/api/users/{user_id}/download/{rel_path}",
+                ),
+            )
+            await conn.commit()
     except Exception:
         pass
 
 
-def _generate_stored_name(original_name: str) -> str:
-    """Generate a unique physical filename: {name}__{uuid8}{ext}.
-
-    Any existing __{uuid8} suffix is stripped first so that re-scanning
-    an already-renamed file does not produce a double-wrapped name.
-    """
-    name, ext = Path(original_name).stem, Path(original_name).suffix
-    name = re.sub(r"__[0-9a-f]{8}$", "", name)
-    return f"{name}__{uuid.uuid4().hex[:8]}{ext}"
-
-
-def _scan_workspace_for_generated_files(
+async def _scan_workspace_for_generated_files(
     workspace: Path,
     user_id: str,
     session_id: str,
+    exclude_paths: set[str] | None = None,
 ) -> list[dict[str, Any]]:
-    """Scan only the session's outputs/{session_id}/ directory for generated files.
+    """Scan the session's outputs/{session_id}/ directory for generated files.
 
     Because each session has its own isolated directory, there is no risk of
     claiming another session's files. No time windows, snapshots, or DB
     ownership checks are needed.
 
-    Each file is renamed to a unique physical name: {stem}__{uuid8}{ext}.
-    The display name (filename) stays as the original name without path.
+    When *exclude_paths* is provided, files whose relative path (as POSIX)
+    is in the set are skipped — used to emit only newly generated files per turn.
 
     Returns the list of discovered file dicts.
     """
@@ -631,86 +658,77 @@ def _scan_workspace_for_generated_files(
         return []
 
     files: list[dict[str, Any]] = []
-    _already_renamed = re.compile(r"__[0-9a-f]{8}\.").search
     for f in session_outputs.rglob("*"):
         if not f.is_file() or not should_include_generated_file(f.name):
             continue
-        if _already_renamed(f.name):
-            continue  # already processed in a previous scan
 
-        # Generate unique physical name and rename on disk
-        stored_name = _generate_stored_name(f.name)
-        dest = f.parent / stored_name
-        try:
-            f.rename(dest)
-        except OSError:
+        rel_path = f.relative_to(workspace).as_posix()
+        if exclude_paths and rel_path in exclude_paths:
             continue
-
-        # filename = display name (no path prefix)
-        # stored_name = physical UUID-based filename
-        # rel_path = path relative to workspace for download URL
-        rel_path = dest.relative_to(workspace).as_posix()
-        st = dest.stat()
+        st = f.stat()
         file_size = st.st_size
         download_url = build_download_url(user_id, rel_path)
         entry = {
             "filename": f.name,
-            "stored_name": stored_name,
             "size": file_size,
             "generated_at": datetime.fromtimestamp(st.st_mtime, tz=UTC).isoformat(),
             "download_url": download_url,
         }
         files.append(entry)
-        _insert_generated_file(user_id, session_id, f.name, stored_name, file_size, rel_path)
+        await _insert_generated_file(user_id, session_id, f.name, file_size, rel_path)
 
     return files
 
 
-def _insert_upload_file(
+def _snapshot_output_files(workspace: Path, session_id: str) -> set[str]:
+    """Return a set of POSIX relative paths for existing output files.
+
+    Called before a task starts so _scan_workspace_for_generated_files can
+    exclude pre-existing files after the task completes.
+    """
+    session_outputs = workspace / "outputs" / session_id
+    if not session_outputs.exists():
+        return set()
+    paths: set[str] = set()
+    for f in session_outputs.rglob("*"):
+        if f.is_file():
+            paths.add(f.relative_to(workspace).as_posix())
+    return paths
+
+
+async def _insert_upload_file(
     user_id: str,
     session_id: str,
     filename: str,
     file_size: int,
-    stored_name: str | None = None,
 ) -> None:
     """Insert a record into the uploads table, ignoring duplicates.
 
     *filename* is the display name shown to the user.
-    *stored_name* is the physical UUID-based filename (no directory prefix).
-    If *stored_name* is not provided, a UUID-based name is generated.
     """
     if _db is None:
         return
 
-    # Strip any directory prefix the caller may pass
-    if stored_name:
-        stored_name = Path(stored_name).name
-        stored_name = stored_name[len("uploads/") :] if stored_name.startswith("uploads/") else stored_name
-    else:
-        stored_name = _generate_stored_name(filename)
-
     actual_size = file_size
     logger.debug(
-        "[upload] _insert_upload_file: user=%s, session=%s, filename=%r, stored_name=%r, file_size=%d",
+        "[upload] _insert_upload_file: user=%s, session=%s, filename=%r, file_size=%d",
         user_id,
         session_id,
         filename,
-        stored_name,
         file_size,
     )
     if actual_size <= 0:
-        upload_path = user_workspace_dir(user_id) / "uploads" / stored_name
+        upload_path = user_workspace_dir(user_id) / "uploads" / session_id / filename
         logger.debug("[upload] size=0, attempting disk fallback: path=%s, exists=%s", upload_path, upload_path.exists())
         if upload_path.exists():
             actual_size = upload_path.stat().st_size
             logger.debug("[upload] disk fallback succeeded: size=%d", actual_size)
         else:
-            logger.warning("Upload file not found at %s (user=%s, stored=%s)", upload_path, user_id, stored_name)
+            logger.warning("Upload file not found at %s (user=%s, filename=%r)", upload_path, user_id, filename)
 
     logger.info(
-        "[upload] final record: filename=%r, stored=%r, file_size=%d, session=%s",
+        "[upload] final record: filename=%r, file_size=%d, session=%s",
         filename,
-        stored_name,
         actual_size,
         session_id,
     )
@@ -718,24 +736,20 @@ def _insert_upload_file(
     import uuid
 
     try:
-        import sqlite3 as _sqlite3
-
-        conn = _sqlite3.connect(str(_db.db_path))
-        conn.execute(
-            "INSERT OR IGNORE INTO uploads (id, user_id, session_id, filename, stored_name, file_size, url) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (
-                str(uuid.uuid4()),
-                user_id,
-                session_id,
-                filename,  # display name
-                stored_name,  # UUID-based filename only, no dir prefix
-                actual_size,
-                f"/api/users/{user_id}/download/uploads/{stored_name}",
-            ),
-        )
-        conn.commit()
-        conn.close()
+        async with _db.connection() as conn:
+            await conn.execute(
+                "INSERT OR IGNORE INTO uploads (id, user_id, session_id, filename, file_size, url) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    str(uuid.uuid4()),
+                    user_id,
+                    session_id,
+                    filename,
+                    actual_size,
+                    f"/api/users/{user_id}/download/uploads/{session_id}/{filename}",
+                ),
+            )
+            await conn.commit()
     except Exception:
         pass
 
@@ -848,20 +862,21 @@ def _fallback_extraction_rules() -> str:
 def build_system_prompt(
     user_id: str, skills: dict[str, dict[str, Any]], workspace: Path | None = None, language: str | None = None
 ) -> str:
-    """Assemble the full system prompt from skills + memory.
+    """Assemble the full system prompt from skills + evolution context.
 
-    Language priority: WebSocket message → DB → default 'zh'.
+    Language priority: WebSocket message → DB users.language → default 'zh'.
     When WebSocket provides a language that differs from DB, the DB is
-    updated so other consumers (memory panel, initial load) stay in sync.
+    updated so other consumers stay in sync.
     """
-    from src.memory import MemoryManager
-
     db_lang: str | None = None
     try:
-        mgr = MemoryManager(user_id=user_id, data_root=DATA_ROOT, db=_db)
-        data = mgr.read()
-        lang_prefs = data.get("preferences", {})
-        db_lang = lang_prefs.get("language") if lang_prefs else None
+        from src.database import connect_sync
+
+        conn = connect_sync(_db.db_path)
+        row = conn.execute("SELECT language FROM users WHERE user_id = ?", (user_id,)).fetchone()
+        conn.close()
+        if row and row[0]:
+            db_lang = row[0]
     except Exception:
         pass
 
@@ -870,8 +885,12 @@ def build_system_prompt(
         # Sync WebSocket language back to DB if stale
         if lang != db_lang:
             try:
-                mgr2 = MemoryManager(user_id=user_id, data_root=DATA_ROOT, db=_db)
-                mgr2.update({"preferences": {"language": lang}})
+                from src.database import connect_sync
+
+                conn = connect_sync(_db.db_path)
+                conn.execute("UPDATE users SET language = ? WHERE user_id = ?", (lang, user_id))
+                conn.commit()
+                conn.close()
             except Exception:
                 pass
     else:
@@ -1022,27 +1041,23 @@ def build_system_prompt(
     if workspace is not None:
         parts.append(build_file_generation_rules_prompt(workspace))
 
-    memory_context = load_memory(user_id)
-    if memory_context:
-        parts.append(f"\n## Memory Context\n\n{memory_context}")
-
-    # L2 Agent Memory — Markdown notes auto-loaded from user's memory/ directory
-    from src.memory import MemoryManager
-
-    mgr = MemoryManager(user_id=user_id, data_root=DATA_ROOT, db=_db)
-    agent_memory = mgr.load_agent_memory_for_prompt()
-    if agent_memory:
-        parts.append(f"\n{agent_memory}")
-
-    # ── L3: LLM Wiki context ──
+    # ── L3: Collective Knowledge (wiki pages) ──
     try:
-        wiki_ctx = _load_wiki_context(user_id, "", max_tokens=1000)
+        wiki_ctx = _load_wiki_context(user_id, max_tokens=1000)
         if wiki_ctx:
             parts.append(wiki_ctx)
     except Exception:
         pass
 
-    # ── L5: Pattern context ──
+    # ── L4: Semantic Context (similar past sessions) ──
+    try:
+        semantic_ctx = _load_semantic_context(user_id, max_tokens=500)
+        if semantic_ctx:
+            parts.append(semantic_ctx)
+    except Exception:
+        pass
+
+    # ── L5: Pattern Context (tool usage stats) ──
     try:
         pattern_ctx = _load_pattern_context(user_id, max_tokens=500)
         if pattern_ctx:
@@ -1063,14 +1078,18 @@ def build_system_prompt(
     return "\n".join(parts)
 
 
-def _load_wiki_context(user_id: str, current_message: str, max_tokens: int = 1000) -> str:
-    """Load relevant Wiki page summaries into the system prompt."""
+def _load_wiki_context(user_id: str, max_tokens: int = 1000) -> str:
+    """Load relevant Wiki page summaries into the system prompt (L3).
+
+    Falls back to listing top published wiki pages by confidence when
+    FTS5 search returns no results.
+    """
     try:
         from src.semantic_search import SemanticSearch
 
         ss = SemanticSearch(_db)
         loop = asyncio.new_event_loop()
-        results = loop.run_until_complete(ss.search_wiki_pages(current_message, top_k=2))
+        results = loop.run_until_complete(ss.list_top_wiki_pages(top_k=2))
         loop.close()
 
         if not results:
@@ -1083,6 +1102,32 @@ def _load_wiki_context(user_id: str, current_message: str, max_tokens: int = 100
                 f"- Confidence: {r['confidence']:.0%}\n"
                 f"- Validated by {r['validation_count']} users\n"
                 f"- Summary: {r['body_preview']}\n\n"
+            )
+        return "\n".join(parts)[:max_tokens]
+    except Exception:
+        return ""
+
+
+def _load_semantic_context(user_id: str, max_tokens: int = 500) -> str:
+    """Load recent past session summaries into the system prompt (L4)."""
+    try:
+        from src.semantic_search import SemanticSearch
+
+        ss = SemanticSearch(_db)
+        loop = asyncio.new_event_loop()
+        results = loop.run_until_complete(
+            ss.list_recent_sessions(top_k=3, exclude_user=user_id)
+        )
+        loop.close()
+
+        if not results:
+            return ""
+
+        parts = ["## Similar Past Sessions\n\n"]
+        for r in results:
+            parts.append(
+                f"- {r['summary']}\n"
+                f"  (from another user, {r['created_at']})\n\n"
             )
         return "\n".join(parts)[:max_tokens]
     except Exception:
@@ -1113,7 +1158,7 @@ def _load_pattern_context(user_id: str, max_tokens: int = 500) -> str:
 
         parts = ["## Active Tool Patterns\n\n"]
         for tool, stats in list(top_tools.items())[:5]:
-            parts.append(f"- **{tool}**: used {stats['count']} times\n")
+            parts.append(f"- **{tool}**: used {stats['total']} times ({stats['rate']}% success)\n")
         return "\n".join(parts)[:max_tokens]
     except Exception:
         return ""
@@ -1141,17 +1186,15 @@ def load_mcp_config_sync() -> dict[str, Any]:
     """
     global _mcp_store, _db
     if _mcp_store is not None and _db is not None:
-        # Read directly from SQLite using a sync connection
-        import sqlite3
+        from src.database import connect_sync
 
-        conn = sqlite3.connect(str(_db.db_path))
+        conn = connect_sync(_db.db_path)
         try:
-            cursor = conn.execute(
+            rows = conn.execute(
                 "SELECT id, name, type, command, args, url, env, tools, "
                 "description, enabled, access, created_at, updated_at "
                 "FROM mcp_servers ORDER BY name"
-            )
-            rows = cursor.fetchall()
+            ).fetchall()
             mcp_servers: dict[str, Any] = {}
             for row in rows:
                 mcp_servers[row[1]] = {
@@ -1233,6 +1276,37 @@ def _cleanup_stale_skill_entries(target_dir: Path, expected: set[str]) -> None:
             entry.unlink()
 
 
+def _cleanup_shared_skill_from_all_users(skill_name: str) -> None:
+    """Remove stale symlinks/copies of a deleted shared skill from every user's workspace.
+
+    Called after a shared skill is deleted so that symlinks (Unix) and
+    copied directories (Windows) don't linger until the user's next session.
+    """
+    users_dir = DATA_ROOT / "users"
+    if not users_dir.exists():
+        return
+    is_windows = platform.system() == "Windows"
+    for user_dir in users_dir.iterdir():
+        if not user_dir.is_dir():
+            continue
+        skill_entry = user_dir / "workspace" / ".claude" / "skills" / skill_name
+        if skill_entry.is_symlink():
+            skill_entry.unlink()
+            logger.info(
+                "Cleaned up stale symlink for deleted shared skill '%s': %s",
+                skill_name, skill_entry,
+            )
+        elif skill_entry.is_dir():
+            if is_windows:
+                marker = skill_entry / ".shared_skill_source"
+                if marker.exists():
+                    shutil.rmtree(skill_entry)
+                    logger.info(
+                        "Cleaned up stale copy for deleted shared skill '%s': %s",
+                        skill_name, skill_entry,
+                    )
+
+
 def _sync_skill_symlink(src: Path, dest: Path) -> None:
     """Create or update a symlink at *dest* pointing to *src*.
 
@@ -1276,22 +1350,34 @@ def _sync_skill_copy(src: Path, dest: Path) -> None:
     logger.debug("Copied skill: %s -> %s", src.name, dest)
 
 
-def _sync_shared_skills(target_dir: Path) -> None:
-    """Ensure every shared skill is present in *target_dir*, and remove
-    entries for skills that no longer exist in the shared-skills store.
+async def _sync_shared_skills(target_dir: Path, force: bool = False) -> None:
+    """Ensure every *active* shared skill is present in *target_dir*, and remove
+    entries for skills that no longer exist in the shared-skills store or
+    have been deprecated in the DB.
 
     *Unix* — uses symlinks (instant).
     *Windows* — copies directories, but skips when the source mtime hasn't
     changed since the last copy.
+
+    Uses a generation counter to skip unnecessary scans. Set *force=True*
+    to bypass the cache (e.g. after deleting a personal skill that was
+    overriding a shared skill).
     """
+    key = str(target_dir.resolve())
+    if not force and _last_synced_gen.get(key) == _shared_skills_gen:
+        return  # no shared-skill changes since last sync
+
     shared_src = DATA_ROOT / "shared-skills"
     target_dir.mkdir(parents=True, exist_ok=True)
 
-    # Collect expected names
+    deprecated_names = await _fetch_deprecated_skill_names()
+
+    # Collect expected names — skip deprecated skills so stale entries
+    # are cleaned up and don't get re-created below.
     expected: set[str] = set()
     if shared_src.exists():
         for d in shared_src.iterdir():
-            if d.is_dir():
+            if d.is_dir() and _is_skill_active(d.name, deprecated_names):
                 expected.add(d.name)
 
     _cleanup_stale_skill_entries(target_dir, expected)
@@ -1302,6 +1388,8 @@ def _sync_shared_skills(target_dir: Path) -> None:
     is_windows = platform.system() == "Windows"
     for skill_dir in sorted(shared_src.iterdir()):
         if not skill_dir.is_dir():
+            continue
+        if not _is_skill_active(skill_dir.name, deprecated_names):
             continue
         dest = target_dir / skill_dir.name
 
@@ -1320,11 +1408,25 @@ def _sync_shared_skills(target_dir: Path) -> None:
         else:
             _sync_skill_symlink(skill_dir, dest)
 
+    _last_synced_gen[key] = _shared_skills_gen
+
+
+# ── Shared-skill change tracking ───────────────────────────────────
+
+_shared_skills_gen: int = 0
+_last_synced_gen: dict[str, int] = {}
+
+
+def _bump_shared_skills_gen() -> None:
+    """Increment the shared-skills generation so all user caches invalidate."""
+    global _shared_skills_gen
+    _shared_skills_gen += 1
+
 
 # ── SDK option builders ──────────────────────────────────────────────
 
 
-def _build_sdk_config(
+async def _build_sdk_config(
     user_id: str,
     mcp_config: dict,
     skills: list,
@@ -1358,7 +1460,7 @@ def _build_sdk_config(
 
     # Sync shared skills
     project_skills = workspace / ".claude" / "skills"
-    _sync_shared_skills(project_skills)
+    await _sync_shared_skills(project_skills)
 
     # SDK env
     sdk_env: dict[str, str] = {}
@@ -1401,7 +1503,7 @@ def _build_sdk_config(
     }
 
 
-def build_container_options_dict(
+async def build_container_options_dict(
     user_id: str,
     resume_session_id: str | None = None,
     language: str | None = None,
@@ -1411,15 +1513,15 @@ def build_container_options_dict(
     When CONTAINER_MODE=true, this dict is sent to the container via WebSocket
     instead of creating a ClaudeSDKClient directly in-process.
 
-    The system prompt is built as a full string on the host (so it includes
-    L1 memory from SQLite and L2 memory from the filesystem). The container
+    The system prompt is built as a full string on the host (including wiki
+    knowledge, pattern context, and semantic context). The container
     passes it directly as ``ClaudeAgentOptions.system_prompt``.
     """
     mcp_config = load_mcp_config_sync()
-    skills = load_skills(user_id)
+    skills = await load_skills(user_id)
     workspace = user_workspace_dir(user_id)
 
-    cfg = _build_sdk_config(user_id, mcp_config, skills, workspace, language)
+    cfg = await _build_sdk_config(user_id, mcp_config, skills, workspace, language)
 
     # Resolve container-internal cwd
     cm = _get_container_manager()
@@ -1449,19 +1551,9 @@ async def build_sdk_options(
 ) -> ClaudeAgentOptions:
     """Build ClaudeAgentOptions with full configuration."""
     mcp_config = load_mcp_config_sync()
-    skills = load_skills(user_id)
-
-    # Record skill usage in DB (fire-and-forget, never blocks agent)
-    if _skill_manager is not None:
-        for skill_name in skills:
-            asyncio.create_task(
-                _skill_manager.record_usage(
-                    skill_name=skill_name,
-                    user_id=user_id,
-                    session_id="",
-                    action="load",
-                )
-            )
+    skills = await load_skills(user_id)
+    # Load-time recording was removed because it inflated usage counts
+    # for skills that were loaded but never actually invoked.
 
     user_dir = user_data_dir(user_id)
     workspace = user_workspace_dir(user_id)
@@ -1469,7 +1561,7 @@ async def build_sdk_options(
     # Ensure outputs/ directory exists
     (workspace / "outputs").mkdir(exist_ok=True)
 
-    cfg = _build_sdk_config(
+    cfg = await _build_sdk_config(
         user_id,
         mcp_config,
         skills,
@@ -1714,7 +1806,7 @@ async def _can_use_tool_for_session(
     """Intercept AskUserQuestion and route answer through WebSocket."""
     if tool_name == "AskUserQuestion":
         # Add the question to buffer so UI can display it
-        buffer.add_message(
+        await buffer.add_message(
             session_id,
             {
                 "type": "tool_use",
@@ -1822,7 +1914,7 @@ def _build_history_prompt(history: list[dict[str, Any]], user_message: str, lang
             line = f"User: {content}"
             attached = msg.get("data")
             if attached and isinstance(attached, list):
-                paths = [f"uploads/{f.get('filename', '?')}" for f in attached if isinstance(f, dict)]
+                paths = [f"uploads/{session_id}/{f.get('filename', '?')}" for f in attached if isinstance(f, dict)]
                 if paths:
                     line += f"\n(Attached files: {', '.join(paths)})"
             parts.append(line)
@@ -1903,6 +1995,8 @@ def _format_first_message_prompt(
     if not attached_files:
         return prefix + session_guidance + user_message
     paths = ", ".join(
+        f if f.startswith("uploads/") or f.startswith("outputs/") else f"uploads/{session_id}/{f}" for f in attached_files
+    ) if session_id else ", ".join(
         f if f.startswith("uploads/") or f.startswith("outputs/") else f"uploads/{f}" for f in attached_files
     )
     return f"{prefix}{session_guidance}{user_message}\n\n(Attached files: {paths})"
@@ -2059,8 +2153,8 @@ async def _emit_file_result(
         for f in generated_files:
             if "download_url" not in f:
                 f["download_url"] = build_download_url(user_id, f["filename"], directory="outputs")
-        buffer.remove_messages_by_type(session_id, "file_result", user_id=user_id)
-        buffer.add_message(
+        await buffer.remove_messages_by_type(session_id, "file_result", user_id=user_id)
+        await buffer.add_message(
             session_id,
             {
                 "type": "file_result",
@@ -2121,13 +2215,13 @@ async def run_agent_task(
                 message=f"{tool_name} is disabled. Use MCP fetch tools instead.",
             )
 
-        # Block file writes outside user directory (workspace + memory)
+        # Block file writes outside user directory
         if tool_name == "Write":
             file_path = str(tool_input.get("file_path", ""))
             if file_path and not is_path_within_user_dir(file_path, user_id):
                 return PermissionResultDeny(
                     message=f"File path '{file_path}' is outside the user directory. "
-                    f"All files must be saved within the workspace or memory directory.",
+                    f"All files must be saved within the workspace or user data directory.",
                 )
 
         # Block Bash commands that write to paths outside workspace
@@ -2209,6 +2303,8 @@ async def run_agent_task(
         msg_count = 0
         generated_files: list[dict[str, Any]] = []
         buffered_result: dict[str, Any] | None = None  # SDK result for reordering
+        # Snapshot pre-existing output files so we only emit new ones
+        pre_scan_snapshot = _snapshot_output_files(workspace, session_id)
         logger.debug("[AGENT_TASK] Starting receive_response loop")
         async for msg in client.receive_response():
             msg_count += 1
@@ -2230,7 +2326,7 @@ async def run_agent_task(
                     tool_input = event.get("input") or {}
                     file_path = tool_input.get("file_path", "")
                     if file_path:
-                        file_path = _normalize_write_path(file_path, session_id)
+                        file_path = normalize_write_path(file_path, session_id)
                         tool_input["file_path"] = file_path
                     if file_path and should_include_generated_file(Path(file_path).name):
                         # Skip skill-related files — they live in .claude/skills/ or
@@ -2270,13 +2366,14 @@ async def run_agent_task(
                     content = event.get("content", "")
                     if content and len(content) > 1000:
                         event["content"] = truncate_tool_output(content)
-                buffer.add_message(session_id, event, user_id)
+                await buffer.add_message(session_id, event, user_id)
 
-        # Scan session output directory for generated files
-        generated_files = _scan_workspace_for_generated_files(
+        # Scan session output directory for newly generated files only
+        generated_files = await _scan_workspace_for_generated_files(
             workspace,
             user_id,
             session_id,
+            exclude_paths=pre_scan_snapshot,
         )
 
         # Emit "file_result", then title, then completion state.
@@ -2298,7 +2395,7 @@ async def run_agent_task(
 
         # Add state change BEFORE mark_done() so the subscribe loop's
         # final pull (after is_done() returns True) catches the message.
-        buffer.add_message(
+        await buffer.add_message(
             session_id,
             {
                 "type": "system",
@@ -2310,13 +2407,17 @@ async def run_agent_task(
         # Re-add the buffered SDK result AFTER file_result and state_change
         # so "Session completed" appears as the last visible message.
         if buffered_result is not None:
-            buffer.add_message(session_id, buffered_result, user_id)
-        buffer.mark_done(session_id)
+            await buffer.add_message(session_id, buffered_result, user_id)
+        await buffer.mark_done(session_id)
         duration_ms = (time.time() - start_time) * 1000
         agent_log.end_session(session_id, status="completed")
+        asyncio.ensure_future(_summarize_and_store_session(session_id, user_id))
+        # Scan for agent-created skills and register any not yet in DB
+        if _skill_manager is not None:
+            asyncio.ensure_future(_skill_manager.migrate_from_filesystem())
 
     except TimeoutError:
-        buffer.add_message(
+        await buffer.add_message(
             session_id,
             {
                 "type": "system",
@@ -2325,7 +2426,7 @@ async def run_agent_task(
             },
             user_id,
         )
-        buffer.add_message(
+        await buffer.add_message(
             session_id,
             {
                 "type": "system",
@@ -2334,10 +2435,10 @@ async def run_agent_task(
             },
             user_id,
         )
-        buffer.mark_done(session_id)
+        await buffer.mark_done(session_id)
         agent_log.end_session(session_id, status="timeout")
     except asyncio.CancelledError:
-        buffer.add_message(
+        await buffer.add_message(
             session_id,
             {
                 "type": "system",
@@ -2347,7 +2448,7 @@ async def run_agent_task(
             user_id,
         )
         # Add state change BEFORE mark_done() for the same reason.
-        buffer.add_message(
+        await buffer.add_message(
             session_id,
             {
                 "type": "system",
@@ -2356,7 +2457,7 @@ async def run_agent_task(
             },
             user_id,
         )
-        buffer.mark_done(session_id)
+        await buffer.mark_done(session_id)
         agent_log.end_session(session_id, status="cancelled")
     except Exception as e:
         error_msg = str(e)
@@ -2373,7 +2474,7 @@ async def run_agent_task(
             )
         else:
             logger.exception("Agent task failed for session %s", session_id)
-        buffer.add_message(
+        await buffer.add_message(
             session_id,
             {
                 "type": "error",
@@ -2382,7 +2483,7 @@ async def run_agent_task(
             user_id,
         )
         # Add state change BEFORE mark_done() so the error is delivered.
-        buffer.add_message(
+        await buffer.add_message(
             session_id,
             {
                 "type": "system",
@@ -2391,7 +2492,7 @@ async def run_agent_task(
             },
             user_id,
         )
-        buffer.mark_done(session_id)
+        await buffer.mark_done(session_id)
         agent_log.end_session(session_id, status="error")
     # Note: do NOT disconnect — client is kept alive for follow-ups
 
@@ -2407,8 +2508,8 @@ async def run_agent_task_container(
     """Run an agent task inside the user's Docker container via WebSocket bridge.
 
     Called instead of ``run_agent_task`` when ``CONTAINER_MODE=true``.
-    The system prompt is built on the host (including L1/L2 memory from
-    SQLite/filesystem), serialized into the options dict, and sent to the
+    The system prompt is built on the host (including wiki, pattern, and
+    semantic context), serialized into the options dict, and sent to the
     container's agent_server WebSocket. Stream events are forwarded to the
     buffer. After the bridge completes, generated files are scanned from
     the mounted workspace volume.
@@ -2423,7 +2524,7 @@ async def run_agent_task_container(
         is_continuation,
     )
 
-    options_dict = build_container_options_dict(
+    options_dict = await build_container_options_dict(
         user_id,
         resume_session_id=None,
         language=language,
@@ -2446,6 +2547,8 @@ async def run_agent_task_container(
     workspace = user_workspace_dir(user_id)
     generated_files: list[dict[str, Any]] = []
     msg_count = 0
+    # Snapshot pre-existing output files so we only emit new ones
+    pre_scan_snapshot = _snapshot_output_files(workspace, session_id)
 
     try:
         # Build the prompt - for continuations, include history
@@ -2468,13 +2571,14 @@ async def run_agent_task_container(
             time.time() - start_time,
         )
 
-        # ── After bridge completes: scan for generated files ─────
+        # ── After bridge completes: scan for newly generated files ─────
         # Workspace is a mounted host volume, so files created inside the
         # container are visible from the host at the same paths.
-        generated_files = _scan_workspace_for_generated_files(
+        generated_files = await _scan_workspace_for_generated_files(
             workspace,
             user_id,
             session_id,
+            exclude_paths=pre_scan_snapshot,
         )
 
         # Emit file_result, then title, then completion state.
@@ -2490,7 +2594,7 @@ async def run_agent_task_container(
         await _auto_generate_title(session_id, user_id, buffer, session_store, language)
 
         # ── Completion ────────────────────────────────────────────
-        buffer.add_message(
+        await buffer.add_message(
             session_id,
             {
                 "type": "system",
@@ -2499,12 +2603,16 @@ async def run_agent_task_container(
             },
             user_id,
         )
-        buffer.mark_done(session_id)
+        await buffer.mark_done(session_id)
         agent_log.end_session(session_id, status="completed")
+        asyncio.ensure_future(_summarize_and_store_session(session_id, user_id))
+        # Scan for agent-created skills and register any not yet in DB
+        if _skill_manager is not None:
+            asyncio.ensure_future(_skill_manager.migrate_from_filesystem())
 
     except TimeoutError:
         logger.error("Container task %s: timeout", session_id)
-        buffer.add_message(
+        await buffer.add_message(
             session_id,
             {
                 "type": "error",
@@ -2513,7 +2621,7 @@ async def run_agent_task_container(
             },
             user_id,
         )
-        buffer.add_message(
+        await buffer.add_message(
             session_id,
             {
                 "type": "system",
@@ -2522,7 +2630,7 @@ async def run_agent_task_container(
             },
             user_id,
         )
-        buffer.mark_done(session_id)
+        await buffer.mark_done(session_id)
         agent_log.end_session(session_id, status="error")
 
     except asyncio.CancelledError:
@@ -2531,7 +2639,7 @@ async def run_agent_task_container(
             await bridge.send_cancel()
         except Exception:
             pass
-        buffer.add_message(
+        await buffer.add_message(
             session_id,
             {
                 "type": "system",
@@ -2540,7 +2648,7 @@ async def run_agent_task_container(
             },
             user_id,
         )
-        buffer.add_message(
+        await buffer.add_message(
             session_id,
             {
                 "type": "system",
@@ -2549,7 +2657,7 @@ async def run_agent_task_container(
             },
             user_id,
         )
-        buffer.mark_done(session_id)
+        await buffer.mark_done(session_id)
         agent_log.end_session(session_id, status="cancelled")
 
     except Exception as exc:
@@ -2559,7 +2667,7 @@ async def run_agent_task_container(
             type(exc).__name__,
             exc,
         )
-        buffer.add_message(
+        await buffer.add_message(
             session_id,
             {
                 "type": "error",
@@ -2567,7 +2675,7 @@ async def run_agent_task_container(
             },
             user_id,
         )
-        buffer.add_message(
+        await buffer.add_message(
             session_id,
             {
                 "type": "system",
@@ -2576,7 +2684,7 @@ async def run_agent_task_container(
             },
             user_id,
         )
-        buffer.mark_done(session_id)
+        await buffer.mark_done(session_id)
         agent_log.end_session(session_id, status="error")
 
 
@@ -2794,7 +2902,7 @@ async def handle_ws(websocket: WebSocket) -> None:
             client_msg_id = data.get("client_msg_id")  # Frontend UUID for dedup
             ws_language = data.get("language")  # User's current UI language
 
-            # Parse files: can be list of strings (stored_names) or list of dicts with stored_name+size
+            # Parse files: can be list of strings (filenames) or list of dicts with filename+size
             attached_files: list[str] | None = None
             attached_file_sizes: dict[str, int] = {}
             if raw_files:
@@ -2806,11 +2914,11 @@ async def handle_ws(websocket: WebSocket) -> None:
                 )
                 if isinstance(raw_files, list) and raw_files:
                     if isinstance(raw_files[0], dict):
-                        attached_files = [f.get("stored_name", "") for f in raw_files if isinstance(f, dict)]
+                        attached_files = [f.get("filename", f.get("stored_name", "")) for f in raw_files if isinstance(f, dict)]
                         attached_file_sizes = {
-                            f["stored_name"]: f.get("size", 0)
+                            f.get("filename", f.get("stored_name", "")): f.get("size", 0)
                             for f in raw_files
-                            if isinstance(f, dict) and "stored_name" in f
+                            if isinstance(f, dict)
                         }
                         logger.debug(
                             "[upload] parsed dict mode: attached_files=%s, sizes=%s",
@@ -2855,7 +2963,7 @@ async def handle_ws(websocket: WebSocket) -> None:
                 logger.info("[WS] Entering recover loop for session=%s", session_id)
                 current_session_id = session_id
                 last_seen = last_index + len(history)
-                event = buffer.subscribe(session_id)
+                event = await buffer.subscribe(session_id)
 
                 try:
                     while True:
@@ -2925,7 +3033,7 @@ async def handle_ws(websocket: WebSocket) -> None:
                         last_seen += sent_count
 
                         # If session is done, final pull and exit
-                        if buffer.is_done(session_id):
+                        if await buffer.is_done(session_id):
                             final_messages = await buffer.get_history(session_id, after_index=last_seen)
                             final_sent = 0
                             for i, h in enumerate(final_messages):
@@ -2960,7 +3068,7 @@ async def handle_ws(websocket: WebSocket) -> None:
                         continue  # new WS message — re-check at top
                     # Timeout → send heartbeat
                     task_key = f"task_{session_id}"
-                    buf_state = buffer.get_state(session_id)
+                    buf_state = await buffer.get_state(session_id)
                     if buf_state in ("completed", "error", "cancelled"):
                         # Terminal — heartbeat is just keep-alive; don't
                         # trigger frontend recovery by reporting dead agent.
@@ -3035,10 +3143,10 @@ async def handle_ws(websocket: WebSocket) -> None:
                         user_msg_buf["data"] = [{"filename": f} for f in attached_files]
                     if client_msg_id:
                         user_msg_buf["client_msg_id"] = client_msg_id
-                    buffer.add_message(session_id, user_msg_buf, user_id, skip_async_write=True)
+                    await buffer.add_message(session_id, user_msg_buf, user_id)
 
                     # Broadcast running state to frontend via WebSocket
-                    buffer.add_message(
+                    await buffer.add_message(
                         session_id,
                         {
                             "type": "system",
@@ -3046,7 +3154,6 @@ async def handle_ws(websocket: WebSocket) -> None:
                             "state": "running",
                         },
                         user_id,
-                        skip_async_write=True,
                     )
 
                     if attached_files:
@@ -3057,33 +3164,8 @@ async def handle_ws(websocket: WebSocket) -> None:
                             attached_file_sizes,
                         )
                         for fname in attached_files:
-                            # Frontend may send stored_name (UUID-based, e.g. "report__abc123.xlsx")
-                            # or original display name (e.g. "report.xlsx")
-                            if "__" in fname and Path(fname).stem.rsplit("__", 1)[1][:8].isalnum():
-                                # Looks like a UUID-based stored name — strip UUID for display
-                                display = Path(fname).stem.rsplit("__", 1)[0] + Path(fname).suffix
-                                stored = fname
-                            else:
-                                display = fname
-                                stored = None
                             size = attached_file_sizes.get(fname, 0) if attached_file_sizes else 0
-                            _insert_upload_file(user_id, session_id, display, size, stored_name=stored)
-
-                    # Sync-persist the user message + session_state_changed to
-                    # SQLite BEFORE starting the agent task. This eliminates the
-                    # race where a page refresh arrives before the async drain
-                    # loop writes these messages, causing inconsistent state.
-                    buffer.sync_write_messages(
-                        session_id,
-                        [
-                            user_msg_buf,
-                            {
-                                "type": "system",
-                                "subtype": "session_state_changed",
-                                "state": "running",
-                            },
-                        ],
-                    )
+                            await _insert_upload_file(user_id, session_id, fname, size)
 
                     # Route to container or direct SDK based on mode
                     target_func = run_agent_task_container if CONTAINER_MODE else run_agent_task
@@ -3128,7 +3210,7 @@ async def handle_ws(websocket: WebSocket) -> None:
             # Subscribe to real-time messages
             current_session_id = session_id
             last_seen = last_index + len(history)
-            event = buffer.subscribe(session_id)
+            event = await buffer.subscribe(session_id)
 
             try:
                 while True:
@@ -3174,7 +3256,7 @@ async def handle_ws(websocket: WebSocket) -> None:
                                 logger.info(
                                     "WS: new message for active session %s, cancelling current task", session_id
                                 )
-                                buffer.add_message(
+                                await buffer.add_message(
                                     session_id,
                                     {
                                         "type": "user",
@@ -3223,7 +3305,7 @@ async def handle_ws(websocket: WebSocket) -> None:
                     # If session is done, pull one final time to ensure
                     # session_state_changed: completed is not missed
                     # (it may have been added after the get_history snapshot).
-                    if buffer.is_done(session_id):
+                    if await buffer.is_done(session_id):
                         final_messages = await buffer.get_history(session_id, after_index=last_seen)
                         final_sent = 0
                         for i, h in enumerate(final_messages):
@@ -3366,7 +3448,7 @@ async def create_session(
     """Create a new session for the user."""
     verify_path_user(user_id, current_user)
     session_id = f"sess_{uuid.uuid4().hex[:12]}"
-    buffer._ensure_buf(session_id)
+    await buffer._ensure_buf(session_id)
 
     # Create per-session output directory
     session_dir = user_workspace_dir(user_id) / "outputs" / session_id
@@ -3412,7 +3494,7 @@ async def get_session_history(
             raise HTTPException(status_code=404, detail="Session not found")
         messages = await session_store.get_session_history(user_id=user_id, session_id=session_id)
         try:
-            state = buffer.get_session_state(session_id, user_id=user_id)
+            state = await buffer.get_session_state(session_id, user_id=user_id)
         except ValueError:
             raise HTTPException(status_code=404, detail="Session not found")
         return [
@@ -3440,53 +3522,38 @@ async def get_session_files(
 
     # Query uploads and generated_files tables
     if _db is not None and _db._initialized:
-        import sqlite3
-
-        conn = sqlite3.connect(str(_db.db_path))
-        conn.row_factory = sqlite3.Row
         try:
-            for table, source in [("uploads", "upload"), ("generated_files", "generated")]:
-                if table == "generated_files":
-                    rows = conn.execute(
-                        "SELECT filename, stored_name, file_size, created_at, url FROM generated_files WHERE session_id = ? ORDER BY created_at DESC",
+            async with _db.connection() as conn:
+                for table, source in [("uploads", "upload"), ("generated_files", "generated")]:
+                    cursor = await conn.execute(
+                        f"SELECT filename, file_size, created_at, url FROM {table} WHERE session_id = ? ORDER BY created_at DESC",
                         (session_id,),
-                    ).fetchall()
-                else:
-                    rows = conn.execute(
-                        "SELECT filename, stored_name, file_size, created_at FROM uploads WHERE session_id = ? ORDER BY created_at DESC",
-                        (session_id,),
-                    ).fetchall()
-                for row in rows:
-                    # Dedup by stored_name (physical file) — not display name
-                    stored = dict(row).get("stored_name", row["filename"])
-                    if stored not in seen:
-                        seen.add(stored)
-                        # Strip any path prefix from filename (legacy records stored full path)
-                        display_name = str(row["filename"])
-                        if "/" in display_name:
-                            display_name = display_name.rsplit("/", 1)[-1]
-                        # Use stored URL for generated files (includes session path);
-                        # fallback to construction for uploads or legacy records without url
-                        if table == "generated_files":
-                            download_url = dict(row).get("url", "")
+                    )
+                    rows = await cursor.fetchall()
+                    for row in rows:
+                        filename = str(row[0])
+                        if "/" in filename:
+                            filename = filename.rsplit("/", 1)[-1]
+                        if filename not in seen:
+                            seen.add(filename)
+                            download_url = row[3] or ""
                             if not download_url:
-                                download_url = f"/api/users/{user_id}/download/outputs/{stored}"
-                        else:
-                            download_url = f"/api/users/{user_id}/download/uploads/{stored}"
-                        files.append(
-                            {
-                                "filename": display_name,
-                                "stored_name": stored,
-                                "size": row["file_size"],
-                                "source": source,
-                                "generated_at": datetime.fromtimestamp(row["created_at"], tz=UTC).isoformat(),
-                                "download_url": download_url,
-                            }
-                        )
-        except sqlite3.OperationalError:
+                                if table == "generated_files":
+                                    download_url = f"/api/users/{user_id}/download/outputs/{session_id}/{filename}"
+                                else:
+                                    download_url = f"/api/users/{user_id}/download/uploads/{session_id}/{filename}"
+                            files.append(
+                                {
+                                    "filename": filename,
+                                    "size": row[1],
+                                    "source": source,
+                                    "generated_at": datetime.fromtimestamp(row[2], tz=UTC).isoformat(),
+                                    "download_url": download_url,
+                                    "rel_path": f"{'uploads' if source == 'upload' else 'outputs'}/{session_id}/{filename}",
+                                }
+                            )
+        except Exception:
             pass
-        finally:
-            conn.close()
 
     # Fallback: scan message history for file_result events (backward compat)
     if not files:
@@ -3507,6 +3574,7 @@ async def get_session_files(
                                     "download_url": f.get(
                                         "download_url", build_download_url(user_id, fname, directory="outputs")
                                     ),
+                                    "rel_path": f"outputs/{session_id}/{fname}",
                                 }
                             )
 
@@ -3606,14 +3674,14 @@ async def cancel_session(
     task_key = f"task_{session_id}"
     # Mark buffer as cancelled FIRST so even if the task never responds,
     # the state is correct and persisted.
-    buffer.cancel(session_id, user_id=user_id)
+    await buffer.cancel(session_id, user_id=user_id)
     task = active_tasks.get(task_key)
     if task and not task.done():
         task.cancel()
         # Wait briefly for the task to finish, but don't block forever.
         # If the task is stuck in a non-cancellable operation, the timeout
         # ensures the HTTP request doesn't hang and the buffer state is
-        # already correct from buffer.cancel() above.
+        # already correct from await buffer.cancel() above.
         try:
             await asyncio.wait_for(task, timeout=5.0)
         except TimeoutError:
@@ -3628,7 +3696,7 @@ async def cancel_session(
             "cancel_session: no active task found for %s — buffer already marked cancelled",
             task_key,
         )
-    # If task is already done, nothing extra to do — buffer.cancel()
+    # If task is already done, nothing extra to do — await buffer.cancel()
     # already set the state.
     return {"status": "ok"}
 
@@ -3650,7 +3718,7 @@ async def fork_session(
     # Copy history from original session to new session buffer
     history = await buffer.get_history(session_id)
     for msg in history:
-        buffer.add_message(new_session_id, msg, user_id)
+        await buffer.add_message(new_session_id, msg, user_id)
 
     # Create new session in DB and copy metadata
     if session_store is not None:
@@ -3679,7 +3747,7 @@ async def get_session_status(
     if db_owner is not None and db_owner != user_id:
         raise HTTPException(status_code=404, detail="Session not found")
     try:
-        state = buffer.get_session_state(session_id, user_id=user_id)
+        state = await buffer.get_session_state(session_id, user_id=user_id)
     except ValueError:
         raise HTTPException(status_code=404, detail="Session not found")
     return SessionStatusResponse(
@@ -3698,12 +3766,15 @@ async def get_session_status(
 async def upload_file(
     user_id: str,
     file: UploadFile = File(...),
+    session_id: str | None = Form(None),
     current_user: str = Depends(get_current_user),
 ) -> JSONResponse:
     """Upload a file to the user's workspace.
 
-    Physical file is stored with a UUID-based name to prevent overwriting
-    when the same filename is uploaded multiple times.
+    When *session_id* is provided, the file is stored under
+    ``uploads/{session_id}/`` for session isolation.
+    If a file with the same name already exists in the session directory,
+    it will be overwritten (standard filesystem behaviour).
     """
     verify_path_user(user_id, current_user)
     from src.file_validation import validate_extension, validate_size
@@ -3718,19 +3789,25 @@ async def upload_file(
     if size_error:
         return JSONResponse({"error": size_error}, status_code=413)
 
-    upload_dir = user_workspace_dir(user_id) / "uploads"
+    if session_id:
+        upload_dir = user_workspace_dir(user_id) / "uploads" / session_id
+    else:
+        upload_dir = user_workspace_dir(user_id) / "uploads"
     upload_dir.mkdir(parents=True, exist_ok=True)
 
-    # Use UUID-based physical name to prevent overwrite
-    stored_name = _generate_stored_name(original_name)
-    dest = upload_dir / stored_name
+    dest = upload_dir / original_name
     dest.write_bytes(content)
 
+    # Insert DB record immediately so file is visible in listings
+    # without waiting for WebSocket task startup.
+    if session_id:
+        await _insert_upload_file(user_id, session_id, original_name, len(content))
+
     logger.info(
-        "[upload] HTTP upload: user=%s, original=%r, stored=%r, size=%d",
+        "[upload] HTTP upload: user=%s, session=%s, filename=%r, size=%d",
         user_id,
+        session_id or "(none)",
         original_name,
-        stored_name,
         len(content),
     )
 
@@ -3738,7 +3815,6 @@ async def upload_file(
         {
             "status": "ok",
             "filename": original_name,
-            "stored_name": stored_name,
             "size": len(content),
         }
     )
@@ -3755,34 +3831,45 @@ async def list_files(
     seen: set[str] = set()
 
     if _db is not None and _db._initialized:
-        import sqlite3
-
-        conn = sqlite3.connect(str(_db.db_path))
-        conn.row_factory = sqlite3.Row
         try:
-            for table, source in [("uploads", "upload"), ("generated_files", "generated")]:
-                rows = conn.execute(
-                    f"SELECT filename, stored_name, file_size, created_at FROM {table} WHERE user_id = ? ORDER BY created_at DESC",
-                    (user_id,),
-                ).fetchall()
-                for row in rows:
-                    stored = dict(row).get("stored_name", row["filename"])
-                    if stored not in seen:
-                        seen.add(stored)
-                        files.append(
-                            {
-                                "filename": row["filename"],
-                                "stored_name": stored,
-                                "size": row["file_size"],
-                                "source": source,
-                                "generated_at": datetime.fromtimestamp(row["created_at"], tz=UTC).isoformat(),
-                                "download_url": f"/api/users/{user_id}/download/{source == 'upload' and 'uploads' or 'outputs'}/{stored}",
-                            }
-                        )
-        except sqlite3.OperationalError:
+            async with _db.connection() as conn:
+                for table, source in [("uploads", "upload"), ("generated_files", "generated")]:
+                    cursor = await conn.execute(
+                        f"SELECT filename, file_size, created_at, url, session_id "
+                        f"FROM {table} WHERE user_id = ? ORDER BY created_at DESC",
+                        (user_id,),
+                    )
+                    rows = await cursor.fetchall()
+                    for row in rows:
+                        filename = str(row[0])
+                        display_name = filename if "/" not in filename else filename.rsplit("/", 1)[-1]
+                        if display_name not in seen:
+                            seen.add(display_name)
+                            session_id = str(row[4]) if row[4] else ""
+                            stored_url = str(row[3]) if row[3] else ""
+                            if stored_url:
+                                download_url = stored_url
+                            elif source == "generated":
+                                download_url = f"/api/users/{user_id}/download/outputs/{session_id}/{display_name}"
+                            else:
+                                download_url = f"/api/users/{user_id}/download/uploads/{session_id}/{display_name}"
+                            rel_path = (
+                                f"{'uploads' if source == 'upload' else 'outputs'}/{session_id}/{display_name}"
+                                if session_id
+                                else f"{'uploads' if source == 'upload' else 'outputs'}/{display_name}"
+                            )
+                            files.append(
+                                {
+                                    "filename": display_name,
+                                    "size": row[1],
+                                    "source": source,
+                                    "generated_at": datetime.fromtimestamp(row[2], tz=UTC).isoformat(),
+                                    "download_url": download_url,
+                                    "rel_path": rel_path,
+                                }
+                            )
+        except Exception:
             pass
-        finally:
-            conn.close()
 
     return files
 
@@ -3807,17 +3894,26 @@ async def download_file(
     return FileResponse(str(full_path), filename=full_path.name)
 
 
-@app.delete("/api/users/{user_id}/files/{filename}")
+@app.delete("/api/users/{user_id}/files/{file_path:path}")
 async def delete_file(
     user_id: str,
-    filename: str,
+    file_path: str,
     current_user: str = Depends(get_current_user),
 ) -> dict[str, str]:
-    """Delete a file from user's workspace."""
+    """Delete a file from user's workspace.
+
+    Accepts a workspace-relative path (e.g., 'outputs/{session_id}/file.txt').
+    """
     verify_path_user(user_id, current_user)
-    target = user_workspace_dir(user_id) / filename
-    if target.exists():
-        target.unlink()
+    workspace = user_workspace_dir(user_id)
+    full_path = (workspace / file_path).resolve()
+
+    # Prevent path traversal outside workspace
+    if not str(full_path).startswith(str(workspace.resolve())):
+        return JSONResponse({"error": "path traversal blocked"}, status_code=403)
+
+    if full_path.exists():
+        full_path.unlink()
     return {"status": "ok"}
 
 
@@ -3830,25 +3926,22 @@ async def list_shared_skills() -> list[SkillInfo]:
     results: list[SkillInfo] = []
 
     if _db is not None and _db._initialized:
-        import sqlite3
         from datetime import datetime, timezone
 
-        conn = sqlite3.connect(str(_db.db_path))
-        conn.row_factory = sqlite3.Row
-        try:
-            rows = conn.execute(
+        async with _db.connection() as conn:
+            cursor = await conn.execute(
                 "SELECT skill_name, owner_id, description, path, created_at"
                 " FROM skills WHERE source = 'shared'"
                 " AND status != 'deprecated' ORDER BY created_at DESC",
-            ).fetchall()
+            )
+            rows = await cursor.fetchall()
             for row in rows:
-                rd = dict(row)
-                skill_path = Path(rd.get("path", ""))
-                skill_name = rd["skill_name"]
+                skill_path = Path(row[3] or "")
+                skill_name = row[0]
                 created_at = ""
-                if rd.get("created_at"):
+                if row[4]:
                     try:
-                        created_at = datetime.fromtimestamp(rd["created_at"], tz=timezone.utc).isoformat()
+                        created_at = datetime.fromtimestamp(row[4], tz=timezone.utc).isoformat()
                     except (ValueError, OSError):
                         pass
 
@@ -3859,23 +3952,23 @@ async def list_shared_skills() -> list[SkillInfo]:
                     if skill_md.exists():
                         content = skill_md.read_text()
                         frontmatter = parse_skill_frontmatter(content)
-                        description = frontmatter.get("description") or rd.get("description", "")
+                        description = frontmatter.get("description") or row[2] or ""
                     else:
-                        description = rd.get("description", "")
+                        description = row[2] or ""
                     created_at_meta, created_by_meta, _ = _read_skill_meta(skill_path)
                     if not created_at:
                         created_at = created_at_meta
                     created_by = created_by_meta
                     valid = True
                 else:
-                    description = rd.get("description", "")
+                    description = row[2] or ""
                     valid = False
 
                 results.append(
                     SkillInfo(
                         name=skill_name,
                         source=SkillSource.SHARED,
-                        owner=rd.get("owner_id", ""),
+                        owner=row[1] or "",
                         description=description,
                         content=content,
                         path=str(skill_path),
@@ -3884,8 +3977,6 @@ async def list_shared_skills() -> list[SkillInfo]:
                         valid=valid,
                     )
                 )
-        finally:
-            conn.close()
 
     return results
 
@@ -3925,12 +4016,9 @@ async def list_user_skills(
     results: list[SkillInfo] = []
 
     if _db is not None and _db._initialized:
-        import sqlite3
         from datetime import datetime, timezone
 
-        conn = sqlite3.connect(str(_db.db_path))
-        conn.row_factory = sqlite3.Row
-        try:
+        async with _db.connection() as conn:
             if admin:
                 # Admin can see all users' personal skills, but still only personal ones
                 source_filter = "AND source = 'personal'"
@@ -3939,31 +4027,36 @@ async def list_user_skills(
                 # Owner: only personal skills (shared are fetched via listShared)
                 source_filter = "AND source = 'personal' AND owner_id = ?"
                 params = (user_id,)
-            rows = conn.execute(
+            cursor = await conn.execute(
                 f"SELECT skill_name, source, owner_id, description, path, created_at"
                 f" FROM skills WHERE status != 'deprecated' {source_filter}"
                 f" ORDER BY created_at DESC",
                 params,
-            ).fetchall()
+            )
+            rows = await cursor.fetchall()
             for row in rows:
-                rd = dict(row)
-                skill_path = Path(rd.get("path", ""))
-                skill_name = rd["skill_name"]
-                owner = rd["owner_id"]
+                # row: skill_name, source, owner_id, description, path, created_at
+                skill_path = Path(row[4] or "")
+                skill_name = row[0]
+                owner = row[2]
                 created_at = ""
-                if rd.get("created_at"):
+                if row[5]:
                     try:
-                        created_at = datetime.fromtimestamp(rd["created_at"], tz=timezone.utc).isoformat()
+                        created_at = datetime.fromtimestamp(row[5], tz=timezone.utc).isoformat()
                     except (ValueError, OSError):
                         pass
 
                 # Read SKILL.md content and created_by from metadata
                 content = ""
                 created_by = ""
+                description = row[3] or ""
                 if skill_path.exists():
                     skill_md = skill_path / "SKILL.md"
                     if skill_md.exists():
                         content = skill_md.read_text()
+                        frontmatter = parse_skill_frontmatter(content)
+                        # Prefer SKILL.md frontmatter description over DB
+                        description = frontmatter.get("description") or row[3] or ""
                     created_at_meta, created_by_meta, _ = _read_skill_meta(skill_path)
                     if not created_at:
                         created_at = created_at_meta
@@ -3972,9 +4065,9 @@ async def list_user_skills(
                 results.append(
                     SkillInfo(
                         name=skill_name,
-                        source=SkillSource.SHARED if rd["source"] == "shared" else SkillSource.PERSONAL,
+                        source=SkillSource.SHARED if row[1] == "shared" else SkillSource.PERSONAL,
                         owner=owner,
-                        description=rd.get("description", ""),
+                        description=description,
                         content=content,
                         path=str(skill_path),
                         created_at=created_at,
@@ -3982,8 +4075,6 @@ async def list_user_skills(
                         valid=skill_path.is_dir(),
                     )
                 )
-        finally:
-            conn.close()
 
     return results
 
@@ -4072,6 +4163,107 @@ def _extract_zip_to_dir(zip_data: bytes, target_dir: Path) -> list[str]:
     return extracted
 
 
+# ── Skill upload helpers ──────────────────────────────────────────
+
+
+async def _register_skill_or_rollback(
+    skill_name: str,
+    source: str,
+    owner_id: str,
+    skill_dir: Path,
+) -> None:
+    """Register a skill in the DB, rolling back disk on failure.
+
+    Keeps disk and DB consistent: if DB registration fails the extracted
+    directory is removed so no orphan state lingers.
+    """
+    if _skill_manager is None:
+        shutil.rmtree(skill_dir)
+        raise HTTPException(
+            status_code=500, detail="Skill manager not initialized — is DATA_DB_PATH configured?"
+        )
+    try:
+        await _skill_manager.register_skill(
+            skill_name=skill_name,
+            source=source,
+            owner_id=owner_id,
+            description="",
+            path=str(skill_dir),
+        )
+    except Exception:
+        logger.exception("Failed to register skill in DB: %s", skill_name)
+        shutil.rmtree(skill_dir)
+        raise HTTPException(
+            status_code=500, detail="Failed to register skill in database"
+        )
+
+
+async def _resolve_skill_upload_conflict(
+    skill_dir: Path, skill_name: str, label: str
+) -> None:
+    """Resolve stale or conflicting skill directories before upload.
+
+    Cleans up directories from failed uploads or deprecated skills.
+    Raises HTTPException(409) only when a genuine active conflict exists.
+    """
+    if not skill_dir.exists():
+        return
+
+    if not (skill_dir / "SKILL.md").exists():
+        shutil.rmtree(skill_dir)
+        logger.warning("Removed stale %s skill directory (no SKILL.md): %s", label, skill_dir)
+        return
+
+    if _skill_manager is None:
+        raise HTTPException(status_code=409, detail=f"Skill '{skill_name}' already exists")
+
+    existing = await _skill_manager.get_skill(skill_name)
+    if existing is None:
+        shutil.rmtree(skill_dir)
+        logger.warning("Removed stale %s skill directory (no DB record): %s", label, skill_dir)
+        return
+
+    if existing.get("status") == "deprecated":
+        shutil.rmtree(skill_dir)
+        logger.warning("Removed deprecated %s skill directory for re-upload: %s", label, skill_dir)
+        return
+
+    raise HTTPException(status_code=409, detail=f"Skill '{skill_name}' already exists")
+
+
+async def _validate_zip_upload(file: UploadFile) -> tuple[str, bytes]:
+    """Validate a skill zip upload and return (skill_name, data)."""
+    if not file.filename or not file.filename.lower().endswith(".zip"):
+        raise HTTPException(status_code=400, detail="Only .zip files are accepted")
+    skill_name = Path(file.filename).stem
+    if not re.match(r"^[a-zA-Z0-9][a-zA-Z0-9_\-]*$", skill_name):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid skill name derived from filename: {skill_name}",
+        )
+    data = await file.read()
+    if len(data) > MAX_ZIP_SIZE:
+        raise HTTPException(status_code=400, detail="Zip file too large (max 50MB)")
+    return skill_name, data
+
+
+def _write_skill_meta(skill_dir: Path, owner: str, zip_filename: str) -> None:
+    """Write skill-meta.json if it doesn't already exist in the extracted dir."""
+    meta_path = skill_dir / "skill-meta.json"
+    if not meta_path.exists():
+        meta_path.write_text(
+            json.dumps(
+                {
+                    "source": "upload",
+                    "owner": owner,
+                    "created_at": datetime.now(UTC).isoformat(),
+                    "zip_filename": zip_filename,
+                },
+                indent=2,
+            )
+        )
+
+
 # ── Skill upload endpoints
 
 
@@ -4088,56 +4280,27 @@ async def upload_skill_files(
     so the personal version takes precedence.
     """
     verify_path_user(user_id, current_user)
-    if not file.filename or not file.filename.lower().endswith(".zip"):
-        raise HTTPException(status_code=400, detail="Only .zip files are accepted")
 
-    skill_name = Path(file.filename).stem
-    if not re.match(r"^[a-zA-Z0-9][a-zA-Z0-9_\-]*$", skill_name):
-        raise HTTPException(status_code=400, detail=f"Invalid skill name derived from filename: {skill_name}")
+    skill_name, data = await _validate_zip_upload(file)
 
-    data = await file.read()
-    if len(data) > MAX_ZIP_SIZE:
-        raise HTTPException(status_code=400, detail="Zip file too large (max 50MB)")
-
-    user_dir = user_data_dir(user_id)
-    skill_dir = user_dir / "workspace" / ".claude" / "skills" / skill_name
+    skill_dir = user_data_dir(user_id) / "workspace" / ".claude" / "skills" / skill_name
 
     # Personal overrides shared: remove symlink if it exists
     if skill_dir.is_symlink():
         skill_dir.unlink()
-    if skill_dir.exists():
-        raise HTTPException(status_code=409, detail=f"Skill '{skill_name}' already exists")
+    await _resolve_skill_upload_conflict(skill_dir, skill_name, "personal")
     skill_dir.mkdir(parents=True, exist_ok=True)
 
-    extracted = _extract_zip_to_dir(data, skill_dir)
-
-    # Write metadata
-    meta_path = skill_dir / "skill-meta.json"
-    if not meta_path.exists():  # don't overwrite if zip already contained one
-        meta_path.write_text(
-            json.dumps(
-                {
-                    "source": "upload",
-                    "owner": current_user,
-                    "created_at": datetime.now(UTC).isoformat(),
-                    "zip_filename": file.filename,
-                },
-                indent=2,
-            )
-        )
-
-    # Register skill in DB
-    if _skill_manager is not None:
-        try:
-            await _skill_manager.register_skill(
-                skill_name=skill_name,
-                source="personal",
-                owner_id=current_user,
-                description="",
-                path=str(skill_dir),
-            )
-        except Exception:
-            logger.exception("Failed to register skill in DB: %s", skill_name)
+    try:
+        extracted = _extract_zip_to_dir(data, skill_dir)
+        _write_skill_meta(skill_dir, current_user, file.filename or "")
+        await _register_skill_or_rollback(skill_name, "personal", current_user, skill_dir)
+    except HTTPException:
+        shutil.rmtree(skill_dir)
+        raise
+    except Exception:
+        shutil.rmtree(skill_dir)
+        raise
 
     return {"status": "ok", "skill_name": skill_name, "files": extracted}
 
@@ -4148,52 +4311,25 @@ async def upload_shared_skill(
     current_user: str = Depends(require_admin),
 ) -> dict[str, Any]:
     """Upload a zip file and extract contents into a shared skill directory."""
-    if not file.filename or not file.filename.lower().endswith(".zip"):
-        raise HTTPException(status_code=400, detail="Only .zip files are accepted")
-
-    skill_name = Path(file.filename).stem
-    if not re.match(r"^[a-zA-Z0-9][a-zA-Z0-9_\-]*$", skill_name):
-        raise HTTPException(status_code=400, detail=f"Invalid skill name derived from filename: {skill_name}")
-
-    data = await file.read()
-    if len(data) > MAX_ZIP_SIZE:
-        raise HTTPException(status_code=400, detail="Zip file too large (max 50MB)")
+    skill_name, data = await _validate_zip_upload(file)
 
     skill_dir = DATA_ROOT / "shared-skills" / skill_name
-    if skill_dir.exists():
-        raise HTTPException(status_code=409, detail=f"Skill '{skill_name}' already exists")
+    await _resolve_skill_upload_conflict(skill_dir, skill_name, "shared")
     skill_dir.mkdir(parents=True, exist_ok=True)
 
-    extracted = _extract_zip_to_dir(data, skill_dir)
+    try:
+        extracted = _extract_zip_to_dir(data, skill_dir)
+        _write_skill_meta(skill_dir, current_user, file.filename or "")
+        await _register_skill_or_rollback(skill_name, "shared", "admin", skill_dir)
+    except HTTPException:
+        # Roll back: remove the directory so the user can retry
+        shutil.rmtree(skill_dir)
+        raise
+    except Exception:
+        shutil.rmtree(skill_dir)
+        raise
 
-    # Write metadata
-    meta_path = skill_dir / "skill-meta.json"
-    if not meta_path.exists():
-        meta_path.write_text(
-            json.dumps(
-                {
-                    "source": "upload",
-                    "owner": current_user,
-                    "created_at": datetime.now(UTC).isoformat(),
-                    "zip_filename": file.filename,
-                },
-                indent=2,
-            )
-        )
-
-    # Register skill in DB
-    if _skill_manager is not None:
-        try:
-            await _skill_manager.register_skill(
-                skill_name=skill_name,
-                source="shared",
-                owner_id="admin",
-                description="",
-                path=str(skill_dir),
-            )
-        except Exception:
-            logger.exception("Failed to register shared skill in DB: %s", skill_name)
-
+    _bump_shared_skills_gen()
     return {"status": "ok", "skill_name": skill_name, "files": extracted}
 
 
@@ -4259,6 +4395,10 @@ def _validate_skill_name(skill_name: str, parent_dir: Path) -> None:
 
     Raises HTTPException 400 if *skill_name* is empty or contains ``..``,
     ``/``, or ``\\``, or if the resolved path escapes *parent_dir*.
+
+    NOTE: The Path.resolve() check requires the path to exist, otherwise
+    symlink resolution can produce false positives. Callers should verify
+    the path exists (or skip the check when it doesn't) before calling.
     """
     if not skill_name or not skill_name.strip():
         raise HTTPException(status_code=400, detail="Skill name must not be empty")
@@ -4275,11 +4415,43 @@ async def delete_shared_skill(
     current_user: str = Depends(require_admin),
 ) -> dict[str, str]:
     """Delete a shared skill."""
-    _validate_skill_name(skill_name, DATA_ROOT / "shared-skills")
+    # Basic string validation first (no Path.resolve() — the dir may
+    # not exist on disk and resolve() symlink behaviour can be unstable).
+    if not skill_name or not skill_name.strip():
+        raise HTTPException(status_code=400, detail="Skill name must not be empty")
+    if ".." in skill_name or "/" in skill_name or "\\" in skill_name:
+        raise HTTPException(status_code=400, detail="Invalid skill name")
+
     skill_dir = DATA_ROOT / "shared-skills" / skill_name
     if not skill_dir.exists() or not skill_dir.is_dir():
-        raise HTTPException(status_code=404, detail=f"Shared skill '{skill_name}' not found")
+        # Clean up orphan DB record
+        if _skill_manager is not None:
+            try:
+                await _skill_manager.delete_skill(skill_name, delete_files=True)
+            except Exception:
+                logger.exception(
+                    "Failed to clean up orphan shared skill DB record: %s", skill_name
+                )
+        return {"status": "ok", "detail": "Skill already removed from disk"}
+
+    # Full path traversal check now that we know the path exists
+    _validate_skill_name(skill_name, DATA_ROOT / "shared-skills")
+
     shutil.rmtree(skill_dir)
+
+    # Clean up stale symlinks/copies in all user workspaces so they
+    # don't linger as broken links until next session start.
+    _cleanup_shared_skill_from_all_users(skill_name)
+
+    _bump_shared_skills_gen()
+
+    # Also clean up DB record
+    if _skill_manager is not None:
+        try:
+            await _skill_manager.delete_skill(skill_name, delete_files=True)
+        except Exception:
+            logger.exception("Failed to delete shared skill DB record: %s", skill_name)
+
     return {"status": "ok"}
 
 
@@ -4291,11 +4463,43 @@ async def delete_skill(
 ) -> dict[str, str]:
     """Delete a personal skill (real directory only, not shared/symlink)."""
     verify_path_user(user_id, current_user)
+
+    # Basic string validation first (no Path.resolve() — the dir may
+    # not exist on disk and resolve() symlink behaviour can be unstable).
+    if not skill_name or not skill_name.strip():
+        raise HTTPException(status_code=400, detail="Skill name must not be empty")
+    if ".." in skill_name or "/" in skill_name or "\\" in skill_name:
+        raise HTTPException(status_code=400, detail="Invalid skill name")
+
     skill_dir = user_workspace_dir(user_id) / ".claude" / "skills" / skill_name
-    _validate_skill_name(skill_name, skill_dir.parent)
+
     if not skill_dir.exists() or skill_dir.is_symlink():
-        raise HTTPException(status_code=404, detail="Personal skill not found")
+        # Directory doesn't exist — clean up orphan DB record if present
+        if _skill_manager is not None:
+            try:
+                await _skill_manager.delete_skill(skill_name, delete_files=True)
+            except Exception:
+                logger.exception(
+                    "Failed to clean up orphan skill DB record: %s", skill_name
+                )
+        return {"status": "ok", "detail": "Skill already removed from disk"}
+
+    # Full path traversal check now that we know the path exists
+    _validate_skill_name(skill_name, skill_dir.parent)
+
     shutil.rmtree(skill_dir)
+
+    # Restore shared skill symlink if one exists with the same name,
+    # so the SDK can discover it immediately (not just on next session).
+    await _sync_shared_skills(skill_dir.parent, force=True)
+
+    # Also clean up DB record
+    if _skill_manager is not None:
+        try:
+            await _skill_manager.delete_skill(skill_name, delete_files=True)
+        except Exception:
+            logger.exception("Failed to delete skill DB record: %s", skill_name)
+
     return {"status": "ok"}
 
 
@@ -4379,17 +4583,9 @@ async def promote_skill_to_shared(
     meta_path.write_text(json.dumps(meta, indent=2))
 
     # Register promoted skill in DB
-    if _skill_manager is not None:
-        try:
-            await _skill_manager.register_skill(
-                skill_name=skill_name,
-                source="shared",
-                owner_id=user_id,
-                description="",
-                path=str(target_dir),
-            )
-        except Exception:
-            logger.exception("Failed to register promoted skill in DB: %s", skill_name)
+    await _register_skill_or_rollback(skill_name, "shared", user_id, target_dir)
+
+    _bump_shared_skills_gen()
 
     return {
         "status": "ok",
@@ -4398,102 +4594,30 @@ async def promote_skill_to_shared(
     }
 
 
-# ── Memory API ───────────────────────────────────────────────────
+# ── User Language Preference ─────────────────────────────────────
 
 
-@app.get("/api/users/{user_id}/memory")
-async def get_memory(
+@app.put("/api/users/{user_id}/language")
+async def update_user_language(
     user_id: str,
-    current_user: str = Depends(get_current_user),
-) -> dict[str, Any]:
-    """Get user's platform memory (L1). Uses DB with file fallback."""
-    verify_path_user(user_id, current_user)
-    from src.memory import MemoryManager
-
-    mgr = MemoryManager(user_id=user_id, data_root=DATA_ROOT, db=_db)
-    return mgr.read()
-
-
-@app.put("/api/users/{user_id}/memory")
-async def update_memory(
-    user_id: str,
-    update: MemoryUpdate,
-    current_user: str = Depends(get_current_user),
-) -> dict[str, str]:
-    """Update user's platform memory (deep merge). Uses DB with file fallback."""
-    verify_path_user(user_id, current_user)
-    from src.memory import MemoryManager
-
-    mgr = MemoryManager(user_id=user_id, data_root=DATA_ROOT, db=_db)
-    patch: dict[str, Any] = {}
-    if update.preferences:
-        patch["preferences"] = update.preferences
-    if update.entity_memory:
-        patch["entity_memory"] = update.entity_memory
-    if update.audit_context:
-        patch["audit_context"] = update.audit_context
-    if update.file_memory:
-        patch["file_memory"] = update.file_memory
-    mgr.update(patch)
-    return {"status": "ok"}
-
-
-# ── Agent Memory (L2) ────────────────────────────────────────────
-
-
-@app.get("/api/users/{user_id}/memory/agent-notes")
-async def list_agent_notes(
-    user_id: str,
-    current_user: str = Depends(get_current_user),
-) -> list[dict[str, Any]]:
-    """List all agent memory Markdown notes."""
-    verify_path_user(user_id, current_user)
-    from src.memory import MemoryManager
-
-    return MemoryManager(user_id=user_id).list_agent_notes()
-
-
-@app.get("/api/users/{user_id}/memory/agent-notes/{filename}")
-async def get_agent_note(
-    user_id: str,
-    filename: str,
-    current_user: str = Depends(get_current_user),
-) -> dict[str, str]:
-    """Read a single agent memory note."""
-    verify_path_user(user_id, current_user)
-    from src.memory import MemoryManager
-
-    mgr = MemoryManager(user_id=user_id)
-    return {"filename": filename, "content": mgr.read_agent_note(filename)}
-
-
-@app.put("/api/users/{user_id}/memory/agent-notes/{filename}")
-async def write_agent_note(
-    user_id: str,
-    filename: str,
     req: dict[str, str],
     current_user: str = Depends(get_current_user),
 ) -> dict[str, str]:
-    """Write or update an agent memory note."""
+    """Update user's language preference."""
     verify_path_user(user_id, current_user)
-    from src.memory import MemoryManager
+    lang = req.get("language", "zh")
+    if lang not in ("en", "zh"):
+        raise HTTPException(status_code=400, detail="language must be 'en' or 'zh'")
+    try:
+        from src.database import connect_sync
 
-    actual = MemoryManager(user_id=user_id).write_agent_note(filename, req.get("content", ""))
-    return {"status": "ok", "filename": actual}
-
-
-@app.delete("/api/users/{user_id}/memory/agent-notes/{filename}")
-async def delete_agent_note(
-    user_id: str,
-    filename: str,
-    current_user: str = Depends(get_current_user),
-) -> dict[str, str]:
-    """Delete an agent memory note."""
-    verify_path_user(user_id, current_user)
-    from src.memory import MemoryManager
-
-    MemoryManager(user_id=user_id).delete_agent_note(filename)
-    return {"status": "ok"}
+        conn = connect_sync(_db.db_path)
+        conn.execute("UPDATE users SET language = ? WHERE user_id = ?", (lang, user_id))
+        conn.commit()
+        conn.close()
+    except Exception:
+        pass
+    return {"status": "ok", "language": lang}
 
 
 # ── Sub-Agent Task Management ────────────────────────────────────
@@ -4770,25 +4894,6 @@ def build_evolution_prompt(
     )
 
 
-def next_version_number(versions_dir: Path) -> int:
-    """Return the next version number based on existing version directories.
-
-    Uses max(existing_versions) + 1 rather than len(existing_versions) + 1
-    to avoid collisions when versions are deleted.
-    """
-    if not versions_dir.exists():
-        return 1
-    max_ver = 0
-    for entry in versions_dir.iterdir():
-        if entry.is_dir() and entry.name.startswith("v"):
-            try:
-                ver = int(entry.name[1:])
-                max_ver = max(max_ver, ver)
-            except ValueError:
-                continue
-    return max_ver + 1
-
-
 class SkillEvolveAgentRequest(BaseModel):
     model: str = "claude-sonnet-4-6"
 
@@ -4804,10 +4909,10 @@ async def activate_skill_version(
     current_user: str = Depends(get_current_user),
 ) -> dict[str, Any]:
     """Activate a specific pending version."""
-    from src.skill_evolution import SkillEvolutionManager
+    from src.skill_feedback import DBSkillFeedbackManager
 
-    mgr = SkillEvolutionManager(db=_db)
-    result = await mgr.db_activate_version(skill_name, version_number=req.version_number)
+    mgr = DBSkillFeedbackManager(db=_db)
+    result = await mgr.activate_version(skill_name, version_number=req.version_number)
     if result:
         if _skill_manager is not None:
             try:
@@ -4829,10 +4934,10 @@ async def rollback_skill(
     current_user: str = Depends(get_current_user),
 ) -> dict[str, Any]:
     """Rollback to the most recent backup version."""
-    from src.skill_evolution import SkillEvolutionManager
+    from src.skill_feedback import DBSkillFeedbackManager
 
-    mgr = SkillEvolutionManager(db=_db)
-    result = await mgr.db_rollback_version(skill_name)
+    mgr = DBSkillFeedbackManager(db=_db)
+    result = await mgr.rollback_version(skill_name)
     if result:
         return {
             "status": "ok",
@@ -4867,12 +4972,12 @@ async def run_evolution_agent(
     Returns:
         dict with task_id, status, and optionally files/summary on completion.
     """
-    from src.skill_evolution import SkillEvolutionManager
+    from src.skill_feedback import DBSkillFeedbackManager
 
-    mgr = SkillEvolutionManager(db=_db)
+    mgr = DBSkillFeedbackManager(db=_db)
 
     # Gather feedback data
-    feedback = await mgr.db_get_feedback_for_evolution(skill_name)
+    feedback = await mgr.get_feedback_for_evolution(skill_name)
 
     # Resolve skill directory
     skill_dir = DATA_ROOT / "shared-skills" / skill_name
@@ -4907,7 +5012,7 @@ async def run_evolution_agent(
 
     # Build SDK options — reuse the normal session config but with
     # cwd pointing to the version directory
-    options = _build_evolution_sdk_options(
+    options = await _build_evolution_sdk_options(
         user_id=user_id,
         version_dir=version_dir,
         system_prompt=system_prompt,
@@ -4926,7 +5031,7 @@ async def run_evolution_agent(
             # Stream messages to the buffer for real-time monitoring
             msg_dict = _message_to_dict_if_serializable(msg)
             if msg_dict:
-                buffer.add_message(task_id, msg_dict, user_id)
+                await buffer.add_message(task_id, msg_dict, user_id)
 
         # Scan the version directory for generated files
         generated_files = []
@@ -4947,7 +5052,7 @@ async def run_evolution_agent(
         }
     except Exception as e:
         logger.error("run_evolution_agent failed for %s: %s", skill_name, e)
-        buffer.add_message(
+        await buffer.add_message(
             task_id,
             {
                 "type": "error",
@@ -4958,7 +5063,7 @@ async def run_evolution_agent(
         return {"task_id": task_id, "status": "failed", "reason": str(e)}
 
 
-def _build_evolution_sdk_options(
+async def _build_evolution_sdk_options(
     *,
     user_id: str,
     version_dir: Path,
@@ -4972,13 +5077,13 @@ def _build_evolution_sdk_options(
     - custom system prompt with evolution context
     - all normal tools and skills available
     """
-    skills = load_skills(user_id)
+    skills = await load_skills(user_id)
     max_turns = int(os.getenv("MAX_TURNS", "200"))
 
     # Sync shared skills into the version directory so the agent can
     # discover and use all available skills (including skill-creator).
     version_skills = version_dir / ".claude" / "skills"
-    _sync_shared_skills(version_skills)
+    await _sync_shared_skills(version_skills)
 
     # Copy personal skills (can't symlink across all setups; use mtime
     # caching to skip unchanged skills).
@@ -5034,7 +5139,9 @@ async def trigger_skill_evolution_agent(
 
     # Create version output directory
     versions_dir = skills_dir / skill_name / "versions"
-    version_num = next_version_number(versions_dir)
+    from src.skill_feedback import DBSkillFeedbackManager
+
+    version_num = DBSkillFeedbackManager.next_version_number(versions_dir)
     version_dir = versions_dir / f"v{version_num}"
 
     # Launch the agent session asynchronously
@@ -5167,21 +5274,85 @@ async def list_evolution_candidates(
     current_user: str = Depends(require_admin),
 ) -> dict[str, list[dict[str, Any]]]:
     """List skills that should evolve."""
-    from src.skill_evolution import SkillEvolutionManager
+    from src.skill_feedback import DBSkillFeedbackManager
 
-    mgr = SkillEvolutionManager(db=_db)
-    candidates = await mgr.db_get_evolution_candidates()
-    return {
-        "candidates": [
-            {
-                "skill_name": c.skill_name,
-                "count": c.stats.count,
-                "average_rating": c.stats.average_rating,
-                "high_quality_count": c.stats.high_quality_count,
-            }
-            for c in candidates
-        ]
-    }
+    mgr = DBSkillFeedbackManager(db=_db)
+    candidates = await mgr.get_evolution_candidates()
+    result = []
+    for c in candidates:
+        analytics = await mgr.get_analytics(c["skill_name"])
+        dist = analytics.get("rating_distribution", {})
+        result.append({
+            "skill_name": c["skill_name"],
+            "count": analytics["total_feedbacks"],
+            "average_rating": analytics["average_rating"],
+            "high_quality_count": sum(
+                v for k, v in dist.items() if int(k) >= 4
+            ),
+        })
+    return {"candidates": result}
+
+
+# ── Promotion Queue Admin Endpoints ───────────────────────────────────
+
+
+@app.get("/api/skills/promotion/pending")
+async def list_pending_promotions(
+    current_user: str = Depends(require_admin),
+) -> dict[str, list[dict[str, Any]]]:
+    """List all pending promotion queue entries."""
+    if _skill_manager is not None:
+        entries = await _skill_manager.get_pending_promotions()
+        return {"entries": entries}
+    return {"entries": []}
+
+
+@app.post("/api/skills/promotion/{skill_name}/approve")
+async def approve_promotion(
+    skill_name: str,
+    current_user: str = Depends(require_admin),
+) -> dict[str, Any]:
+    """Approve and execute a pending promotion."""
+    if _skill_manager is None:
+        raise HTTPException(status_code=503, detail="Skill manager not available")
+
+    result = await _skill_manager.execute_promotion(skill_name, reviewed_by=current_user)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Promotion not found or execution failed")
+    return result
+
+
+@app.post("/api/skills/promotion/{skill_name}/reject")
+async def reject_promotion(
+    skill_name: str,
+    body: dict[str, Any],
+    current_user: str = Depends(require_admin),
+) -> dict[str, Any]:
+    """Reject a pending promotion."""
+    if _skill_manager is None:
+        raise HTTPException(status_code=503, detail="Skill manager not available")
+
+    reason = body.get("reason", "")
+    success = await _skill_manager.reject_promotion(
+        skill_name, reason=reason, reviewed_by=current_user
+    )
+    if not success:
+        raise HTTPException(status_code=404, detail="Promotion not found")
+    return {"skill_name": skill_name, "status": "rejected"}
+
+
+@app.post("/api/skills/promotion/cleanup")
+async def cleanup_expired_promotions(
+    body: dict[str, Any] | None = None,
+    current_user: str = Depends(require_admin),
+) -> dict[str, Any]:
+    """Auto-reject expired promotion entries."""
+    if _skill_manager is None:
+        raise HTTPException(status_code=503, detail="Skill manager not available")
+
+    days = body.get("days") if body else None
+    count = await _skill_manager.cleanup_expired_promotions(days=days)
+    return {"expired_count": count}
 
 
 @app.get("/api/admin/feedback")
@@ -5224,27 +5395,31 @@ async def list_all_feedback(
 @app.get("/api/skills/{skill_name}/version")
 async def get_skill_versions(skill_name: str) -> dict[str, Any]:
     """Get all versions of a skill."""
-    from src.skill_evolution import SkillEvolutionManager
+    from src.skill_feedback import DBSkillFeedbackManager
 
-    mgr = SkillEvolutionManager(db=_db)
-    stats = await mgr.db_get_feedback_stats(skill_name)
-    skill_file = mgr.skills_dir / skill_name / "SKILL.md"
-    current_exists = skill_file.exists()
+    DATA_ROOT_LOCAL = Path(os.environ.get("DATA_ROOT", "data")).resolve()
+    skills_dir = DATA_ROOT_LOCAL / "shared-skills"
+    mgr = DBSkillFeedbackManager(db=_db)
+    analytics = await mgr.get_analytics(skill_name)
+    dist = analytics.get("rating_distribution", {})
 
     versions: list[str] = []
-    if current_exists:
+    skill_dir = skills_dir / skill_name
+    if (skill_dir / "SKILL.md").exists():
         versions.append("current")
-    if (mgr.skills_dir / skill_name).exists():
-        version_files = sorted((mgr.skills_dir / skill_name).glob("SKILL_v*.md"))
+    if skill_dir.exists():
+        version_files = sorted(skill_dir.glob("SKILL_v*.md"))
         versions.extend(f.stem for f in version_files)
 
     return {
         "skill_name": skill_name,
         "versions": versions,
         "feedback_stats": {
-            "count": stats.count,
-            "average_rating": stats.average_rating,
-            "high_quality_count": stats.high_quality_count,
+            "count": analytics["total_feedbacks"],
+            "average_rating": analytics["average_rating"],
+            "high_quality_count": sum(
+                v for k, v in dist.items() if int(k) >= 4
+            ),
         },
     }
 
@@ -5255,10 +5430,9 @@ async def get_skill_version_content(
     version_name: str,
 ) -> dict[str, Any]:
     """Get the content of a specific skill version."""
-    from src.skill_evolution import SkillEvolutionManager
-
-    mgr = SkillEvolutionManager(db=_db)
-    version_file = mgr.skills_dir / skill_name / f"{version_name}.md"
+    DATA_ROOT_LOCAL = Path(os.environ.get("DATA_ROOT", "data")).resolve()
+    skills_dir = DATA_ROOT_LOCAL / "shared-skills"
+    version_file = skills_dir / skill_name / f"{version_name}.md"
     if not version_file.exists():
         return {"status": "not_found", "reason": f"Version {version_name} not found"}
     content = version_file.read_text()
@@ -5362,7 +5536,7 @@ async def delete_skill_admin(
     skill = await _skill_manager.get_skill(skill_name)
     if skill is None:
         return JSONResponse({"error": "skill not found"}, status_code=404)
-    await _skill_manager.delete_skill(skill_name, delete_files=False)
+    await _skill_manager.delete_skill(skill_name, delete_files=True)
     return {"status": "ok"}
 
 
@@ -5953,7 +6127,7 @@ async def startup() -> None:
         await _db.init()
         await _db.migrate_v2()
         buffer.db = _db  # Wire DB into message buffer
-        buffer.start_drain()  # Start async write drain loop
+        # async drain loop removed — add_message writes directly  # Start async write drain loop
         session_store = SessionStore(db=_db)
 
         from src.audit_logger import AuditLogger
@@ -6025,10 +6199,6 @@ async def _cleanup_loop() -> None:
     while True:
         await asyncio.sleep(300)
         buffer.cleanup_expired()
-        # Retry unpersisted messages (after transient DB failures)
-        flushed = await buffer.flush_unpersisted()
-        if flushed:
-            logger.info("MessageBuffer: flushed %d unpersisted messages to SQLite", flushed)
         # Log retention cleanup
         from src.log_cleanup import cleanup_old_logs
 
@@ -6038,6 +6208,15 @@ async def _cleanup_loop() -> None:
                 logger.info("Log cleanup: %s", log_result)
         except Exception:
             logger.exception("Log cleanup failed")
+
+        # Scan for agent-created skills not yet in DB
+        if _skill_manager is not None:
+            try:
+                result = await _skill_manager.migrate_from_filesystem()
+                if result.get("registered"):
+                    logger.info("Cleanup loop registered %d new skill(s)", result["registered"])
+            except Exception:
+                logger.exception("Skill registration scan failed")
 
 
 # ── Static Files (Production) ───────────────────────────────────

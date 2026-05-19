@@ -43,7 +43,8 @@ class SkillManager:
                    ON CONFLICT(skill_name, source) DO UPDATE SET
                        owner_id=excluded.owner_id,
                        description=excluded.description, category=excluded.category,
-                       tags=excluded.tags, path=excluded.path, updated_at=strftime('%s', 'now')""",
+                       tags=excluded.tags, path=excluded.path, status='active',
+                       updated_at=strftime('%s', 'now')""",
                 (skill_name, source, owner_id, description, category, tags_json, path),
             )
             await conn.commit()
@@ -227,39 +228,41 @@ class SkillManager:
 
     # ── Auto-Promotion ──────────────────────────────────────────────
 
-    AUTO_PROMOTE_MIN_USES = 10
-    AUTO_PROMOTE_MIN_USERS = 3
-    AUTO_PROMOTE_MIN_AVG_RATING = 4.0
-    AUTO_PROMOTE_WINDOW_DAYS = 30
+    AUTO_PROMOTE_MIN_FEEDBACK = 5       # Minimum feedback entries
+    AUTO_PROMOTE_MIN_USERS = 3          # Minimum distinct users giving feedback
+    AUTO_PROMOTE_MIN_AVG_RATING = 4.0   # Minimum average rating
+    AUTO_PROMOTE_WINDOW_DAYS = 30       # Time window for counting
 
     async def check_auto_promotion(self) -> list[dict[str, Any]]:
         """Scan personal skills for auto-promotion candidates.
 
         Returns skills that meet all thresholds:
-        - uses >= AUTO_PROMOTE_MIN_USES
+        - feedback_count >= AUTO_PROMOTE_MIN_FEEDBACK
         - unique_users >= AUTO_PROMOTE_MIN_USERS
         - avg_rating >= AUTO_PROMOTE_MIN_AVG_RATING
         - within AUTO_PROMOTE_WINDOW_DAYS
+
+        Uses feedback count (not load-time usage) as the engagement metric,
+        since load-time recording was removed for accuracy.
         """
         async with self.db.connection() as conn:
             cursor = await conn.execute(
                 """SELECT s.skill_name, s.owner_id,
-                          COUNT(DISTINCT su.id) as uses_count,
-                          COUNT(DISTINCT su.user_id) as unique_users,
+                          COUNT(DISTINCT sf.id) as feedback_count,
+                          COUNT(DISTINCT sf.user_id) as unique_users,
                           AVG(sf.rating) as avg_rating
                    FROM skills s
-                   JOIN skill_usage su ON su.skill_name = s.skill_name
-                   LEFT JOIN skill_feedback sf ON sf.skill_name = s.skill_name
+                   JOIN skill_feedback sf ON sf.skill_name = s.skill_name
                    WHERE s.source = 'personal'
                      AND s.status = 'active'
-                     AND su.created_at > strftime('%s', 'now') - (? * 86400)
+                     AND sf.created_at > strftime('%s', 'now') - (? * 86400)
                    GROUP BY s.skill_name, s.owner_id
-                   HAVING uses_count >= ?
+                   HAVING feedback_count >= ?
                       AND unique_users >= ?
                       AND avg_rating >= ?""",
                 (
                     self.AUTO_PROMOTE_WINDOW_DAYS,
-                    self.AUTO_PROMOTE_MIN_USES,
+                    self.AUTO_PROMOTE_MIN_FEEDBACK,
                     self.AUTO_PROMOTE_MIN_USERS,
                     self.AUTO_PROMOTE_MIN_AVG_RATING,
                 ),
@@ -559,3 +562,133 @@ class SkillManager:
                 pass
 
         return migrated
+
+    # ── Promotion Queue ──────────────────────────────────────────────
+
+    PROMO_EXPIRY_DAYS = 30
+
+    async def get_pending_promotions(self) -> list[dict[str, Any]]:
+        """Return all pending promotion queue entries."""
+        async with self.db.connection() as conn:
+            cursor = await conn.execute(
+                """SELECT * FROM skill_promotion_queue
+                   WHERE status = 'pending'
+                   ORDER BY created_at DESC"""
+            )
+            rows = await cursor.fetchall()
+        return [dict(r) for r in rows]
+
+    async def execute_promotion(
+        self, skill_name: str, reviewed_by: str = "admin"
+    ) -> dict[str, Any] | None:
+        """Execute a promotion: copy personal skill to shared, update DB."""
+        import os
+        import shutil
+        from pathlib import Path
+
+        DATA_ROOT = Path(os.environ.get("DATA_ROOT", "data")).resolve()
+
+        async with self.db.connection() as conn:
+            cursor = await conn.execute(
+                "SELECT * FROM skill_promotion_queue WHERE skill_name = ? AND status = 'pending'",
+                (skill_name,),
+            )
+            row = await cursor.fetchone()
+            if row is None:
+                return None
+            queue_entry = dict(row)
+            owner_id = queue_entry["original_owner_id"]
+
+            # Find the personal skill path
+            cursor = await conn.execute(
+                "SELECT path FROM skills WHERE skill_name = ? AND source = 'personal' AND owner_id = ?",
+                (skill_name, owner_id),
+            )
+            skill_row = await cursor.fetchone()
+            if skill_row is None:
+                await conn.execute(
+                    "UPDATE skill_promotion_queue SET status = 'rejected', admin_review_comment = 'Source skill not found', reviewed_at = strftime('%s', 'now'), reviewed_by = ? WHERE skill_name = ? AND status = 'pending'",
+                    (reviewed_by, skill_name),
+                )
+                await conn.commit()
+                return None
+
+            src_dir = Path(skill_row["path"])
+            if not src_dir.exists():
+                await conn.execute(
+                    "UPDATE skill_promotion_queue SET status = 'rejected', admin_review_comment = 'Source directory not found', reviewed_at = strftime('%s', 'now'), reviewed_by = ? WHERE skill_name = ? AND status = 'pending'",
+                    (reviewed_by, skill_name),
+                )
+                await conn.commit()
+                return None
+
+            # Copy to shared skills directory
+            dest_dir = DATA_ROOT / "shared-skills" / skill_name
+            if dest_dir.exists():
+                await conn.execute(
+                    "UPDATE skill_promotion_queue SET status = 'rejected', admin_review_comment = 'Shared skill already exists', reviewed_at = strftime('%s', 'now'), reviewed_by = ? WHERE skill_name = ? AND status = 'pending'",
+                    (reviewed_by, skill_name),
+                )
+                await conn.commit()
+                return None
+
+            shutil.copytree(src_dir, dest_dir)
+
+            # Update skill-meta.json with promotion info
+            meta_path = dest_dir / "skill-meta.json"
+            if meta_path.exists():
+                try:
+                    meta = json.loads(meta_path.read_text())
+                except (json.JSONDecodeError, OSError):
+                    meta = {}
+                meta["promoted_by"] = reviewed_by
+                meta["promoted_at"] = "now"
+                meta["original_owner"] = owner_id
+                meta_path.write_text(json.dumps(meta, indent=2))
+
+            # Register as shared skill in DB
+            await conn.execute(
+                """INSERT OR REPLACE INTO skills (skill_name, source, owner_id, description, category, tags, path, version, status, updated_at)
+                   VALUES ('shared', ?, ?, ?, ?, ?, ?, 'active', strftime('%s', 'now'))""",
+                (skill_name, owner_id, queue_entry.get("description", ""), "", "[]", str(dest_dir)),
+            )
+
+            # Mark queue entry as approved
+            await conn.execute(
+                "UPDATE skill_promotion_queue SET status = 'approved', reviewed_at = strftime('%s', 'now'), reviewed_by = ? WHERE skill_name = ? AND status = 'pending'",
+                (reviewed_by, skill_name),
+            )
+            await conn.commit()
+
+        return {
+            "skill_name": skill_name,
+            "source_path": str(src_dir),
+            "dest_path": str(dest_dir),
+            "status": "approved",
+        }
+
+    async def reject_promotion(
+        self, skill_name: str, reason: str = "", reviewed_by: str = "admin"
+    ) -> bool:
+        """Reject a pending promotion."""
+        async with self.db.connection() as conn:
+            cursor = await conn.execute(
+                "UPDATE skill_promotion_queue SET status = 'rejected', admin_review_comment = ?, reviewed_at = strftime('%s', 'now'), reviewed_by = ? WHERE skill_name = ? AND status = 'pending'",
+                (reason, reviewed_by, skill_name),
+            )
+            await conn.commit()
+            return cursor.rowcount > 0
+
+    async def cleanup_expired_promotions(self, days: int | None = None) -> int:
+        """Auto-reject promotions older than the expiry window."""
+        expiry = days or self.PROMO_EXPIRY_DAYS
+        cutoff = expiry * 86400
+        async with self.db.connection() as conn:
+            cursor = await conn.execute(
+                """UPDATE skill_promotion_queue
+                   SET status = 'expired', reviewed_at = strftime('%s', 'now'), reviewed_by = 'system'
+                   WHERE status = 'pending' AND created_at < strftime('%s', 'now') - ?""",
+                (cutoff,),
+            )
+            await conn.commit()
+            return cursor.rowcount

@@ -97,6 +97,20 @@ def rewrite_path_to_workspace(file_path: str, paths: PathContext) -> str:
     return f"outputs/{path.name}"
 
 
+def normalize_write_path(file_path: str, session_id: str) -> str:
+    """Redirect a write path to the session's outputs directory.
+
+    Ensures all agent writes land under outputs/{session_id}/ regardless
+    of what path the agent specifies. This prevents concurrent sessions
+    from interfering with each other's files.
+    """
+    if file_path.startswith(f"outputs/{session_id}/"):
+        return file_path
+    if file_path.startswith("outputs/"):
+        return f"outputs/{session_id}/{file_path[len('outputs/'):]}".lstrip("/")
+    return f"outputs/{session_id}/{file_path}"
+
+
 def check_bash_command_for_external_writes(cmd: str, paths: PathContext) -> str | None:
     """Return an error message if the command writes outside workspace, or None if safe."""
     outside_patterns = [

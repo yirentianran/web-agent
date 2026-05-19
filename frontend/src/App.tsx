@@ -16,7 +16,6 @@ import ChatArea from "./components/ChatArea";
 import InputBar, { type InputBarHandle } from "./components/InputBar";
 import SkillsPage from "./components/SkillsPage";
 import SessionFilePanel from "./components/SessionFilePanel";
-import MemoryPanel from "./components/MemoryPanel";
 import FeedbackPage from "./components/FeedbackPage";
 import EvolutionPanel from "./components/EvolutionPanel";
 import MCPPage from "./components/MCPPage";
@@ -279,7 +278,6 @@ function MainLayout({
         onOpenFeedback={() => navigate("/feedback")}
         onOpenEvolution={() => navigate("/evolution")}
         onOpenMCP={() => navigate("/mcp")}
-        onOpenMemory={() => navigate("/memory")}
         onLogout={handleLogout}
         userRole={userRole}
       />
@@ -346,6 +344,7 @@ function MainLayout({
             isRunning={activeSessionStatus === "running" && status === "connected"}
             userId={userId}
             authToken={authToken || undefined}
+            sessionId={activeSession || undefined}
           />
         </main>
         <div className={`file-panel-wrapper ${filePanelOpen ? 'open' : ''}`}>
@@ -984,6 +983,15 @@ function MainApp() {
           dedupResult = "append:fallthrough";
         }
 
+        // Dedup file_result: when a new file_result arrives, remove old
+        // file_result messages from the same session. The backend re-emits
+        // cumulative file lists each turn, so old copies are stale.
+        if (msg.type === "file_result" && msg.session_id) {
+          next = next.filter(
+            (m) => m.type !== "file_result" || m.index === msg.index,
+          );
+        }
+
         // Restore send states from the source-of-truth map. This
         // ensures the UI reflects the real state regardless of
         // whether the optimistic insert or the WebSocket echo
@@ -1238,7 +1246,7 @@ function MainApp() {
       if (!sessionId) return;
 
       const newClientMsgId = generateUUID();
-      const files = (failedMessage.data as Array<{ filename?: string; stored_name?: string; size?: number }> | undefined) || [];
+      const files = (failedMessage.data as Array<{ filename?: string; size?: number }> | undefined) || [];
 
       setMessages((prev) =>
         prev.map((m) =>
@@ -1261,7 +1269,7 @@ function MainApp() {
         session_id: sessionId,
         last_index: maxMsgIndexRef.current + 1,
         files: files.map((f) => ({
-          stored_name: f.stored_name || f.filename || "",
+          stored_name: f.filename || "",
           size: f.size ?? 0,
         })),
         client_msg_id: newClientMsgId,
@@ -1273,7 +1281,7 @@ function MainApp() {
 
 
   const handleSend = useCallback(
-    async (message: string, files?: File[], fileMeta?: Array<{stored_name: string; filename: string; size: number}>) => {
+    async (message: string, files?: File[], fileMeta?: Array<{filename: string; size: number}>) => {
       let sessionId = urlSessionIdRef.current;
 
       // Auto-create session if none exists
@@ -1299,6 +1307,25 @@ function MainApp() {
         }
       }
 
+      // Upload files that haven't been uploaded yet (deferred from InputBar when no sessionId existed)
+      let resolvedFileMeta = fileMeta;
+      if (files && files.length > 0) {
+        const headers: Record<string, string> = {};
+        if (authToken) headers["Authorization"] = `Bearer ${authToken}`;
+        const uploadedMeta: Array<{filename: string; size: number}> = [];
+        for (const file of files) {
+          const formData = new FormData();
+          formData.append("file", file);
+          formData.append("session_id", sessionId!);
+          const resp = await fetch(`/api/users/${userId}/upload`, { method: "POST", headers, body: formData });
+          if (resp.ok) {
+            const data = await resp.json();
+            uploadedMeta.push({ filename: data.filename, size: data.size ?? file.size });
+          }
+        }
+        resolvedFileMeta = uploadedMeta;
+      }
+
       // Use index = maxMsgIndex + 1 so it sorts AFTER all existing
       // messages (including the last assistant result) but won't collide
       // with backend-assigned indices during dedup. When the backend
@@ -1308,9 +1335,8 @@ function MainApp() {
       // When first such message arrives, clear old messages.
       clearThresholdRef.current = lastBackendIndex;
       replayStartedRef.current = false;
-      const fileMetadata: Array<{ filename?: string; stored_name?: string; size: number }> | undefined =
-        fileMeta?.map((f) => ({ filename: f.filename ?? f.stored_name, stored_name: f.stored_name, size: f.size })) ||
-        files?.map((f) => ({ filename: f.name, size: f.size }));
+      const fileMetadata: Array<{ filename: string; size: number }> | undefined =
+        resolvedFileMeta?.map((f) => ({ filename: f.filename, size: f.size }));
       const clientMsgId = generateUUID();
       const optimisticMsg: Message = {
         type: "user",
@@ -1365,8 +1391,7 @@ function MainApp() {
         message,
         session_id: sessionId ?? undefined,
         last_index: lastBackendIndex + 1,
-        files: fileMeta?.map((f) => ({ stored_name: f.stored_name, size: f.size }))
-          || files?.map((f) => ({ stored_name: f.name, size: f.size })),
+        files: resolvedFileMeta?.map((f) => ({ stored_name: f.filename, size: f.size })),
         client_msg_id: clientMsgId,
         language: currentLanguage,
       });
@@ -1535,16 +1560,6 @@ function MainApp() {
         path="/feedback"
         element={
           <FeedbackPage
-            userId={userId}
-            authToken={authToken}
-            onBack={() => navigate("/")}
-          />
-        }
-      />
-      <Route
-        path="/memory"
-        element={
-          <MemoryPanel
             userId={userId}
             authToken={authToken}
             onBack={() => navigate("/")}

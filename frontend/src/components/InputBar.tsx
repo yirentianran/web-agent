@@ -7,17 +7,16 @@ interface AttachedFile {
   file: File
   status: UploadStatus
   id: string
-  storedName?: string
-  storedSize?: number
 }
 
 interface InputBarProps {
-  onSend: (message: string, files?: File[], fileMeta?: Array<{stored_name: string; size: number}>) => void
+  onSend: (message: string, files?: File[], fileMeta?: Array<{filename: string; size: number}>) => void
   onStop?: () => void
   disabled?: boolean
   isRunning?: boolean
   userId?: string
   authToken?: string
+  sessionId?: string
 }
 
 export interface InputBarHandle {
@@ -27,7 +26,7 @@ export interface InputBarHandle {
 let fileCounter = 0
 
 const InputBar = forwardRef<InputBarHandle, InputBarProps>(
-  function InputBar({ onSend, onStop, disabled, isRunning, userId, authToken }: InputBarProps, ref) {
+  function InputBar({ onSend, onStop, disabled, isRunning, userId, authToken, sessionId }: InputBarProps, ref) {
     const { t } = useTranslation()
     const [input, setInput] = useState('')
     const [attachedFiles, setAttachedFiles] = useState<AttachedFile[]>([])
@@ -57,7 +56,6 @@ const InputBar = forwardRef<InputBarHandle, InputBarProps>(
     }
 
     // Reset textarea height after input is cleared (form submit)
-    // Call autoResize — it recalculates height based on current content
     useEffect(() => {
       if (input === '' && attachedFiles.length === 0) {
         autoResize()
@@ -66,21 +64,22 @@ const InputBar = forwardRef<InputBarHandle, InputBarProps>(
 
     // ── Upload helpers ────────────────────────────────────────
 
-    const uploadFile = async (af: AttachedFile): Promise<{ success: boolean; storedName?: string; storedSize?: number }> => {
+    const uploadFile = async (af: AttachedFile): Promise<{ success: boolean; filename?: string; size?: number }> => {
       if (!userId) return { success: false }
       const formData = new FormData()
       formData.append('file', af.file)
+      if (sessionId) formData.append('session_id', sessionId)
       try {
         const headers: Record<string, string> = {}
         if (authToken) headers["Authorization"] = `Bearer ${authToken}`
         const resp = await fetch(`/api/users/${userId}/upload`, { method: 'POST', headers, body: formData })
         if (resp.ok) {
           const data = await resp.json()
-          if (data.stored_name) {
+          if (data.filename) {
             setAttachedFiles(prev => prev.map(f =>
-              f.id === af.id ? { ...f, storedName: data.stored_name, storedSize: data.size ?? af.file.size } : f
+              f.id === af.id ? { ...f } : f
             ))
-            return { success: true, storedName: data.stored_name, storedSize: data.size ?? af.file.size }
+            return { success: true, filename: data.filename, size: data.size ?? af.file.size }
           }
         }
         return { success: resp.ok }
@@ -89,11 +88,11 @@ const InputBar = forwardRef<InputBarHandle, InputBarProps>(
       }
     }
 
-    const uploadAllPending = async (): Promise<{ fileMeta: Array<{stored_name: string; filename: string; size: number}>; fileObjs: File[]; allSuccess: boolean }> => {
+    const uploadAllPending = async (): Promise<{ fileMeta: Array<{filename: string; size: number}>; fileObjs: File[]; allSuccess: boolean }> => {
       const pending = attachedFiles.filter(f => f.status === 'pending' || f.status === 'failed')
       if (pending.length === 0) {
         return {
-          fileMeta: attachedFiles.filter(f => f.storedName).map(f => ({ stored_name: f.storedName!, filename: f.file.name, size: f.storedSize ?? f.file.size })),
+          fileMeta: attachedFiles.map(f => ({ filename: f.file.name, size: f.file.size })),
           fileObjs: attachedFiles.map(f => f.file),
           allSuccess: true,
         }
@@ -105,7 +104,7 @@ const InputBar = forwardRef<InputBarHandle, InputBarProps>(
       ))
 
       let allSuccess = true
-      const results: Array<{ id: string; success: boolean; storedName?: string; storedSize?: number }> = []
+      const results: Array<{ id: string; success: boolean; filename?: string; size?: number }> = []
 
       for (const af of pending) {
         const result = await uploadFile(af)
@@ -122,13 +121,12 @@ const InputBar = forwardRef<InputBarHandle, InputBarProps>(
         return f
       }))
 
-      // Build metadata directly from upload responses, not from async React state
+      // Build metadata directly from upload responses
       const fileMeta = results
-        .filter(r => r.success && r.storedName)
+        .filter(r => r.success && r.filename)
         .map(r => ({
-          stored_name: r.storedName!,
-          filename: pending.find(f => f.id === r.id)?.file.name ?? r.storedName!,
-          size: r.storedSize ?? 0,
+          filename: pending.find(f => f.id === r.id)?.file.name ?? r.filename!,
+          size: r.size ?? 0,
         }))
       const fileObjs = results
         .filter(r => r.success)
@@ -148,14 +146,25 @@ const InputBar = forwardRef<InputBarHandle, InputBarProps>(
       const hasUploading = attachedFiles.some(f => f.status === 'uploading')
       if ((!trimmed && attachedFiles.length === 0) || disabled || hasUploading) return
 
-      // Collect stored names for already-uploaded files
-      const uploadedWithStored = attachedFiles.filter(f => f.status === 'uploaded' && f.storedName)
+      // Collect already-uploaded files
+      const uploadedFiles = attachedFiles.filter(f => f.status === 'uploaded')
 
-      // If there are pending or failed files, upload them first
+      // If there are pending/failed files and no sessionId yet, defer uploads to onSend
+      // (App.tsx will create session first, then upload with session_id)
+      if (hasPending && !sessionId) {
+        const allFiles = attachedFiles.map(f => f.file)
+        const allMeta = attachedFiles.map(f => ({ filename: f.file.name, size: f.file.size }))
+        onSend(trimmed, allFiles, allMeta.length > 0 ? allMeta : undefined)
+        setInput('')
+        setAttachedFiles([])
+        if (fileInputRef.current) fileInputRef.current.value = ''
+        return
+      }
+
+      // If there are pending or failed files with a sessionId, upload them now
       if (hasPending) {
         const { allSuccess, fileMeta, fileObjs } = await uploadAllPending()
         if (!allSuccess) {
-          // Upload had failures — don't send, let user retry or remove
           return
         }
         const refFiles = fileMeta.length > 0 ? fileMeta.map(f => f.filename) : fileObjs.map(f => f.name)
@@ -172,9 +181,7 @@ const InputBar = forwardRef<InputBarHandle, InputBarProps>(
       }
 
       // All files already uploaded
-      const fileMeta = uploadedWithStored
-        .map(f => ({ stored_name: f.storedName!, filename: f.file.name, size: f.storedSize ?? f.file.size }))
-        .filter(f => f.stored_name)
+      const fileMeta = uploadedFiles.map(f => ({ filename: f.file.name, size: f.file.size }))
       const uploadedFileObjects = attachedFiles.map(f => f.file)
       const refFiles = fileMeta.length > 0 ? fileMeta.map(f => f.filename) : uploadedFileObjects.map(f => f.name)
       let messageContent = trimmed
@@ -231,8 +238,6 @@ const InputBar = forwardRef<InputBarHandle, InputBarProps>(
 
     const isUploading = attachedFiles.some(f => f.status === 'uploading')
     const hasFailed = attachedFiles.some(f => f.status === 'failed')
-    // Pending files are OK — clicking send will trigger upload.
-    // Only block when uploads are in progress or there are unresolved failures.
     const blockedByUpload = isUploading || hasFailed
 
     return (

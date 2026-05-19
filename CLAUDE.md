@@ -17,7 +17,7 @@ Multi-user web agent built with FastAPI (backend) and React (frontend). Each use
 | `main_server.py` | Main FastAPI app: REST endpoints, WebSocket bridge, session management |
 | `agent_server.py` | Agent subprocess FastAPI endpoint |
 | `src/message_buffer.py` | Session message persistence and retrieval |
-| `src/memory.py` | User memory (preferences, entities, audit context) |
+| `src/semantic_search.py` | FTS5 search over sessions and wiki pages |
 | `src/auth.py` | JWT authentication |
 | `frontend/src/App.tsx` | Main React app with session state management |
 | `frontend/src/hooks/useWebSocket.ts` | WebSocket hook for real-time communication |

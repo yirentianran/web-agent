@@ -2,7 +2,7 @@
 
 ## Overview
 
-Web Agent supports multiple users with isolated sessions, workspaces, memory, and runtime environments. This document defines the isolation boundaries, enforcement mechanisms, and security model.
+Web Agent supports multiple users with isolated sessions, workspaces, and runtime environments. This document defines the isolation boundaries, enforcement mechanisms, and security model.
 
 ## Isolation Layers
 
@@ -22,8 +22,8 @@ Web Agent supports multiple users with isolated sessions, workspaces, memory, an
 │ Layer 4: Message Buffer Isolation                           │
 │   In-memory buffer segmented by user, WebSocket filtering   │
 ├─────────────────────────────────────────────────────────────┤
-│ Layer 5: Memory Isolation                                   │
-│   L1 (SQLite) + L2 (Markdown files), both scoped to user_id │
+│ Layer 5: Evolution System Isolation                           │
+│   Skills, wiki, patterns — scoped to user_id or shared        │
 ├─────────────────────────────────────────────────────────────┤
 │ Layer 6: Database Isolation                                 │
 │   SQLite with user_id FK, queries always filter by user_id  │
@@ -248,7 +248,7 @@ async def login(request: LoginRequest):
 #### Key Design Constraints
 
 - **No delete API exists** — There is no `DELETE /api/admin/users/{user_id}` endpoint. Users are never removed from the database.
-- **Disabled users retain all data** — Sessions, messages, uploads, generated_files, and memory are preserved. The audit trail remains intact.
+- **Disabled users retain all data** — Sessions, messages, uploads, generated_files, and skill data are preserved. The audit trail remains intact.
 - **Disabled users consume no resources** — Active sessions are terminated. No new sessions can be created. The user occupies only storage, not compute.
 - **Container cleanup** — If `CONTAINER_MODE=true`, the user's container is stopped (not destroyed) on disable, preserving volumes.
 
@@ -346,9 +346,6 @@ data/users/{user_id}/
 ├── claude-data/                        # CLI-native session data
 │   ├── sessions/                       # JSONL session files
 │   └── settings.json                   # Per-user agent settings
-└── memory/                             # L2 agent memory (Markdown)
-    ├── MEMORY.md
-    └── *.md
 ```
 
 ### Enforcement Mechanisms
@@ -593,81 +590,35 @@ Key invariants:
 
 ---
 
-## Layer 5: Memory Isolation
+## Layer 5: Evolution System Isolation
 
-### L1 Memory (Platform — SQLite)
+### Skills (Personal + Shared)
 
-```sql
-CREATE TABLE user_memory (
-    user_id TEXT PRIMARY KEY,
-    memory_data TEXT,    -- JSON blob: preferences, entities, audit context
-    updated_at TIMESTAMP
-);
-```
+- **Personal skills**: stored in `data/users/{user_id}/workspace/.claude/skills/`, scoped to the owning user
+- **Shared skills**: stored in `data/shared-skills/`, available to all users
+- **Promotion**: personal → shared requires admin approval via `execute_promotion()`
 
-The `MemoryManager` constructor takes `user_id` and all `read()` / `update()` / `replace()` operations filter by `WHERE user_id = ?`.
+### Wiki Knowledge Base
 
-```python
-class MemoryManager:
-    def __init__(self, user_id: str):
-        self.user_id = user_id
+- Wiki pages stored in `wiki_pages` table, keyed by user-created content
+- Published pages are visible to all users via the collective intelligence background loop
+- FTS5 full-text index enables search across all published wiki content
 
-    def read(self) -> dict:
-        row = db.execute(
-            "SELECT memory_data FROM user_memory WHERE user_id = ?",
-            (self.user_id,)
-        ).fetchone()
-        return json.loads(row[0]) if row else {}
+### Pattern Learning
 
-    def update(self, updates: dict) -> dict:
-        current = self.read()
-        merged = {**current, **updates}  # Immutable merge
-        db.execute(
-            "INSERT OR REPLACE INTO user_memory (user_id, memory_data) VALUES (?, ?)",
-            (self.user_id, json.dumps(merged))
-        )
-        return merged
-```
+- Tool co-occurrence and success rates stored in `learned_patterns` table
+- Aggregated across all users; top patterns injected into system prompt globally
 
-### L2 Memory (Agent — Markdown Files)
+### Session Summaries (Semantic Search)
 
-Each user's agent memory is stored in `data/users/{user_id}/memory/`:
+- Each session's summary is anonymized and stored in `session_summaries`
+- FTS5 index enables cross-user search (users cannot see others' session details — summaries are anonymized)
 
-```
-data/users/{user_id}/memory/
-├── MEMORY.md              # Index of all memory entries
-├── user_role.md           # User profile & preferences
-├── project_context.md     # Ongoing project context
-└── feedback_*.md          # User feedback records
-```
+### User Language Preference
 
-The agent SDK can only read/write within the user's workspace, so L2 memory is naturally isolated through workspace isolation (Layer 3).
-
-### L1 / L2 Memory Status
-
-#### L1 Memory (Platform Memory)
-
-**Storage**: SQLite `user_memory` table, four fields — `preferences`, `entity_memory`, `audit_context`, `file_memory`.
-
-**Write path**: `PUT /api/users/{user_id}/memory` → `MemoryManager.update()` → `INSERT OR REPLACE INTO user_memory`. Fully manual — triggered only by API call. No UI entry point exists (the `MemoryPanel` component is implemented but not imported by `App.tsx`).
-
-**Read path**: `load_memory()` → `MemoryManager.read()` → injected into system prompt as "## Memory Context" on every conversation turn. Agent reads L1 content automatically.
-
-**Summary**: L1 is wired end-to-end for reading, but there is no UI for users to write or edit L1 data. The write endpoint exists server-side but has no corresponding frontend entry point.
-
-**Planned UI entry**: Add a "Memory" button in the `UserMenu` dropdown (user avatar menu), positioned above "Logout". The MemoryPanel component (already implemented in `frontend/src/components/MemoryPanel.tsx`) will be rendered as a full-page overlay when this button is clicked, following the same pattern as FeedbackPage, EvolutionPanel, and MCPPage.
-
-#### L2 Memory (Agent Memory)
-
-**Storage**: Markdown files in `data/users/{user_id}/memory/`.
-
-**Write path**: API endpoints exist (`PUT/DELETE /api/users/{user_id}/memory/agent-notes/*`) and `MemoryPanel` has a UI for it (Agent Notes tab with Save button), but the component is not loaded in production.
-
-**Read path (BROKEN)**: `load_agent_memory_for_prompt()` is implemented in `MemoryManager` but **never called** by `build_system_prompt()` or any other code path. The Agent never sees L2 memory content.
-
-**Agent write path (BLOCKED)**: The agent's `cwd` is `data/users/{user_id}/workspace/`. Accessing `../memory/` resolves to `data/users/{user_id}/memory/`, which is outside the workspace subtree. `is_path_within_workspace()` rejects it. Both Agent-initiated reads and writes to L2 memory are blocked by Layer 3 enforcement.
-
-**Summary**: L2 data layer is 100% implemented but business layer is not connected. Agent cannot read or write L2 memory. The feature is effectively inactive pending wiring.
+- Stored as a `language` column on the `users` table
+- Updated via `PUT /api/users/{user_id}/language`
+- Read during system prompt assembly to set response language
 
 ### API Endpoint Enforcement
 

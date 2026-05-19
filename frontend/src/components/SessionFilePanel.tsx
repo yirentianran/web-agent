@@ -4,7 +4,7 @@ import { useTranslation } from 'react-i18next'
 interface FileInfo {
   filename: string
   path: string
-  stored_name: string
+  rel_path?: string
   size: number
   source: 'upload' | 'generated'
   modified_at?: string
@@ -60,6 +60,9 @@ export default function SessionFilePanel({
     setError('')
     try {
       let data: FileInfo[] = []
+      // When scope is 'session', require a valid activeSessionId — never
+      // fall through to 'all' files when the session is unknown (this
+      // prevents showing previous-session files during a session switch).
       if (scope === 'session' && activeSessionId) {
         const resp = await fetch(`/api/users/${userId}/sessions/${activeSessionId}/files`, { headers })
         if (resp.status === 403 || resp.status === 404) {
@@ -70,10 +73,14 @@ export default function SessionFilePanel({
         const raw = await resp.json()
         data = raw.map((f: Record<string, unknown>) => {
             const apiSource = (f.source as 'upload' | 'generated') || 'upload'
-            let fullPath = f.filename as string
-            // For generated files without path prefix, prepend outputs/
-            if (apiSource === 'generated' && !fullPath.startsWith('outputs/') && !fullPath.startsWith('uploads/')) {
-              fullPath = `outputs/${fullPath}`
+            const relPath = (f.rel_path as string) || ''
+            let fullPath = relPath
+            // Fallback for older API responses without rel_path
+            if (!fullPath) {
+              fullPath = f.filename as string
+              if (apiSource === 'generated' && !fullPath.startsWith('outputs/') && !fullPath.startsWith('uploads/')) {
+                fullPath = `outputs/${fullPath}`
+              }
             }
             const displayName = fullPath.includes('/')
               ? fullPath.split('/').pop() || fullPath
@@ -81,22 +88,36 @@ export default function SessionFilePanel({
             return {
               filename: displayName,
               path: fullPath,
-              stored_name: (f.stored_name as string) || fullPath,
+              rel_path: relPath,
               size: (f.size as number) || 0,
               source: apiSource,
               download_url: f.download_url as string | undefined,
               modified_at: f.generated_at as string | undefined,
             }
           })
+      } else if (scope === 'session' && !activeSessionId) {
+        // No active session — show nothing rather than cross-session files
+        setFiles([])
+        setLoading(false)
+        return
+      } else if (scope === 'session' && !activeSessionId) {
+        // No active session yet — show nothing rather than leaking
+        // files from a previous session during a session switch.
+        data = []
       } else if (scope === 'all') {
         const resp = await fetch(`/api/users/${userId}/files`, { headers })
         if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
         const raw = await resp.json()
         data = raw.map((f: Record<string, unknown>) => {
             const apiSource = (f.source as 'upload' | 'generated') || 'upload'
-            let fullPath = f.filename as string
-            if (apiSource === 'generated' && !fullPath.startsWith('outputs/') && !fullPath.startsWith('uploads/')) {
-              fullPath = `outputs/${fullPath}`
+            const relPath = (f.rel_path as string) || ''
+            let fullPath = relPath
+            // Fallback for older API responses without rel_path
+            if (!fullPath) {
+              fullPath = f.filename as string
+              if (apiSource === 'generated' && !fullPath.startsWith('outputs/') && !fullPath.startsWith('uploads/')) {
+                fullPath = `outputs/${fullPath}`
+              }
             }
             const displayName = fullPath.includes('/')
               ? fullPath.split('/').pop() || fullPath
@@ -104,7 +125,7 @@ export default function SessionFilePanel({
             return {
               filename: displayName,
               path: fullPath,
-              stored_name: (f.stored_name as string) || fullPath,
+              rel_path: relPath,
               size: (f.size as number) || 0,
               source: apiSource,
               download_url: f.download_url as string | undefined,
@@ -130,9 +151,15 @@ export default function SessionFilePanel({
     fetchFiles()
   }, [fetchFiles])
 
+  // Reset scope to 'session' when the active session changes, so the
+  // panel never accidentally shows files from a different session.
+  useEffect(() => {
+    if (activeSessionId) setScope('session')
+  }, [activeSessionId])
+
   const handleDelete = async (file: FileInfo) => {
     if (!confirm(t('filePanel.confirmDelete', { filename: file.filename }))) return
-    setDeleting(file.stored_name)
+    setDeleting(file.path)
     try {
       const resp = await fetch(`/api/users/${userId}/files/${encodeURIComponent(file.path)}`, {
         method: 'DELETE',
@@ -235,7 +262,7 @@ function FileGroup({
             <div className="sfp-group-empty">{title === t('filePanel.uploadsGroup') ? t('filePanel.noUploads') : t('filePanel.noGenerated')}</div>
           ) : (
             files.map(f => (
-              <div key={f.stored_name} className="sfp-item">
+              <div key={f.path} className="sfp-item">
                 <button
                   className="sfp-item-name"
                   onClick={() => onFileClick(f.filename)}
@@ -280,11 +307,11 @@ function FileGroup({
                 <button
                   className="sfp-item-del"
                   onClick={() => onDelete(f)}
-                  disabled={deleting === f.stored_name}
+                  disabled={deleting === f.path}
                   type="button"
                   title={t('common.delete')}
                 >
-                  {deleting === f.stored_name ? '...' : '\u2715'}
+                  {deleting === f.path ? '...' : '\u2715'}
                 </button>
               </div>
             ))

@@ -8,7 +8,6 @@ function renderSettingsMenu(props?: {
   onOpenFeedback?: () => void
   onOpenEvolution?: () => void
   onOpenMCP?: () => void
-  onOpenMemory?: () => void
   userRole?: string
 }) {
   return render(
@@ -17,7 +16,6 @@ function renderSettingsMenu(props?: {
       onOpenFeedback={props?.onOpenFeedback ?? (() => {})}
       onOpenEvolution={props?.onOpenEvolution ?? (() => {})}
       onOpenMCP={props?.onOpenMCP ?? (() => {})}
-      onOpenMemory={props?.onOpenMemory ?? (() => {})}
       userRole={props?.userRole ?? "admin"}
     />,
   )
@@ -122,11 +120,10 @@ describe('SettingsMenu - admin role filtering', () => {
     expect(screen.queryByText('Skill Evolution')).not.toBeInTheDocument()
   })
 
-  it('shows Skills Management and Memory Management for all users', () => {
+  it('shows Skills Management for all users', () => {
     renderSettingsMenu({ userRole: 'user' })
     const trigger = document.querySelector('.settings-menu-trigger') as HTMLElement
     fireEvent.click(trigger)
     expect(screen.getByText('Skills Management')).toBeInTheDocument()
-    expect(screen.getByText('Memory Management')).toBeInTheDocument()
   })
 })

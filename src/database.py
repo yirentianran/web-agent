@@ -50,6 +50,7 @@ CREATE TABLE IF NOT EXISTS users (
     status        TEXT NOT NULL DEFAULT 'active',
     disabled_at   REAL,
     disabled_by   TEXT,
+    language      TEXT NOT NULL DEFAULT 'zh',
     created_at    REAL NOT NULL DEFAULT (strftime('%s', 'now')),
     last_active_at REAL NOT NULL DEFAULT (strftime('%s', 'now'))
 );
@@ -85,16 +86,6 @@ CREATE TABLE IF NOT EXISTS messages (
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_session_seq ON messages(session_id, seq);
-
--- User memory (L1 platform memory)
-CREATE TABLE IF NOT EXISTS user_memory (
-    user_id TEXT PRIMARY KEY REFERENCES users(user_id),
-    preferences TEXT NOT NULL DEFAULT '{}',
-    entity_memory TEXT NOT NULL DEFAULT '{}',
-    audit_context TEXT NOT NULL DEFAULT '{}',
-    file_memory TEXT NOT NULL DEFAULT '[]',
-    updated_at REAL NOT NULL DEFAULT (strftime('%s', 'now'))
-);
 
 -- Tasks (sub-agent)
 CREATE TABLE IF NOT EXISTS tasks (
@@ -165,7 +156,6 @@ CREATE TABLE IF NOT EXISTS uploads (
     user_id     TEXT NOT NULL REFERENCES users(user_id),
     session_id  TEXT NOT NULL,
     filename    TEXT NOT NULL,
-    stored_name TEXT NOT NULL,
     file_size   INTEGER NOT NULL DEFAULT 0,
     mime_type   TEXT NOT NULL DEFAULT '',
     url         TEXT NOT NULL DEFAULT '',
@@ -181,7 +171,6 @@ CREATE TABLE IF NOT EXISTS generated_files (
     user_id     TEXT NOT NULL REFERENCES users(user_id),
     session_id  TEXT NOT NULL,
     filename    TEXT NOT NULL,
-    stored_name TEXT NOT NULL,
     file_size   INTEGER NOT NULL DEFAULT 0,
     mime_type   TEXT NOT NULL DEFAULT '',
     url         TEXT NOT NULL DEFAULT '',
@@ -190,7 +179,6 @@ CREATE TABLE IF NOT EXISTS generated_files (
 
 CREATE INDEX IF NOT EXISTS idx_generated_files_user ON generated_files(user_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_generated_files_session ON generated_files(session_id);
-CREATE INDEX IF NOT EXISTS idx_generated_files_user_stored_name ON generated_files(user_id, stored_name);
 
 -- Skills registry
 CREATE TABLE IF NOT EXISTS skills (
@@ -310,6 +298,12 @@ class Database:
         except Exception:
             pass
 
+        # Remove stored_name column (no longer needed after session isolation)
+        try:
+            await self._migrate_drop_stored_name()
+        except Exception:
+            pass
+
         # Add deleted_at column for soft-deleted sessions
         try:
             await self._conn.execute(
@@ -326,14 +320,22 @@ class Database:
         except Exception:
             pass
 
-        # Add collective intelligence tables
+        # Add language column for user preference (migrated from user_memory.preferences)
         try:
-            await self.migrate_collective_intelligence()
+            await self._conn.execute(
+                "ALTER TABLE users ADD COLUMN language TEXT NOT NULL DEFAULT 'zh'"
+            )
         except Exception:
             pass
 
         self._checkpoint_task = asyncio.create_task(self._checkpoint_loop())
         self._initialized = True
+
+        # Add collective intelligence tables (now that connection is valid)
+        try:
+            await self.migrate_collective_intelligence()
+        except Exception:
+            pass
 
     async def _checkpoint_loop(self) -> None:
         """Periodically run a PASSIVE WAL checkpoint.
@@ -357,9 +359,10 @@ class Database:
         without the FK references while preserving all existing data.
         """
         # Check if migration is needed by inspecting table SQL
-        row = await self._conn.execute(
+        cursor = await self._conn.execute(
             "SELECT sql FROM sqlite_master WHERE type='table' AND name='uploads'"
-        ).fetchone()
+        )
+        row = await cursor.fetchone()
         if row and "REFERENCES sessions" not in row[0]:
             return  # Already migrated
 
@@ -401,6 +404,75 @@ class Database:
         await self._conn.execute("DROP TABLE generated_files_old")
 
         # Recreate indexes
+        await self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_uploads_user ON uploads(user_id, created_at DESC)"
+        )
+        await self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_uploads_session ON uploads(session_id)"
+        )
+        await self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_generated_files_user ON generated_files(user_id, created_at DESC)"
+        )
+        await self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_generated_files_session ON generated_files(session_id)"
+        )
+
+        await self._conn.execute("COMMIT")
+        await self._conn.execute("PRAGMA foreign_keys=ON")
+
+    async def _migrate_drop_stored_name(self) -> None:
+        """Remove stored_name column from uploads and generated_files tables.
+
+        SQLite cannot DROP COLUMN directly in versions before 3.35.0,
+        so we recreate the tables without the stored_name column while
+        preserving all existing data.
+        """
+        # Check if migration is needed by inspecting table SQL
+        cursor = await self._conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='uploads'"
+        )
+        row = await cursor.fetchone()
+        if row and "stored_name" not in row[0]:
+            return  # Already migrated
+
+        await self._conn.execute("PRAGMA foreign_keys=OFF")
+        await self._conn.execute("BEGIN TRANSACTION")
+
+        # Recreate uploads without stored_name
+        await self._conn.execute("ALTER TABLE uploads RENAME TO uploads_old")
+        await self._conn.execute(
+            "CREATE TABLE uploads ("
+            "id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(user_id), "
+            "session_id TEXT NOT NULL, filename TEXT NOT NULL, "
+            "file_size INTEGER NOT NULL DEFAULT 0, mime_type TEXT NOT NULL DEFAULT '', "
+            "url TEXT NOT NULL DEFAULT '', created_at REAL NOT NULL DEFAULT (strftime('%s', 'now'))"
+            ")"
+        )
+        await self._conn.execute(
+            "INSERT INTO uploads SELECT id, user_id, session_id, filename, "
+            "file_size, mime_type, url, created_at FROM uploads_old"
+        )
+        await self._conn.execute("DROP TABLE uploads_old")
+
+        # Recreate generated_files without stored_name
+        await self._conn.execute(
+            "ALTER TABLE generated_files RENAME TO generated_files_old"
+        )
+        await self._conn.execute(
+            "CREATE TABLE generated_files ("
+            "id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(user_id), "
+            "session_id TEXT NOT NULL, filename TEXT NOT NULL, "
+            "file_size INTEGER NOT NULL DEFAULT 0, mime_type TEXT NOT NULL DEFAULT '', "
+            "url TEXT NOT NULL DEFAULT '', created_at REAL NOT NULL DEFAULT (strftime('%s', 'now'))"
+            ")"
+        )
+        await self._conn.execute(
+            "INSERT INTO generated_files SELECT id, user_id, session_id, filename, "
+            "file_size, mime_type, url, created_at FROM generated_files_old"
+        )
+        await self._conn.execute("DROP TABLE generated_files_old")
+
+        # Recreate indexes (without stored_name index)
         await self._conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_uploads_user ON uploads(user_id, created_at DESC)"
         )
@@ -477,7 +549,6 @@ class Database:
                     user_id TEXT NOT NULL REFERENCES users(user_id),
                     session_id TEXT NOT NULL,
                     filename TEXT NOT NULL,
-                    stored_name TEXT NOT NULL,
                     file_size INTEGER NOT NULL DEFAULT 0,
                     mime_type TEXT NOT NULL DEFAULT '',
                     url TEXT NOT NULL DEFAULT '',
@@ -491,7 +562,6 @@ class Database:
                     user_id TEXT NOT NULL REFERENCES users(user_id),
                     session_id TEXT NOT NULL,
                     filename TEXT NOT NULL,
-                    stored_name TEXT NOT NULL,
                     file_size INTEGER NOT NULL DEFAULT 0,
                     mime_type TEXT NOT NULL DEFAULT '',
                     url TEXT NOT NULL DEFAULT '',
@@ -500,9 +570,7 @@ class Database:
                 CREATE INDEX IF NOT EXISTS idx_generated_files_user
                     ON generated_files(user_id, created_at DESC);
                 CREATE INDEX IF NOT EXISTS idx_generated_files_session
-                    ON generated_files(session_id);
-                CREATE INDEX IF NOT EXISTS idx_generated_files_user_stored_name
-                    ON generated_files(user_id, stored_name);"""
+                    ON generated_files(session_id);"""
             )
             await conn.commit()
 

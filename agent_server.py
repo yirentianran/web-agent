@@ -39,6 +39,7 @@ from src.workspace_enforcement import (
     ContainerPaths,
     _rewrite_bash_command,
     is_path_within_user_dir,
+    normalize_write_path,
     rewrite_path_to_workspace,
 )
 from src.security_filter import OutputFilter
@@ -85,7 +86,9 @@ async def health() -> JSONResponse:
 _INVALID_FILENAMES = {"null", "undefined", "none", ""}
 
 
-def _apply_write_path_hook(tool_input: dict, container_paths: ContainerPaths) -> dict:
+def _apply_write_path_hook(
+    tool_input: dict, container_paths: ContainerPaths, session_id: str
+) -> dict:
     file_path = str(tool_input.get("file_path", ""))
     if not file_path or file_path.lower() in _INVALID_FILENAMES:
         logger.warning("PreToolUse[Write]: blocked invalid file_path '%s'", file_path)
@@ -95,6 +98,8 @@ def _apply_write_path_hook(tool_input: dict, container_paths: ContainerPaths) ->
     rewritten = rewrite_path_to_workspace(file_path, container_paths)
     if rewritten == file_path:
         return tool_input
+    # Inject session_id so writes land in outputs/{session_id}/...
+    rewritten = normalize_write_path(rewritten, session_id)
     logger.info("PreToolUse[Write]: '%s' -> '%s'", file_path, rewritten)
     return {**tool_input, "file_path": rewritten}
 
@@ -399,7 +404,7 @@ class _CliRunner:
 
                         if tool_name == "Write":
                             new_input = _apply_write_path_hook(
-                                tool_input, self._container_paths
+                                tool_input, self._container_paths, self._session_id
                             )
                         elif tool_name == "Bash":
                             from src.security_filter import BashCommandFilter

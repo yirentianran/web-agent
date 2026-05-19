@@ -167,7 +167,7 @@ const PENDING_MSG_KEY_PREFIX = 'web-agent-pending-msg:'
 interface StoredPendingMessage {
   content: string
   clientMsgId: string
-  files?: Array<{ filename?: string; stored_name?: string; size: number }>
+  files?: Array<{ filename: string; size: number }>
   timestamp: number
 }
 
