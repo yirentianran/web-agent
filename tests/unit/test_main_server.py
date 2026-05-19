@@ -862,7 +862,8 @@ class TestMCPStatusEndpoint:
 class TestMCPEnabledFiltering:
     """Test that disabled MCP servers are NOT passed to the SDK."""
 
-    def test_disabled_server_not_in_allowed_tools(self, client: TestClient) -> None:
+    @pytest.mark.asyncio
+    async def test_disabled_server_not_in_allowed_tools(self, client: TestClient) -> None:
         """A disabled MCP server's tools should NOT appear in allowed_tools."""
         client.post(
             "/api/admin/mcp-servers",
@@ -875,13 +876,14 @@ class TestMCPEnabledFiltering:
                 "enabled": False,
             },
         )
-        from main_server import load_mcp_config_sync, build_allowed_tools
-        config = load_mcp_config_sync()
+        from main_server import load_mcp_config, build_allowed_tools
+        config = await load_mcp_config()
         tools = build_allowed_tools(config)
         assert "mcp__disabled-server__tool1" not in tools
         assert "mcp__disabled-server__tool2" not in tools
 
-    def test_enabled_server_in_allowed_tools(self, client: TestClient) -> None:
+    @pytest.mark.asyncio
+    async def test_enabled_server_in_allowed_tools(self, client: TestClient) -> None:
         """An enabled MCP server's tools SHOULD appear in allowed_tools."""
         client.post(
             "/api/admin/mcp-servers",
@@ -894,12 +896,13 @@ class TestMCPEnabledFiltering:
                 "enabled": True,
             },
         )
-        from main_server import load_mcp_config_sync, build_allowed_tools
-        config = load_mcp_config_sync()
+        from main_server import load_mcp_config, build_allowed_tools
+        config = await load_mcp_config()
         tools = build_allowed_tools(config)
         assert "mcp__enabled-server__toolA" in tools
 
-    def test_disabled_server_not_in_mcp_servers_dict(self, client: TestClient) -> None:
+    @pytest.mark.asyncio
+    async def test_disabled_server_not_in_mcp_servers_dict(self, client: TestClient) -> None:
         """A disabled MCP server should NOT be in the mcp_servers dict
         passed to ClaudeAgentOptions."""
         client.post(
@@ -913,8 +916,8 @@ class TestMCPEnabledFiltering:
                 "enabled": False,
             },
         )
-        from main_server import load_mcp_config_sync
-        config = load_mcp_config_sync()
+        from main_server import load_mcp_config
+        config = await load_mcp_config()
         mcp_servers = {}
         for server_name, cfg in config.get("mcpServers", {}).items():
             if not cfg.get("enabled", True):
@@ -923,7 +926,8 @@ class TestMCPEnabledFiltering:
                 mcp_servers[server_name] = {"type": "stdio"}
         assert "no-spawn" not in mcp_servers
 
-    def test_toggle_disappears_from_sdk(self, client: TestClient) -> None:
+    @pytest.mark.asyncio
+    async def test_toggle_disappears_from_sdk(self, client: TestClient) -> None:
         """After toggling a server to disabled, it should no longer
         appear in the SDK config on next load."""
         client.post(
@@ -937,8 +941,8 @@ class TestMCPEnabledFiltering:
             },
         )
         # Verify it's enabled
-        from main_server import load_mcp_config_sync, build_allowed_tools
-        config = load_mcp_config_sync()
+        from main_server import load_mcp_config, build_allowed_tools
+        config = await load_mcp_config()
         tools = build_allowed_tools(config)
         assert "mcp__toggle-me__t1" in tools
 
@@ -947,7 +951,7 @@ class TestMCPEnabledFiltering:
         assert resp.status_code == 200
 
         # Verify it's gone from tools
-        config = load_mcp_config_sync()
+        config = await load_mcp_config()
         tools = build_allowed_tools(config)
         assert "mcp__toggle-me__t1" not in tools
 
@@ -1965,12 +1969,12 @@ class TestAtomicTaskCreation:
 # ── Sync MCP Loader ────────────────────────────────────────────────
 
 
-class TestSyncMcpLoader:
-    """load_mcp_config_sync() should read from SQLite when DB is initialized."""
+class TestMcpLoader:
+    """load_mcp_config() should read from SQLite when DB is initialized."""
 
     @pytest.mark.asyncio
-    async def test_sync_loader_reads_from_sqlite(self, tmp_path: Path) -> None:
-        """When _mcp_store and _db are set, sync loader reads from DB, not file."""
+    async def test_loader_reads_from_sqlite(self, tmp_path: Path) -> None:
+        """load_mcp_config() reads MCP servers from the SQLite store."""
         from src.database import Database
         from src.mcp_store import MCPServerStore
 
@@ -1979,7 +1983,6 @@ class TestSyncMcpLoader:
         await db.init()
 
         store = MCPServerStore(db)
-        # Insert a test MCP server
         await store.create({
             "name": "test-server",
             "type": "stdio",
@@ -1992,14 +1995,11 @@ class TestSyncMcpLoader:
             "access": "all",
         })
 
-        # Set globals
         old_mcp_store = main_server._mcp_store
-        old_db = main_server._db
         main_server._mcp_store = store
-        main_server._db = db
 
         try:
-            result = main_server.load_mcp_config_sync()
+            result = await main_server.load_mcp_config()
             assert "mcpServers" in result
             assert "test-server" in result["mcpServers"]
             cfg = result["mcpServers"]["test-server"]
@@ -2008,43 +2008,7 @@ class TestSyncMcpLoader:
             assert cfg["enabled"] is True
         finally:
             main_server._mcp_store = old_mcp_store
-            main_server._db = old_db
             await db.close()
-
-    def test_sync_loader_falls_back_to_file_when_no_db(self, tmp_path: Path) -> None:
-        """When _mcp_store is None, sync loader reads from file."""
-        # Ensure no DB is set
-        old_mcp_store = main_server._mcp_store
-        main_server._mcp_store = None
-
-        # Write a test registry file
-        registry = tmp_path / "mcp-registry.json"
-        registry.write_text(json.dumps({
-            "mcpServers": {
-                "file-server": {"name": "file-server", "enabled": True}
-            }
-        }))
-
-        old_root = main_server.DATA_ROOT
-        main_server.DATA_ROOT = tmp_path
-
-        try:
-            result = main_server.load_mcp_config_sync()
-            assert "file-server" in result["mcpServers"]
-        finally:
-            main_server._mcp_store = old_mcp_store
-            main_server.DATA_ROOT = old_root
-
-    def test_sync_loader_returns_empty_when_no_db_no_file(self) -> None:
-        """When no DB and no file, returns empty mcpServers."""
-        old_mcp_store = main_server._mcp_store
-        main_server._mcp_store = None
-
-        try:
-            result = main_server.load_mcp_config_sync()
-            assert result == {"mcpServers": {}}
-        finally:
-            main_server._mcp_store = old_mcp_store
 
 
 # ── Agent Task Timeout ─────────────────────────────────────────────

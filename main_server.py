@@ -1165,61 +1165,10 @@ def _load_pattern_context(user_id: str, max_tokens: int = 500) -> str:
 
 
 async def load_mcp_config() -> dict[str, Any]:
-    """Load MCP server config from DB (primary) or file (fallback)."""
-    global _mcp_store
-    if _mcp_store is not None:
-        servers = await _mcp_store.list_all()
-        mcp_servers = {s["name"]: s for s in servers}
-        return {"mcpServers": mcp_servers}
-    # File fallback
-    registry_file = DATA_ROOT / "mcp-registry.json"
-    if registry_file.exists():
-        return json.loads(registry_file.read_text())
-    return {"mcpServers": {}}
-
-
-def load_mcp_config_sync() -> dict[str, Any]:
-    """Synchronous fallback for contexts where async is not available.
-
-    Used by build_sdk_options which is called from sync context.
-    Reads from SQLite database (primary) or file (fallback).
-    """
-    global _mcp_store, _db
-    if _mcp_store is not None and _db is not None:
-        from src.database import connect_sync
-
-        conn = connect_sync(_db.db_path)
-        try:
-            rows = conn.execute(
-                "SELECT id, name, type, command, args, url, env, tools, "
-                "description, enabled, access, created_at, updated_at "
-                "FROM mcp_servers ORDER BY name"
-            ).fetchall()
-            mcp_servers: dict[str, Any] = {}
-            for row in rows:
-                mcp_servers[row[1]] = {
-                    "id": row[0],
-                    "name": row[1],
-                    "type": row[2],
-                    "command": row[3],
-                    "args": json.loads(row[4]),
-                    "url": row[5],
-                    "env": json.loads(row[6]),
-                    "tools": json.loads(row[7]),
-                    "description": row[8],
-                    "enabled": bool(row[9]),
-                    "access": row[10],
-                    "created_at": row[11],
-                    "updated_at": row[12],
-                }
-            return {"mcpServers": mcp_servers}
-        finally:
-            conn.close()
-    # File fallback (only if DB not initialized)
-    registry_file = DATA_ROOT / "mcp-registry.json"
-    if registry_file.exists():
-        return json.loads(registry_file.read_text())
-    return {"mcpServers": {}}
+    """Load MCP server config from SQLite database."""
+    servers = await _mcp_store.list_all()
+    mcp_servers = {s["name"]: s for s in servers}
+    return {"mcpServers": mcp_servers}
 
 
 def build_allowed_tools(mcp_config: dict[str, Any]) -> list[str]:
@@ -1517,7 +1466,7 @@ async def build_container_options_dict(
     knowledge, pattern context, and semantic context). The container
     passes it directly as ``ClaudeAgentOptions.system_prompt``.
     """
-    mcp_config = load_mcp_config_sync()
+    mcp_config = await load_mcp_config()
     skills = await load_skills(user_id)
     workspace = user_workspace_dir(user_id)
 
@@ -1550,7 +1499,7 @@ async def build_sdk_options(
     language: str | None = None,
 ) -> ClaudeAgentOptions:
     """Build ClaudeAgentOptions with full configuration."""
-    mcp_config = load_mcp_config_sync()
+    mcp_config = await load_mcp_config()
     skills = await load_skills(user_id)
     # Load-time recording was removed because it inflated usage counts
     # for skills that were loaded but never actually invoked.
@@ -5099,7 +5048,7 @@ async def _build_evolution_sdk_options(
         model=model,
         cwd=str(version_dir),
         system_prompt=system_prompt,
-        allowed_tools=build_allowed_tools(load_mcp_config()),
+        allowed_tools=build_allowed_tools(await load_mcp_config()),
         disallowed_tools=list(DISABLED_TOOLS),
         max_turns=max_turns,
         permission_mode="acceptEdits",
@@ -5544,13 +5493,8 @@ async def delete_skill_admin(
 
 
 async def _load_mcp_servers() -> list[dict[str, Any]]:
-    """Load MCP servers from DB (primary) or file (fallback)."""
-    global _mcp_store
-    if _mcp_store is not None:
-        return await _mcp_store.list_all()
-    # File fallback
-    config = load_mcp_config_sync()
-    return [{"name": name, **cfg} for name, cfg in config.get("mcpServers", {}).items()]
+    """Load MCP servers from SQLite database."""
+    return await _mcp_store.list_all()
 
 
 @app.get("/api/admin/mcp-servers")
@@ -5567,27 +5511,10 @@ async def register_mcp_server(
     current_user: str = Depends(require_admin),
 ) -> dict[str, Any]:
     """Register a new MCP server."""
-    global _mcp_store
     server_dict = server.model_dump()
+    discover_status, discover_error = await _auto_discover_stdio_tools(server_dict)
 
-    # Auto-discover tools for stdio servers when not explicitly provided
-    discover_status = None
-    discover_error = None
-    if server_dict.get("type") == "stdio" and not server_dict.get("tools"):
-        status, _error, tool_names = await _check_stdio_mcp(server_dict)
-        if status == "connected" and tool_names:
-            server_dict["tools"] = tool_names
-            discover_status = status
-        elif _error:
-            discover_status = status
-            discover_error = _error
-
-    if _mcp_store is not None:
-        await _mcp_store.create(server_dict)
-    else:
-        registry = load_mcp_config_sync()
-        registry["mcpServers"][server.name] = server_dict
-        save_mcp_config(registry)
+    await _mcp_store.create(server_dict)
     return {"status": "ok", "discover_status": discover_status, "discover_error": discover_error}
 
 
@@ -5598,33 +5525,12 @@ async def update_mcp_server(
     current_user: str = Depends(require_admin),
 ) -> dict[str, Any]:
     """Update an existing MCP server."""
-    global _mcp_store
     server_dict = server.model_dump()
+    discover_status, discover_error = await _auto_discover_stdio_tools(server_dict)
 
-    # Auto-discover tools for stdio servers when not explicitly provided
-    discover_status = None
-    discover_error = None
-    if server_dict.get("type") == "stdio" and not server_dict.get("tools"):
-        status, _error, tool_names = await _check_stdio_mcp(server_dict)
-        if status == "connected" and tool_names:
-            server_dict["tools"] = tool_names
-            discover_status = status
-        elif _error:
-            discover_status = status
-            discover_error = _error
-
-    if _mcp_store is not None:
-        result = await _mcp_store.update(server_name, server_dict)
-        if result is None:
-            raise HTTPException(status_code=404, detail=f"Server '{server_name}' not found")
-    else:
-        registry = load_mcp_config_sync()
-        if server_name not in registry.get("mcpServers", {}):
-            raise HTTPException(status_code=404, detail=f"Server '{server_name}' not found")
-        registry["mcpServers"][server.name] = server_dict
-        if server.name != server_name:
-            registry["mcpServers"].pop(server_name, None)
-        save_mcp_config(registry)
+    result = await _mcp_store.update(server_name, server_dict)
+    if result is None:
+        raise HTTPException(status_code=404, detail=f"Server '{server_name}' not found")
     return {"status": "ok", "discover_status": discover_status, "discover_error": discover_error}
 
 
@@ -5634,14 +5540,7 @@ async def discover_mcp_tools(
     current_user: str = Depends(require_admin),
 ) -> dict[str, Any]:
     """Force-refresh the tool list for an MCP server by reconnecting."""
-    global _mcp_store
-
-    # Load server config
-    if _mcp_store is not None:
-        server = await _mcp_store.get_by_name(server_name)
-    else:
-        registry = load_mcp_config_sync()
-        server = registry.get("mcpServers", {}).get(server_name)
+    server = await _mcp_store.get_by_name(server_name)
 
     if server is None:
         raise HTTPException(status_code=404, detail=f"Server '{server_name}' not found")
@@ -5653,12 +5552,7 @@ async def discover_mcp_tools(
 
     # Update config with discovered tools
     server["tools"] = tool_names
-    if _mcp_store is not None:
-        await _mcp_store.update(server_name, server)
-    else:
-        registry = load_mcp_config_sync()
-        registry["mcpServers"][server_name] = server
-        save_mcp_config(registry)
+    await _mcp_store.update(server_name, server)
 
     return {
         "status": status,
@@ -5674,13 +5568,7 @@ async def unregister_mcp_server(
     current_user: str = Depends(require_admin),
 ) -> dict[str, str]:
     """Unregister an MCP server."""
-    global _mcp_store
-    if _mcp_store is not None:
-        await _mcp_store.delete(server_name)
-    else:
-        registry = load_mcp_config_sync()
-        registry["mcpServers"].pop(server_name, None)
-        save_mcp_config(registry)
+    await _mcp_store.delete(server_name)
     return {"status": "ok"}
 
 
@@ -5691,15 +5579,26 @@ async def toggle_mcp_server(
     current_user: str = Depends(require_admin),
 ) -> dict[str, str]:
     """Enable/disable an MCP server."""
-    global _mcp_store
-    if _mcp_store is not None:
-        await _mcp_store.toggle(server_name, enabled)
-    else:
-        registry = load_mcp_config_sync()
-        if server_name in registry.get("mcpServers", {}):
-            registry["mcpServers"][server_name]["enabled"] = enabled
-            save_mcp_config(registry)
+    await _mcp_store.toggle(server_name, enabled)
     return {"status": "ok"}
+
+
+async def _auto_discover_stdio_tools(
+    server_dict: dict[str, Any],
+) -> tuple[str | None, str | None]:
+    """Discover tools for a stdio MCP server, mutating server_dict on success.
+
+    Returns (discover_status, discover_error). Both None if discovery was skipped.
+    """
+    if server_dict.get("type") != "stdio" or server_dict.get("tools"):
+        return None, None
+    status, error, tool_names = await _check_stdio_mcp(server_dict)
+    if status == "connected" and tool_names:
+        server_dict["tools"] = tool_names
+        return status, None
+    if error:
+        return status, error
+    return None, None
 
 
 async def _check_stdio_mcp(cfg: dict[str, Any]) -> tuple[str, str | None, list[str]]:
@@ -5799,8 +5698,7 @@ async def get_mcp_servers_status(
             else:
                 status, error, tool_names = await _check_stdio_mcp(cfg)
                 # Auto-persist discovered tools to DB so agent can use them
-                if _mcp_store is not None:
-                    await _sync_tools_to_db(server_name, tool_names, _mcp_store)
+                await _sync_tools_to_db(server_name, tool_names, _mcp_store)
                 results.append(
                     {
                         "name": server_name,
@@ -5869,13 +5767,6 @@ async def get_mcp_servers_status(
             )
 
     return results
-
-
-def save_mcp_config(config: dict[str, Any]) -> None:
-    """File-based fallback — kept for pre-migration compatibility."""
-    registry_file = DATA_ROOT / "mcp-registry.json"
-    DATA_ROOT.mkdir(parents=True, exist_ok=True)
-    registry_file.write_text(json.dumps(config, indent=2))
 
 
 # ── Feedback API ─────────────────────────────────────────────────
@@ -6120,7 +6011,7 @@ async def startup() -> None:
         else:
             db_path = Path(__file__).parent / db_path_env
         from src.database import Database
-        from src.mcp_store import MCPServerStore, migrate_from_file
+        from src.mcp_store import MCPServerStore
         from src.session_store import SessionStore
 
         _db = Database(db_path=db_path)
@@ -6136,18 +6027,8 @@ async def startup() -> None:
         _audit_logger = AuditLogger(db=_db)
         logger.info("SQLite initialized: %s (%.2f MB)", db_path, db_path.stat().st_size / (1024 * 1024))
 
-        # Initialize MCP store and migrate from file if needed
+        # Initialize MCP store
         _mcp_store = MCPServerStore(db=_db)
-        try:
-            registry_file = DATA_ROOT / "mcp-registry.json"
-            migrated = await migrate_from_file(registry_file, _mcp_store)
-            if migrated > 0:
-                logger.info("Migrated %d MCP server entries from file to SQLite", migrated)
-                # Backup the original file
-                registry_file.rename(registry_file.with_suffix(".json.bak"))
-        except Exception:
-            logger.exception("MCP migration failed, falling back to file storage")
-            _mcp_store = None
 
         # Migrate existing skills from filesystem to DB
         try:
