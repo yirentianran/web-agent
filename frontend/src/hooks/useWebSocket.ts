@@ -33,7 +33,7 @@ interface PendingSend {
 const PENDING_QUEUE_MAX = 100;
 const PRIORITY_QUEUE_MAX = 10; // Separate queue for answers (high priority)
 const SEND_TIMEOUT_MS = 300_000; // 5 minutes
-const RECOVER_TIMEOUT_MS = 15_000;
+const RECOVER_TIMEOUT_MS = 60_000  // must be >= frontend heartbeat staleness threshold;
 
 interface UseWebSocketOptions {
   userId: string;
@@ -201,7 +201,15 @@ export function useWebSocket({
       }
     };
 
-    ws.onclose = () => {
+    ws.onclose = (event) => {
+      logger.warn(
+        'WebSocket closed — code:',
+        event.code,
+        'reason:',
+        event.reason,
+        'wasClean:',
+        event.wasClean,
+      );
       if (intentionalClose) return;
       setStatus("reconnecting");
       onDisconnectRef.current?.();
@@ -227,6 +235,10 @@ export function useWebSocket({
     };
 
     ws.onerror = () => {
+      logger.error(
+        'WebSocket onerror fired — connection attempt failed. ' +
+        'URL: ' + wsPath + ' Reconnect attempt: ' + reconnectAttempts.current,
+      );
       // onclose fires right after — let onclose handle it.
     };
 

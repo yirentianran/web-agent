@@ -3179,7 +3179,7 @@ async def handle_ws(websocket: WebSocket) -> None:
                                 attached_files=attached_files,
                                 language=ws_language,
                             ),
-                            timeout=float(os.getenv("AGENT_TASK_TIMEOUT", "300")),
+                            timeout=float(os.getenv("AGENT_TASK_TIMEOUT", "600")),
                         )
                     )
                     active_tasks[task_key] = task
@@ -3377,7 +3377,7 @@ async def handle_ws(websocket: WebSocket) -> None:
         # The agent is an independent asyncio task that writes results
         # to the buffer. When the frontend reconnects (page refresh,
         # network flap), the recover mechanism will deliver the output.
-        # The agent task has its own timeout (AGENT_TASK_TIMEOUT, 300s)
+        # The agent task has its own timeout (AGENT_TASK_TIMEOUT, 600s default)
         # to prevent runaway resource leaks.
         #
         # Previously, cancelling the task here destroyed in-progress
