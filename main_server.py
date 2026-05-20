@@ -4703,6 +4703,96 @@ async def get_skill_analytics(
     return result
 
 
+# ---- Dashboard APIs ----
+
+@app.get("/api/admin/dashboard/overview")
+async def dashboard_overview(
+    from_date: str | None = None,
+    to_date: str | None = None,
+    current_user: str = Depends(require_admin),
+) -> dict[str, Any]:
+    """Aggregated usage overview for the dashboard."""
+    from datetime import date, timedelta
+
+    today = date.today()
+    to_dt = date.fromisoformat(to_date) if to_date else today
+    from_dt = date.fromisoformat(from_date) if from_date else today - timedelta(days=30)
+
+    if from_dt > to_dt:
+        raise HTTPException(status_code=422, detail="from_date must be <= to_date")
+    if (to_dt - from_dt).days > 365:
+        raise HTTPException(status_code=422, detail="Date range must not exceed 365 days")
+
+    from_str = from_dt.isoformat()
+    to_str = to_dt.isoformat()
+
+    if _db is None:
+        return {
+            "active_users": 0, "total_users": 0, "new_users": 0,
+            "total_sessions": 0, "total_input_tokens": 0,
+            "total_output_tokens": 0, "total_cache_read_tokens": 0,
+            "total_cache_write_tokens": 0,
+        }
+
+    async with _db.connection() as conn:
+        # Active users
+        cursor = await conn.execute(
+            "SELECT COUNT(DISTINCT user_id) FROM sessions "
+            "WHERE last_active_at >= ? AND last_active_at <= ?",
+            (from_str, to_str),
+        )
+        row = await cursor.fetchone()
+        active_users = row[0] if row else 0
+
+        # Total users
+        cursor = await conn.execute(
+            "SELECT COUNT(*) FROM users WHERE created_at <= ?", (to_str,)
+        )
+        row = await cursor.fetchone()
+        total_users = row[0] if row else 0
+
+        # New users in range
+        cursor = await conn.execute(
+            "SELECT COUNT(*) FROM users WHERE created_at >= ? AND created_at <= ?",
+            (from_str, to_str),
+        )
+        row = await cursor.fetchone()
+        new_users = row[0] if row else 0
+
+        # Total sessions in range
+        cursor = await conn.execute(
+            "SELECT COUNT(*) FROM sessions WHERE created_at >= ? AND created_at <= ?",
+            (from_str, to_str),
+        )
+        row = await cursor.fetchone()
+        total_sessions = row[0] if row else 0
+
+        # Token aggregation
+        cursor = await conn.execute(
+            "SELECT "
+            "COALESCE(SUM(CAST(json_extract(m.usage, '$.input_tokens') AS INTEGER)), 0), "
+            "COALESCE(SUM(CAST(json_extract(m.usage, '$.output_tokens') AS INTEGER)), 0), "
+            "COALESCE(SUM(CAST(json_extract(m.usage, '$.cache_read_tokens') AS INTEGER)), 0), "
+            "COALESCE(SUM(CAST(json_extract(m.usage, '$.cache_write_tokens') AS INTEGER)), 0) "
+            "FROM messages m "
+            "JOIN sessions s ON m.session_id = s.session_id "
+            "WHERE m.created_at >= ? AND m.created_at <= ?",
+            (from_str, to_str),
+        )
+        row = await cursor.fetchone()
+
+    return {
+        "active_users": active_users,
+        "total_users": total_users,
+        "new_users": new_users,
+        "total_sessions": total_sessions,
+        "total_input_tokens": row[0] if row else 0,
+        "total_output_tokens": row[1] if row else 0,
+        "total_cache_read_tokens": row[2] if row else 0,
+        "total_cache_write_tokens": row[3] if row else 0,
+    }
+
+
 @app.get("/api/admin/skills/analytics")
 async def get_all_skills_analytics(
     current_user: str = Depends(require_admin),
