@@ -66,6 +66,13 @@ class TestDashboardOverview:
         )
         assert resp.status_code == 422
 
+    def test_overview_rejects_invalid_date_format(self, client):
+        """Invalid date strings should return 422."""
+        resp = client.get(
+            "/api/admin/dashboard/overview?from_date=abc&to_date=2026-01-31"
+        )
+        assert resp.status_code == 422
+
     def test_overview_defaults_to_30_days(self, client):
         """No params should default to last 30 days."""
         resp = client.get("/api/admin/dashboard/overview")

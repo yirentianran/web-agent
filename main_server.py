@@ -4715,8 +4715,11 @@ async def dashboard_overview(
     from datetime import date, timedelta
 
     today = date.today()
-    to_dt = date.fromisoformat(to_date) if to_date else today
-    from_dt = date.fromisoformat(from_date) if from_date else today - timedelta(days=30)
+    try:
+        to_dt = date.fromisoformat(to_date) if to_date else today
+        from_dt = date.fromisoformat(from_date) if from_date else today - timedelta(days=30)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=f"Invalid date format: {e}")
 
     if from_dt > to_dt:
         raise HTTPException(status_code=422, detail="from_date must be <= to_date")
