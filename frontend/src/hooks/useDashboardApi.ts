@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
+import { daysAgoStr, todayStr } from '../lib/dates'
 
 export interface OverviewData {
   active_users: number
@@ -61,23 +62,6 @@ export interface DashboardApi {
 }
 
 const API_BASE = '/api/admin/dashboard'
-
-function formatDate(d: Date): string {
-  const y = d.getFullYear()
-  const m = String(d.getMonth() + 1).padStart(2, '0')
-  const day = String(d.getDate()).padStart(2, '0')
-  return `${y}-${m}-${day}`
-}
-
-function todayStr(): string {
-  return formatDate(new Date())
-}
-
-function daysAgoStr(n: number): string {
-  const d = new Date()
-  d.setDate(d.getDate() - n)
-  return formatDate(d)
-}
 
 async function fetchJson<T>(url: string, token: string): Promise<T> {
   const headers: Record<string, string> = token

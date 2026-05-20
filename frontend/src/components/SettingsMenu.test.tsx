@@ -8,6 +8,7 @@ function renderSettingsMenu(props?: {
   onOpenFeedback?: () => void
   onOpenEvolution?: () => void
   onOpenMCP?: () => void
+  onOpenDashboard?: () => void
   userRole?: string
 }) {
   return render(
@@ -16,6 +17,7 @@ function renderSettingsMenu(props?: {
       onOpenFeedback={props?.onOpenFeedback ?? (() => {})}
       onOpenEvolution={props?.onOpenEvolution ?? (() => {})}
       onOpenMCP={props?.onOpenMCP ?? (() => {})}
+      onOpenDashboard={props?.onOpenDashboard ?? (() => {})}
       userRole={props?.userRole ?? "admin"}
     />,
   )

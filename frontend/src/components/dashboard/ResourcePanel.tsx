@@ -79,7 +79,7 @@ export default function ResourcePanel() {
         <span className="resource-stat">● Running: {entries.length}</span>
         <span className="resource-stat">CPU: {totalCpu.toFixed(1)}%</span>
         <span className="resource-stat">
-          Mem: {(totalMem / 1024).toFixed(1)} / {(totalMem / 1024).toFixed(1)} GB
+          Mem: {(totalMem / 1024).toFixed(1)} GB
         </span>
         <span className="resource-stat">
           Disk: {totalDisk.toFixed(1)} / {totalDiskMax.toFixed(0)} GB
