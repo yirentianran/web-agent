@@ -2,26 +2,22 @@
 
 ## Context
 
-The web agent backend already captures rich data (session cost, message tokens, skill usage, container resources), but the frontend has no usage monitoring page. Administrators have no way to see system activity without querying the database directly. This feature adds an admin-only dashboard with overview metrics, trends, rankings, and resource monitoring.
+The web agent backend already captures rich data (session tokens, message tokens, skill usage, container resources), but the frontend has no usage monitoring page. Administrators have no way to see system activity without querying the database directly. This feature adds an admin-only dashboard with overview metrics, trends, rankings, and resource monitoring.
 
 ## Scope
 
 - Admin-only, independent page at `/dashboard`
 - Time filtering: Today, 7 Days, 30 Days, custom date range
-- Backend: 3 new aggregation APIs + 2 data fixes
+- Backend: 3 new aggregation APIs + 1 data fix (store model name in usage JSON)
 - Frontend: 1 new page, 7 new components, 1 new hook, 1 new dependency (Recharts)
 
-## Prerequisite Data Fixes
+## Prerequisite Data Fix
 
-### Fix 1: Store model name and trust SDK pricing
+### Store model name in usage JSON
 
 **File:** `main_server.py` — `message_to_dicts()`
 
-Add `model` field to the stored `usage` JSON. The SDK's `total_cost_usd` already reflects correct per-model pricing; store it and use it directly instead of recalculating.
-
-**File:** `src/message_buffer.py` — `add_message()`
-
-Replace the `estimate_cost()` recalculation with direct accumulation of `usage.total_cost_usd`.
+Add `model` field to the stored `usage` JSON. The model name comes from the agent options configuration.
 
 Stored `messages.usage` after fix:
 
@@ -31,16 +27,9 @@ Stored `messages.usage` after fix:
   "output_tokens": 500,
   "cache_read_tokens": 200,
   "cache_write_tokens": 100,
-  "total_cost_usd": 0.015,
   "model": "claude-opus-4-6"
 }
 ```
-
-### Fix 2: Persist session cost to database
-
-**File:** `main_server.py` — agent task cleanup
-
-Call `session_store.update_session_cost(session_id, cost_usd)` when the session completes (method exists, never called in production). This ensures `sessions.cost_usd` survives restarts.
 
 ## Backend APIs
 
@@ -213,7 +202,7 @@ Not bundled into the main chat page.
 
 ## Implementation Order
 
-1. **Data fixes** — model + cost persistence
+1. **Data fix** — store model name in `messages.usage`
 2. **Backend APIs** — overview, trends, rankings endpoints
 3. **Frontend hook + page** — useDashboardApi, DashboardPage, routing
 4. **Components** — TimeRangeSelector, OverviewCards, charts, tables, ResourcePanel
@@ -221,7 +210,7 @@ Not bundled into the main chat page.
 
 ## Verification
 
-- Fix verification: check `messages.usage` JSON in SQLite contains `model` and `total_cost_usd` after a session; check `sessions.cost_usd` is non-zero after session completion
+- Fix verification: check `messages.usage` JSON in SQLite contains `model` field after a session completes
 - API verification: `curl /api/admin/dashboard/overview?from=2026-05-01&to=2026-05-20` with admin token returns expected aggregates
 - UI verification: navigate to `/dashboard`, switch time presets, verify charts render, verify tables sort correctly, verify container table shows running containers
 - Edge cases: empty data (no sessions in range), single-user system, custom range with from > to (should show validation error), non-admin user sees no dashboard link and gets 403 on API
