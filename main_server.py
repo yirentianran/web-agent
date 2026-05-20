@@ -1625,7 +1625,8 @@ def message_to_dicts(msg: Any, model: str | None = None) -> Iterator[dict[str, A
         if msg.total_cost_usd is not None:
             result["total_cost_usd"] = msg.total_cost_usd
         if msg.usage:
-            result["usage"] = msg.usage
+            result["cost_usd"] = msg.usage.get("total_cost_usd", 0)
+            result["usage"] = dict(msg.usage)
             if model:
                 result["usage"]["model"] = model
         if msg.result:
@@ -1644,8 +1645,9 @@ def message_to_dicts(msg: Any, model: str | None = None) -> Iterator[dict[str, A
         }
         if msg.usage:
             result["cost_usd"] = msg.usage.get("total_cost_usd", 0)
+            result["usage"] = dict(msg.usage)
             if model:
-                msg.usage["model"] = model
+                result["usage"]["model"] = model
         yield result
         return
 
@@ -1656,8 +1658,9 @@ def message_to_dicts(msg: Any, model: str | None = None) -> Iterator[dict[str, A
         }
         if msg.usage:
             result["cost_usd"] = msg.usage.get("total_cost_usd", 0)
+            result["usage"] = dict(msg.usage)
             if model:
-                msg.usage["model"] = model
+                result["usage"]["model"] = model
         if msg.data:
             result.update(msg.data)
         yield result
