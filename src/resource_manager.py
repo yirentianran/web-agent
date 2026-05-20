@@ -6,6 +6,8 @@ import logging
 import os
 from pathlib import Path
 
+from src.constants import CONTAINER_MODE
+
 try:
     import docker
 except ImportError:
@@ -17,8 +19,6 @@ logger = logging.getLogger(__name__)
 MAX_CPU_PERCENT = float(os.getenv("RESOURCE_MAX_CPU_PERCENT", "100"))
 MAX_MEMORY_MB = float(os.getenv("RESOURCE_MAX_MEMORY_MB", "4096"))
 MAX_DISK_MB = float(os.getenv("RESOURCE_MAX_DISK_MB", "1024"))
-
-CONTAINER_MODE = os.getenv("CONTAINER_MODE", "false").lower() == "true"
 
 DATA_ROOT = Path(os.getenv("DATA_ROOT", "/data"))
 

@@ -32,8 +32,8 @@ class MCPServerStore:
         """Return all MCP servers."""
         async with self.db.connection() as conn:
             cursor = await conn.execute(
-                "SELECT id, name, type, command, args, url, env, tools, "
-                "description, enabled, access, created_at, updated_at "
+                "SELECT id, name, type, command, args, url, headers, env, tools, "
+                "resources, prompts, description, enabled, access, created_at, updated_at "
                 "FROM mcp_servers ORDER BY name"
             )
             rows = await cursor.fetchall()
@@ -43,8 +43,8 @@ class MCPServerStore:
         """Return a single server by name, or None."""
         async with self.db.connection() as conn:
             cursor = await conn.execute(
-                "SELECT id, name, type, command, args, url, env, tools, "
-                "description, enabled, access, created_at, updated_at "
+                "SELECT id, name, type, command, args, url, headers, env, tools, "
+                "resources, prompts, description, enabled, access, created_at, updated_at "
                 "FROM mcp_servers WHERE name = ?",
                 (name,),
             )
@@ -63,17 +63,20 @@ class MCPServerStore:
         async with self.db.connection() as conn:
             await conn.execute(
                 """INSERT INTO mcp_servers
-                   (name, type, command, args, url, env, tools,
-                    description, enabled, access, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   (name, type, command, args, url, headers, env, tools,
+                    resources, prompts, description, enabled, access, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     server["name"],
                     server.get("type", "stdio"),
                     server.get("command"),
                     json.dumps(server.get("args", [])),
                     server.get("url"),
+                    json.dumps(server.get("headers", {})),
                     json.dumps(server.get("env", {})),
                     json.dumps(server.get("tools", [])),
+                    json.dumps(server.get("resources", [])),
+                    json.dumps(server.get("prompts", [])),
                     server.get("description", ""),
                     1 if server.get("enabled", True) else 0,
                     server.get("access", "all"),
@@ -112,8 +115,8 @@ class MCPServerStore:
             await conn.execute(
                 """UPDATE mcp_servers SET
                    name = ?, type = ?, command = ?, args = ?, url = ?,
-                   env = ?, tools = ?, description = ?,
-                   enabled = ?, access = ?, updated_at = ?
+                   headers = ?, env = ?, tools = ?, resources = ?, prompts = ?,
+                   description = ?, enabled = ?, access = ?, updated_at = ?
                    WHERE name = ?""",
                 (
                     updated_data["name"],
@@ -121,8 +124,11 @@ class MCPServerStore:
                     updated_data.get("command"),
                     json.dumps(updated_data.get("args", [])),
                     updated_data.get("url"),
+                    json.dumps(updated_data.get("headers", {})),
                     json.dumps(updated_data.get("env", {})),
                     json.dumps(updated_data.get("tools", [])),
+                    json.dumps(updated_data.get("resources", [])),
+                    json.dumps(updated_data.get("prompts", [])),
                     updated_data.get("description", ""),
                     1 if updated_data.get("enabled", True) else 0,
                     updated_data.get("access", "all"),
@@ -167,8 +173,11 @@ class MCPServerStore:
             "command": data["command"],
             "args": json.loads(data["args"]) if data["args"] else [],
             "url": data["url"],
+            "headers": json.loads(data["headers"]) if data["headers"] else {},
             "env": json.loads(data["env"]) if data["env"] else {},
             "tools": json.loads(data["tools"]) if data["tools"] else [],
+            "resources": json.loads(data["resources"]) if data["resources"] else [],
+            "prompts": json.loads(data["prompts"]) if data["prompts"] else [],
             "description": data["description"],
             "enabled": bool(data["enabled"]),
             "access": data["access"],

@@ -28,7 +28,7 @@ import uuid
 import zipfile
 from collections.abc import Iterator
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, timedelta, timezone
 from io import BytesIO
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -133,6 +133,9 @@ async def health_check():
 MAX_ZIP_SIZE = 50 * 1024 * 1024  # 50MB compressed
 MAX_UNCOMPRESSED = 100 * 1024 * 1024  # 100MB uncompressed
 MAX_SKILL_FILES = 100
+
+# ── Timezone ─────────────────────────────────────────────────────
+PROJECT_TZ = timezone(timedelta(hours=8))  # UTC+8 (Asia/Shanghai)
 
 # In production (single-server), CORS is unnecessary since frontend and API share the same origin
 if not PROD:
@@ -1344,8 +1347,12 @@ async def _build_sdk_config(
     for server_name, cfg in mcp_config.get("mcpServers", {}).items():
         if not cfg.get("enabled", True):
             continue
-        if cfg.get("type") == "http":
-            mcp_servers[server_name] = {"type": "http", "url": cfg["url"]}
+        if cfg.get("type") in ("http", "sse", "streamable_http"):
+            # The SDK CLI only knows "http" and "sse", not "streamable_http"
+            sdk_type = "http" if cfg["type"] == "streamable_http" else cfg["type"]
+            mcp_servers[server_name] = {"type": sdk_type, "url": cfg["url"]}
+            if cfg.get("headers"):
+                mcp_servers[server_name]["headers"] = cfg["headers"]
         else:
             mcp_servers[server_name] = {
                 "type": cfg.get("type", "stdio"),
@@ -3837,8 +3844,6 @@ async def list_shared_skills() -> list[SkillInfo]:
     results: list[SkillInfo] = []
 
     if _db is not None and _db._initialized:
-        from datetime import datetime, timezone
-
         async with _db.connection() as conn:
             cursor = await conn.execute(
                 "SELECT skill_name, owner_id, description, path, created_at"
@@ -3927,8 +3932,6 @@ async def list_user_skills(
     results: list[SkillInfo] = []
 
     if _db is not None and _db._initialized:
-        from datetime import datetime, timezone
-
         async with _db.connection() as conn:
             if admin:
                 # Admin can see all users' personal skills, but still only personal ones
@@ -4705,6 +4708,45 @@ async def get_skill_analytics(
 
 # ---- Dashboard APIs ----
 
+def _parse_dashboard_dates(
+    from_date: str | None,
+    to_date: str | None,
+) -> tuple[float, float]:
+    """Parse and validate from/to date strings for dashboard endpoints.
+
+    Returns (from_ts, to_ts) as seconds since epoch in PROJECT_TZ.
+    Accepts YYYY-MM-DD (day boundaries: 00:00:00 / 23:59:59) or
+    YYYY-MM-DDTHH:MM (exact time).
+    """
+    today = date.today()
+    try:
+        to_dt_raw = datetime.fromisoformat(to_date) if to_date else datetime.combine(today, datetime.min.time())
+        from_dt_raw = datetime.fromisoformat(from_date) if from_date else datetime.combine(today - timedelta(days=30), datetime.min.time())
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=f"Invalid date format: {e}")
+
+    if from_dt_raw > to_dt_raw:
+        raise HTTPException(status_code=422, detail="from_date must be <= to_date")
+    if (to_dt_raw.date() - from_dt_raw.date()).days > 365:
+        raise HTTPException(status_code=422, detail="Date range must not exceed 365 days")
+
+    from_ts = _to_ts(from_dt_raw, from_date, is_from=True)
+    to_ts = _to_ts(to_dt_raw, to_date, is_from=False)
+    return from_ts, to_ts
+
+
+def _to_ts(dt: datetime, raw: str | None, *, is_from: bool) -> float:
+    """Convert a parsed datetime to a PROJECT_TZ timestamp.
+
+    Date-only strings (no 'T') get day boundaries; datetime strings use exact time.
+    """
+    if raw and 'T' in raw:
+        return dt.astimezone(PROJECT_TZ).timestamp()
+    if is_from:
+        return datetime(dt.year, dt.month, dt.day, tzinfo=PROJECT_TZ).timestamp()
+    return datetime(dt.year, dt.month, dt.day, 23, 59, 59, tzinfo=PROJECT_TZ).timestamp()
+
+
 @app.get("/api/admin/dashboard/overview")
 async def dashboard_overview(
     from_date: str | None = None,
@@ -4712,22 +4754,7 @@ async def dashboard_overview(
     current_user: str = Depends(require_admin),
 ) -> dict[str, Any]:
     """Aggregated usage overview for the dashboard."""
-    from datetime import date, timedelta
-
-    today = date.today()
-    try:
-        to_dt = date.fromisoformat(to_date) if to_date else today
-        from_dt = date.fromisoformat(from_date) if from_date else today - timedelta(days=30)
-    except ValueError as e:
-        raise HTTPException(status_code=422, detail=f"Invalid date format: {e}")
-
-    if from_dt > to_dt:
-        raise HTTPException(status_code=422, detail="from_date must be <= to_date")
-    if (to_dt - from_dt).days > 365:
-        raise HTTPException(status_code=422, detail="Date range must not exceed 365 days")
-
-    from_str = from_dt.isoformat()
-    to_str = to_dt.isoformat()
+    from_ts, to_ts = _parse_dashboard_dates(from_date, to_date)
 
     if _db is None:
         return {
@@ -4742,14 +4769,14 @@ async def dashboard_overview(
         cursor = await conn.execute(
             "SELECT COUNT(DISTINCT user_id) FROM sessions "
             "WHERE last_active_at >= ? AND last_active_at <= ?",
-            (from_str, to_str),
+            (from_ts, to_ts),
         )
         row = await cursor.fetchone()
         active_users = row[0] if row else 0
 
         # Total users
         cursor = await conn.execute(
-            "SELECT COUNT(*) FROM users WHERE created_at <= ?", (to_str,)
+            "SELECT COUNT(*) FROM users WHERE created_at <= ?", (to_ts,)
         )
         row = await cursor.fetchone()
         total_users = row[0] if row else 0
@@ -4757,7 +4784,7 @@ async def dashboard_overview(
         # New users in range
         cursor = await conn.execute(
             "SELECT COUNT(*) FROM users WHERE created_at >= ? AND created_at <= ?",
-            (from_str, to_str),
+            (from_ts, to_ts),
         )
         row = await cursor.fetchone()
         new_users = row[0] if row else 0
@@ -4765,7 +4792,7 @@ async def dashboard_overview(
         # Total sessions in range
         cursor = await conn.execute(
             "SELECT COUNT(*) FROM sessions WHERE created_at >= ? AND created_at <= ?",
-            (from_str, to_str),
+            (from_ts, to_ts),
         )
         row = await cursor.fetchone()
         total_sessions = row[0] if row else 0
@@ -4775,12 +4802,12 @@ async def dashboard_overview(
             "SELECT "
             "COALESCE(SUM(CAST(json_extract(m.usage, '$.input_tokens') AS INTEGER)), 0), "
             "COALESCE(SUM(CAST(json_extract(m.usage, '$.output_tokens') AS INTEGER)), 0), "
-            "COALESCE(SUM(CAST(json_extract(m.usage, '$.cache_read_tokens') AS INTEGER)), 0), "
-            "COALESCE(SUM(CAST(json_extract(m.usage, '$.cache_write_tokens') AS INTEGER)), 0) "
+            "COALESCE(SUM(CAST(json_extract(m.usage, '$.cache_read_input_tokens') AS INTEGER)), 0), "
+            "COALESCE(SUM(CAST(json_extract(m.usage, '$.cache_creation_input_tokens') AS INTEGER)), 0) "
             "FROM messages m "
             "JOIN sessions s ON m.session_id = s.session_id "
             "WHERE m.created_at >= ? AND m.created_at <= ?",
-            (from_str, to_str),
+            (from_ts, to_ts),
         )
         row = await cursor.fetchone()
 
@@ -4800,83 +4827,77 @@ async def dashboard_overview(
 async def dashboard_trends(
     from_date: str | None = None,
     to_date: str | None = None,
+    interval: str = "day",
     current_user: str = Depends(require_admin),
 ) -> dict[str, Any]:
-    """Daily trends for dashboard charts (active users, sessions, tokens)."""
-    from datetime import date, timedelta
+    """Trends for dashboard charts (active users, sessions, tokens).
 
-    today = date.today()
-    try:
-        to_dt = date.fromisoformat(to_date) if to_date else today
-        from_dt = date.fromisoformat(from_date) if from_date else today - timedelta(days=30)
-    except ValueError as e:
-        raise HTTPException(status_code=422, detail=f"Invalid date format: {e}")
+    interval: '5min' | 'hour' | 'day' (default). Sub-day intervals use
+    strftime to produce finer-grained buckets.
+    """
+    if interval not in ("5min", "hour", "day"):
+        raise HTTPException(status_code=422, detail="interval must be 5min, hour, or day")
 
-    if from_dt > to_dt:
-        raise HTTPException(status_code=422, detail="from_date must be <= to_date")
-    if (to_dt - from_dt).days > 365:
-        raise HTTPException(status_code=422, detail="Date range must not exceed 365 days")
+    from_ts, to_ts = _parse_dashboard_dates(from_date, to_date)
 
-    from_str = from_dt.isoformat()
-    to_str = to_dt.isoformat()
+    # SQL group expression per interval — dict lookup, never string interpolation
+    _group_expr: dict[str, str] = {
+        "5min": "strftime('%Y-%m-%dT%H:%M', {col}, 'unixepoch', 'localtime')",
+        "hour": "strftime('%Y-%m-%dT%H:00', {col}, 'unixepoch', 'localtime')",
+        "day": "date({col}, 'unixepoch', 'localtime')",
+    }
+    group_fmt = _group_expr[interval]
 
     if _db is None:
-        return {
-            "daily_active_users": [],
-            "daily_sessions": [],
-            "daily_tokens": [],
-        }
+        return {"interval": interval, "active_users": [], "sessions": [], "tokens": []}
 
     async with _db.connection() as conn:
-        # Daily active users
+        # Active users
+        col = "last_active_at"
         cursor = await conn.execute(
-            "SELECT date(last_active_at) as d, COUNT(DISTINCT user_id) "
+            f"SELECT {group_fmt.format(col=col)}, COUNT(DISTINCT user_id) "
             "FROM sessions WHERE last_active_at >= ? AND last_active_at <= ? "
-            "GROUP BY d ORDER BY d",
-            (from_str, to_str),
+            "GROUP BY 1 ORDER BY 1",
+            (from_ts, to_ts),
         )
         rows = await cursor.fetchall()
-        daily_active_users = [{"date": r[0], "count": r[1]} for r in rows]
+        active_users = [{"date": r[0], "count": r[1]} for r in rows]
 
-        # Daily sessions
+        # Sessions
+        col = "created_at"
         cursor = await conn.execute(
-            "SELECT date(created_at) as d, COUNT(*) "
+            f"SELECT {group_fmt.format(col=col)}, COUNT(*) "
             "FROM sessions WHERE created_at >= ? AND created_at <= ? "
-            "GROUP BY d ORDER BY d",
-            (from_str, to_str),
+            "GROUP BY 1 ORDER BY 1",
+            (from_ts, to_ts),
         )
         rows = await cursor.fetchall()
-        daily_sessions = [{"date": r[0], "count": r[1]} for r in rows]
+        sessions = [{"date": r[0], "count": r[1]} for r in rows]
 
-        # Daily tokens
+        # Tokens
         cursor = await conn.execute(
-            "SELECT date(m.created_at) as d, "
+            f"SELECT {group_fmt.format(col='m.created_at')}, "
             "COALESCE(SUM(CAST(json_extract(m.usage, '$.input_tokens') AS INTEGER)), 0), "
             "COALESCE(SUM(CAST(json_extract(m.usage, '$.output_tokens') AS INTEGER)), 0), "
-            "COALESCE(SUM(CAST(json_extract(m.usage, '$.cache_read_tokens') AS INTEGER)), 0), "
-            "COALESCE(SUM(CAST(json_extract(m.usage, '$.cache_write_tokens') AS INTEGER)), 0) "
+            "COALESCE(SUM(CAST(json_extract(m.usage, '$.cache_read_input_tokens') AS INTEGER)), 0), "
+            "COALESCE(SUM(CAST(json_extract(m.usage, '$.cache_creation_input_tokens') AS INTEGER)), 0) "
             "FROM messages m "
             "JOIN sessions s ON m.session_id = s.session_id "
             "WHERE m.created_at >= ? AND m.created_at <= ? "
-            "GROUP BY d ORDER BY d",
-            (from_str, to_str),
+            "GROUP BY 1 ORDER BY 1",
+            (from_ts, to_ts),
         )
         rows = await cursor.fetchall()
-        daily_tokens = [
-            {
-                "date": r[0],
-                "input": r[1],
-                "output": r[2],
-                "cache_read": r[3],
-                "cache_write": r[4],
-            }
+        tokens = [
+            {"date": r[0], "input": r[1], "output": r[2], "cache_read": r[3], "cache_write": r[4]}
             for r in rows
         ]
 
     return {
-        "daily_active_users": daily_active_users,
-        "daily_sessions": daily_sessions,
-        "daily_tokens": daily_tokens,
+        "interval": interval,
+        "active_users": active_users,
+        "sessions": sessions,
+        "tokens": tokens,
     }
 
 
@@ -4887,22 +4908,7 @@ async def dashboard_rankings(
     current_user: str = Depends(require_admin),
 ) -> dict[str, Any]:
     """Top users by token usage and top skills by use count."""
-    from datetime import date, timedelta
-
-    today = date.today()
-    try:
-        to_dt = date.fromisoformat(to_date) if to_date else today
-        from_dt = date.fromisoformat(from_date) if from_date else today - timedelta(days=30)
-    except ValueError as e:
-        raise HTTPException(status_code=422, detail=f"Invalid date format: {e}")
-
-    if from_dt > to_dt:
-        raise HTTPException(status_code=422, detail="from_date must be <= to_date")
-    if (to_dt - from_dt).days > 365:
-        raise HTTPException(status_code=422, detail="Date range must not exceed 365 days")
-
-    from_str = from_dt.isoformat()
-    to_str = to_dt.isoformat()
+    from_ts, to_ts = _parse_dashboard_dates(from_date, to_date)
 
     if _db is None:
         return {"top_users": [], "top_skills": []}
@@ -4914,8 +4920,8 @@ async def dashboard_rankings(
             "COALESCE(SUM("
             "CAST(json_extract(m.usage, '$.input_tokens') AS INTEGER) + "
             "CAST(json_extract(m.usage, '$.output_tokens') AS INTEGER) + "
-            "CAST(json_extract(m.usage, '$.cache_read_tokens') AS INTEGER) + "
-            "CAST(json_extract(m.usage, '$.cache_write_tokens') AS INTEGER)"
+            "CAST(json_extract(m.usage, '$.cache_read_input_tokens') AS INTEGER) + "
+            "CAST(json_extract(m.usage, '$.cache_creation_input_tokens') AS INTEGER)"
             "), 0) as total_tokens, "
             "COUNT(DISTINCT s.session_id) as session_count "
             "FROM messages m "
@@ -4923,7 +4929,7 @@ async def dashboard_rankings(
             "WHERE m.created_at >= ? AND m.created_at <= ? "
             "GROUP BY s.user_id "
             "ORDER BY total_tokens DESC LIMIT 10",
-            (from_str, to_str),
+            (from_ts, to_ts),
         )
         user_rows = await cursor.fetchall()
 
@@ -4937,7 +4943,7 @@ async def dashboard_rankings(
             "AND su.session_id != '' "
             "GROUP BY su.skill_name "
             "ORDER BY use_count DESC LIMIT 10",
-            (from_str, to_str),
+            (from_ts, to_ts),
         )
         skill_rows = await cursor.fetchall()
 
@@ -5724,7 +5730,7 @@ async def register_mcp_server(
 ) -> dict[str, Any]:
     """Register a new MCP server."""
     server_dict = server.model_dump()
-    discover_status, discover_error = await _auto_discover_stdio_tools(server_dict)
+    discover_status, discover_error = await _auto_discover_mcp_capabilities(server_dict)
 
     await _mcp_store.create(server_dict)
     return {"status": "ok", "discover_status": discover_status, "discover_error": discover_error}
@@ -5738,7 +5744,7 @@ async def update_mcp_server(
 ) -> dict[str, Any]:
     """Update an existing MCP server."""
     server_dict = server.model_dump()
-    discover_status, discover_error = await _auto_discover_stdio_tools(server_dict)
+    discover_status, discover_error = await _auto_discover_mcp_capabilities(server_dict)
 
     result = await _mcp_store.update(server_name, server_dict)
     if result is None:
@@ -5751,19 +5757,18 @@ async def discover_mcp_tools(
     server_name: str,
     current_user: str = Depends(require_admin),
 ) -> dict[str, Any]:
-    """Force-refresh the tool list for an MCP server by reconnecting."""
+    """Force-refresh tools, resources, and prompts for an MCP server."""
     server = await _mcp_store.get_by_name(server_name)
 
     if server is None:
         raise HTTPException(status_code=404, detail=f"Server '{server_name}' not found")
 
-    if server.get("type") != "stdio":
-        raise HTTPException(status_code=400, detail="Tool discovery only supported for stdio servers")
+    status, error, tool_names, resources, prompts = await _connect_and_discover_mcp(server)
 
-    status, error, tool_names = await _check_stdio_mcp(server)
-
-    # Update config with discovered tools
+    # Update config with discovered capabilities
     server["tools"] = tool_names
+    server["resources"] = resources
+    server["prompts"] = prompts
     await _mcp_store.update(server_name, server)
 
     return {
@@ -5771,6 +5776,10 @@ async def discover_mcp_tools(
         "error": error,
         "tools": tool_names,
         "tool_count": len(tool_names),
+        "resources": resources,
+        "resource_count": len(resources),
+        "prompts": prompts,
+        "prompt_count": len(prompts),
     }
 
 
@@ -5795,76 +5804,245 @@ async def toggle_mcp_server(
     return {"status": "ok"}
 
 
-async def _auto_discover_stdio_tools(
+async def _connect_and_discover_mcp(
+    cfg: dict[str, Any],
+    timeout: float = 30.0,
+) -> tuple[str, str | None, list[str], list[dict], list[dict]]:
+    """Connect to any MCP server type and discover tools, resources, prompts.
+
+    Returns (status, error_or_None, tool_names, resources, prompts).
+    """
+    from mcp import ClientSession
+    from mcp.client.stdio import StdioServerParameters, stdio_client
+    from mcp.client.sse import sse_client
+    from mcp.client.streamable_http import streamable_http_client
+
+    server_type = cfg.get("type", "stdio")
+    tool_names: list[str] = []
+    resources: list[dict] = []
+    prompts: list[dict] = []
+
+    try:
+        if server_type == "stdio":
+            params = StdioServerParameters(
+                command=cfg.get("command", ""),
+                args=cfg.get("args", []),
+                env={k: v for k, v in (cfg.get("env") or {}).items()},
+            )
+            async with asyncio.timeout(timeout):
+                async with stdio_client(params, errlog=open(os.devnull, "w")) as (read, write):
+                    async with ClientSession(read, write) as session:
+                        await session.initialize()
+                        await _discover_all(session, tool_names, resources, prompts)
+        elif server_type == "sse":
+            sse_url = cfg.get("url", "")
+            sse_headers = dict(cfg.get("headers", {}))
+            async with asyncio.timeout(timeout):
+                async with sse_client(sse_url, headers=sse_headers, timeout=timeout) as (read, write):
+                    async with ClientSession(read, write) as session:
+                        await session.initialize()
+                        await _discover_all(session, tool_names, resources, prompts)
+        elif server_type in ("http", "streamable_http"):
+            sh_url = cfg.get("url", "")
+            async with asyncio.timeout(timeout):
+                async with streamable_http_client(sh_url) as (read, write, _):
+                    async with ClientSession(read, write) as session:
+                        await session.initialize()
+                        await _discover_all(session, tool_names, resources, prompts)
+        else:
+            return ("error", f"Unknown server type: {server_type}", [], [], [])
+
+        return ("connected", None, tool_names, resources, prompts)
+    except TimeoutError:
+        return ("disconnected", "Connection timed out (30s)", [], [], [])
+    except Exception as e:
+        error_msg = str(e)
+        if len(error_msg) > 500:
+            error_msg = error_msg[:500] + "..."
+        return ("disconnected", error_msg, [], [], [])
+
+
+async def _discover_all(
+    session: Any,
+    tool_names: list[str],
+    resources: list[dict],
+    prompts: list[dict],
+) -> None:
+    """Discover tools, ping, resources, and prompts from an initialized session.
+
+    Resources and prompts are wrapped in try/except — servers that don't support
+    them respond with an MCP error which we gracefully degrade to empty lists.
+    """
+    await session.send_ping()
+
+    tools_result = await session.list_tools()
+    if tools_result.tools:
+        tool_names.extend(t.name for t in tools_result.tools)
+
+    try:
+        resources_result = await session.list_resources()
+        if resources_result.resources:
+            for r in resources_result.resources:
+                resources.append({
+                    "uri": r.uri,
+                    "name": r.name,
+                    "description": getattr(r, "description", "") or "",
+                    "mimeType": getattr(r, "mimeType", "") or "",
+                })
+    except Exception:
+        pass
+
+    try:
+        prompts_result = await session.list_prompts()
+        if prompts_result.prompts:
+            for p in prompts_result.prompts:
+                prompts.append({
+                    "name": p.name,
+                    "description": getattr(p, "description", "") or "",
+                    "arguments": [a.model_dump() for a in (p.arguments or [])],
+                })
+    except Exception:
+        pass
+
+
+async def _check_stdio_mcp(cfg: dict[str, Any]) -> tuple[str, str | None, list[str]]:
+    """Connect to a stdio MCP server, discover tools. Backward-compatible wrapper."""
+    status, error, tool_names, _, _ = await _connect_and_discover_mcp(cfg)
+    return (status, error, tool_names)
+
+
+async def _check_http_mcp(
+    cfg: dict[str, Any],
+) -> tuple[str, str | None, list[str], list[dict], list[dict]]:
+    """Connect to an HTTP-based MCP server via streamable HTTP, discover all."""
+    return await _connect_and_discover_mcp(cfg)
+
+
+async def _auto_discover_mcp_capabilities(
     server_dict: dict[str, Any],
 ) -> tuple[str | None, str | None]:
-    """Discover tools for a stdio MCP server, mutating server_dict on success.
+    """Auto-discover tools/resources/prompts for an MCP server.
 
-    Returns (discover_status, discover_error). Both None if discovery was skipped.
+    Mutates server_dict on success. Returns (discover_status, discover_error).
+    Both None if discovery was skipped.
     """
-    if server_dict.get("type") != "stdio" or server_dict.get("tools"):
+    if server_dict.get("tools") or server_dict.get("resources") or server_dict.get("prompts"):
         return None, None
-    status, error, tool_names = await _check_stdio_mcp(server_dict)
+    status, error, tool_names, resources, prompts = await _connect_and_discover_mcp(server_dict)
     if status == "connected" and tool_names:
         server_dict["tools"] = tool_names
+        server_dict["resources"] = resources
+        server_dict["prompts"] = prompts
         return status, None
     if error:
         return status, error
     return None, None
 
 
-async def _check_stdio_mcp(cfg: dict[str, Any]) -> tuple[str, str | None, list[str]]:
-    """Actually connect to a stdio MCP server and verify it works.
-
-    Returns (status, error_message_or_None, tool_names_list).
-    Uses a 30-second timeout to prevent hanging on slow servers
-    (e.g. uvx downloading packages on first run).
-    """
-    from mcp import ClientSession
-    from mcp.client.stdio import StdioServerParameters, stdio_client
-
-    params = StdioServerParameters(
-        command=cfg.get("command", ""),
-        args=cfg.get("args", []),
-        env={k: v for k, v in (cfg.get("env") or {}).items()},
-    )
-
-    try:
-        async with asyncio.timeout(30):
-            async with stdio_client(params, errlog=open(os.devnull, "w")) as (read, write):
-                async with ClientSession(read, write) as session:
-                    await session.initialize()
-                    tools_result = await session.list_tools()
-                    tool_names = [t.name for t in tools_result.tools] if tools_result.tools else []
-                    return ("connected", None, tool_names)
-    except TimeoutError:
-        return ("disconnected", "Connection timed out (30s)", [])
-    except Exception as e:
-        error_msg = str(e)
-        if len(error_msg) > 500:
-            error_msg = error_msg[:500] + "..."
-        return ("disconnected", error_msg, [])
-
-
-async def _sync_tools_to_db(
+async def _sync_discovery_to_db(
     server_name: str,
     discovered_tools: list[str],
+    discovered_resources: list[dict],
+    discovered_prompts: list[dict],
     mcp_store: MCPServerStore,
 ) -> bool:
-    """Persist discovered tools to DB if they differ from stored tools.
+    """Persist discovered capabilities to DB if they differ from stored values.
 
-    Returns True if tools were updated, False if no change needed.
+    Returns True if anything was updated, False if no change needed.
     """
     existing = await mcp_store.get_by_name(server_name)
     if existing is None:
         return False
 
     stored_tools = existing.get("tools", [])
-    if set(discovered_tools) == set(stored_tools):
+    stored_resources = existing.get("resources", [])
+    stored_prompts = existing.get("prompts", [])
+
+    tools_changed = set(discovered_tools) != set(stored_tools)
+    resources_changed = _normalize_for_comparison(discovered_resources) != _normalize_for_comparison(stored_resources)
+    prompts_changed = _normalize_for_comparison(discovered_prompts) != _normalize_for_comparison(stored_prompts)
+
+    if not (tools_changed or resources_changed or prompts_changed):
         return False
 
-    await mcp_store.update(server_name, {"tools": discovered_tools})
+    await mcp_store.update(server_name, {
+        "tools": discovered_tools,
+        "resources": discovered_resources,
+        "prompts": discovered_prompts,
+    })
     return True
+
+
+def _normalize_for_comparison(items: list[dict]) -> list[dict]:
+    """Sort list of dicts by a stable key for comparison."""
+    return sorted(items, key=lambda d: json.dumps(d, sort_keys=True))
+
+
+def _status_result(
+    name: str,
+    server_type: str,
+    *,
+    enabled: bool = True,
+    status: str = "error",
+    error: str | None = None,
+    tool_count: int = 0,
+    resource_count: int = 0,
+    prompt_count: int = 0,
+) -> dict[str, Any]:
+    return {
+        "name": name, "type": server_type,
+        "enabled": enabled, "status": status, "error": error,
+        "tool_count": tool_count, "resource_count": resource_count, "prompt_count": prompt_count,
+    }
+
+
+async def _check_server(cfg: dict[str, Any]) -> dict[str, Any]:
+    server_name = cfg["name"]
+    server_type = cfg.get("type", "stdio")
+    enabled = cfg.get("enabled", True)
+
+    if not enabled:
+        return _status_result(server_name, server_type, enabled=False, status="disabled")
+
+    if server_type == "stdio":
+        command = cfg.get("command", "")
+        if not command:
+            return _status_result(server_name, server_type, error="No command specified")
+        status, error, tool_names, resources, prompts = await _connect_and_discover_mcp(cfg)
+        await _sync_discovery_to_db(server_name, tool_names, resources, prompts, _mcp_store)
+        return _status_result(
+            server_name, server_type, status=status, error=error,
+            tool_count=len(tool_names), resource_count=len(resources), prompt_count=len(prompts),
+        )
+
+    if server_type in ("http", "sse", "streamable_http"):
+        url = cfg.get("url", "")
+        if not url:
+            return _status_result(server_name, server_type, error="No URL specified")
+        status, error, tool_names, resources, prompts = await _check_http_mcp(cfg)
+        await _sync_discovery_to_db(server_name, tool_names, resources, prompts, _mcp_store)
+        return _status_result(
+            server_name, server_type, status=status, error=error,
+            tool_count=len(tool_names), resource_count=len(resources), prompt_count=len(prompts),
+        )
+
+    # Pre-migration unknown types: fall back to basic HTTP check if URL present
+    url = cfg.get("url", "")
+    if url:
+        try:
+            async with httpx.AsyncClient() as client:
+                resp = await client.get(url, timeout=3.0)
+                basic_status = "connected" if resp.status_code < 500 else "disconnected"
+                basic_error = None if resp.status_code < 500 else f"HTTP {resp.status_code}"
+        except Exception as e:
+            basic_status = "disconnected"
+            basic_error = str(e)
+        return _status_result(server_name, server_type, enabled=enabled, status=basic_status, error=basic_error)
+
+    return _status_result(
+        server_name, server_type, enabled=enabled,
+        error=f"Unknown server type: {server_type}",
+    )
 
 
 @app.get("/api/admin/mcp-servers/status")
@@ -5872,113 +6050,9 @@ async def get_mcp_servers_status(
     current_user: str = Depends(require_admin),
 ) -> list[dict[str, Any]]:
     """Check the connection status of all MCP servers."""
-
     servers = await _load_mcp_servers()
-    results: list[dict[str, Any]] = []
-
-    for cfg in servers:
-        server_name = cfg["name"]
-        server_type = cfg.get("type", "stdio")
-        enabled = cfg.get("enabled", True)
-
-        if not enabled:
-            results.append(
-                {
-                    "name": server_name,
-                    "type": server_type,
-                    "enabled": False,
-                    "status": "disabled",
-                    "error": None,
-                    "tool_count": 0,
-                }
-            )
-            continue
-
-        if server_type == "stdio":
-            command = cfg.get("command", "")
-            if not command:
-                results.append(
-                    {
-                        "name": server_name,
-                        "type": server_type,
-                        "enabled": True,
-                        "status": "error",
-                        "error": "No command specified",
-                        "tool_count": 0,
-                    }
-                )
-            else:
-                status, error, tool_names = await _check_stdio_mcp(cfg)
-                # Auto-persist discovered tools to DB so agent can use them
-                await _sync_tools_to_db(server_name, tool_names, _mcp_store)
-                results.append(
-                    {
-                        "name": server_name,
-                        "type": server_type,
-                        "enabled": True,
-                        "status": status,
-                        "error": error,
-                        "tool_count": len(tool_names),
-                    }
-                )
-        elif server_type == "http":
-            url = cfg.get("url", "")
-            if not url:
-                results.append(
-                    {
-                        "name": server_name,
-                        "type": server_type,
-                        "enabled": True,
-                        "status": "error",
-                        "error": "No URL specified",
-                    }
-                )
-            else:
-                try:
-                    async with httpx.AsyncClient() as client:
-                        resp = await client.get(url, timeout=3.0)
-                        if resp.status_code < 500:
-                            results.append(
-                                {
-                                    "name": server_name,
-                                    "type": server_type,
-                                    "enabled": True,
-                                    "status": "connected",
-                                    "error": None,
-                                }
-                            )
-                        else:
-                            results.append(
-                                {
-                                    "name": server_name,
-                                    "type": server_type,
-                                    "enabled": True,
-                                    "status": "disconnected",
-                                    "error": f"HTTP {resp.status_code}",
-                                }
-                            )
-                except Exception as e:
-                    results.append(
-                        {
-                            "name": server_name,
-                            "type": server_type,
-                            "enabled": True,
-                            "status": "disconnected",
-                            "error": str(e),
-                        }
-                    )
-        else:
-            results.append(
-                {
-                    "name": server_name,
-                    "type": server_type,
-                    "enabled": enabled,
-                    "status": "error",
-                    "error": f"Unknown server type: {server_type}",
-                }
-            )
-
-    return results
+    results = await asyncio.gather(*[_check_server(cfg) for cfg in servers])
+    return list(results)
 
 
 # ── Feedback API ─────────────────────────────────────────────────

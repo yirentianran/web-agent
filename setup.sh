@@ -8,7 +8,7 @@ cd "$(dirname "$0")"
 echo "=== Web Agent Setup ==="
 
 # Step 1: Check Python version
-PYTHON_VERSION=$(python3 --version 2>&1 | grep -oP '\d+\.\d+')
+PYTHON_VERSION=$(python3 -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")
 if python3 -c "import sys; sys.exit(0 if sys.version_info >= (3, 12) else 1)" 2>/dev/null; then
   echo "✓ Python 3.12+ found"
 else

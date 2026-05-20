@@ -122,19 +122,6 @@ def get_user_volumes(user_id: str) -> dict[str, dict[str, str]]:
     container matches the non-container-mode path on the host machine.
     """
     base = container_user_dir(user_id)
-    # When running inside Docker, Path(__file__).parent (/app/src/) refers to
-    # a path inside the container, not on the host. Docker volume mount source
-    # paths are always resolved on the host, so we derive the host-side hooks
-    # path from HOST_DATA_ROOT. Assumes src/ and data/ are siblings on the host.
-    if _running_in_docker():
-        hooks_dir = Path(os.getenv("HOST_DATA_ROOT", str(DATA_ROOT)))
-        # HOST_DATA_ROOT points to data/; hooks live in sibling src/ directory
-        if hooks_dir.name == "data":
-            hooks_dir = hooks_dir.parent / "src" / "hooks"
-        else:
-            hooks_dir = hooks_dir / "hooks"
-    else:
-        hooks_dir = (Path(__file__).parent / "hooks").resolve()
     return {
         # Shared Skills — read-only
         str(HOST_DATA_ROOT / "shared-skills"): {
@@ -150,11 +137,6 @@ def get_user_volumes(user_id: str) -> dict[str, dict[str, str]]:
         str(base / ".claude"): {
             "bind": str(base / ".claude"),
             "mode": "rw",
-        },
-        # Hook scripts
-        str(hooks_dir): {
-            "bind": "/hooks",
-            "mode": "ro",
         },
         # Container logs — persist to host so logs survive container restarts
         str(base / "logs"): {

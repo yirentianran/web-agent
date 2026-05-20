@@ -1,8 +1,7 @@
-"""Clean up redundant JSONL files after SQLite migration.
+"""Clean up redundant files.
 
 Removes:
-- data/.msg-buffer/*.jsonl (duplicate of messages table)
-- data/users/*/.claude/sessions/*.jsonl (duplicate)
+- data/users/*/.claude/sessions/*.jsonl (duplicate of messages table)
 - data/users/*/.claude/sessions/*.meta.json (stale)
 - data/users/*/tasks/*.json (if tasks migrated to DB)
 - data/users/*/memory.json (if memory migrated to DB)
@@ -34,7 +33,6 @@ def main() -> None:
 
     deleted = 0
     bytes_freed = 0
-    dirs_removed = 0
 
     def remove(path: Path, label: str) -> None:
         nonlocal deleted, bytes_freed
@@ -42,13 +40,13 @@ def main() -> None:
             try:
                 if path.is_dir():
                     shutil.rmtree(path)
-                    dirs_removed += 1
                     print(f"  [DEL] dir: {path}")
                 else:
                     size = path.stat().st_size
                     path.unlink()
                     bytes_freed += size
                     print(f"  [DEL] {path}")
+                deleted += 1
             except OSError as e:
                 print(f"  [ERR] {path}: {e}")
         else:
@@ -60,17 +58,7 @@ def main() -> None:
             deleted += 1
             print(f"  [DRY] {path}")
 
-    # 1. msg-buffer JSONL files
-    msg_buffer = data_root / ".msg-buffer"
-    if msg_buffer.exists():
-        for f in sorted(msg_buffer.glob("*.jsonl")):
-            remove(f, "msg-buffer")
-        # Remove dir if empty after cleanup
-        if args.confirm and msg_buffer.exists() and not any(msg_buffer.iterdir()):
-            msg_buffer.rmdir()
-            print(f"  [DEL] dir: {msg_buffer}")
-
-    # 2. User-level .claude sessions
+    # User-level cleanup
     users_dir = data_root / "users"
     if users_dir.exists():
         for user_dir in sorted(users_dir.iterdir()):
@@ -84,12 +72,11 @@ def main() -> None:
                     remove(f, "session-jsonl")
                 for f in sorted(sessions_dir.glob("*.meta.json")):
                     remove(f, "session-meta")
-                # Remove sessions dir if empty
                 if args.confirm and sessions_dir.exists() and not any(sessions_dir.iterdir()):
                     sessions_dir.rmdir()
                     print(f"  [DEL] dir: {sessions_dir}")
 
-            # tasks/*.json (only if DB is confirmed)
+            # tasks/*.json
             tasks_dir = user_dir / "tasks"
             if tasks_dir.exists():
                 for f in sorted(tasks_dir.glob("*.json")):
@@ -104,7 +91,7 @@ def main() -> None:
                 remove(mem_file, "memory-json")
 
     if args.confirm:
-        print(f"\nDone. Deleted {deleted} files, {dirs_removed} dirs. "
+        print(f"\nDone. Deleted {deleted} files. "
               f"Freed {bytes_freed / 1024:.1f} KB.")
     else:
         print(f"\nDry run. Would delete {deleted} files. "

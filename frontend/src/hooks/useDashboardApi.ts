@@ -26,9 +26,10 @@ export interface DailyTokens {
 }
 
 export interface TrendsData {
-  daily_active_users: DailyCount[]
-  daily_sessions: DailyCount[]
-  daily_tokens: DailyTokens[]
+  interval: string
+  active_users: DailyCount[]
+  sessions: DailyCount[]
+  tokens: DailyTokens[]
 }
 
 export interface TopUser {
@@ -78,6 +79,15 @@ async function fetchJson<T>(url: string, token: string): Promise<T> {
   return resp.json() as Promise<T>
 }
 
+function autoInterval(from: string, to: string): string {
+  const days = Math.round(
+    (new Date(to).getTime() - new Date(from).getTime()) / (1000 * 60 * 60 * 24),
+  )
+  if (days <= 0) return '5min'
+  if (days <= 3) return 'hour'
+  return 'day'
+}
+
 export function useDashboardApi(
   initialFrom?: string,
   initialTo?: string,
@@ -88,6 +98,7 @@ export function useDashboardApi(
 
   const [from, setFrom] = useState(initialFromRef.current)
   const [to, setTo] = useState(initialToRef.current)
+  const interval = useMemo(() => autoInterval(from, to), [from, to])
 
   const [overview, setOverview] = useState<AsyncState<OverviewData>>({
     data: null,
@@ -106,7 +117,7 @@ export function useDashboardApi(
   })
 
   const fetchAll = useCallback(
-    (fromDate: string, toDate: string) => {
+    (fromDate: string, toDate: string, interval: string) => {
       setOverview((s) => ({ ...s, loading: true, error: null }))
       setTrends((s) => ({ ...s, loading: true, error: null }))
       setRankings((s) => ({ ...s, loading: true, error: null }))
@@ -123,7 +134,7 @@ export function useDashboardApi(
           }),
         )
 
-      fetchJson<TrendsData>(`${API_BASE}/trends${params}`, authToken)
+      fetchJson<TrendsData>(`${API_BASE}/trends${params}&interval=${interval}`, authToken)
         .then((data) => setTrends({ data, loading: false, error: null }))
         .catch((e: unknown) =>
           setTrends({
@@ -147,8 +158,8 @@ export function useDashboardApi(
   )
 
   useEffect(() => {
-    fetchAll(from, to)
-  }, [from, to, fetchAll])
+    fetchAll(from, to, interval)
+  }, [from, to, interval, fetchAll])
 
   const refetch = useCallback((newFrom: string, newTo: string) => {
     setFrom(newFrom)

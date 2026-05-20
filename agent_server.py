@@ -14,7 +14,6 @@ paths so files inside the container have the same absolute path as on the host:
   {HOST_DATA_ROOT}/users/{uid}/skills        (rw) — user's own skills
   {HOST_DATA_ROOT}/users/{uid}/.claude       (rw) — sessions, memory, settings
   {HOST_DATA_ROOT}/users/{uid}/workspace     (rw) — file workspace
-  /hooks                                     (ro) — PreToolUse/PostToolUse/Stop hook scripts
   {HOST_DATA_ROOT}/users/{uid}/logs          (rw) — container logs
 """
 

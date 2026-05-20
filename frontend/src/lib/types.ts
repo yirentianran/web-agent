@@ -82,7 +82,26 @@ export interface TodoWriteTodo {
   activeForm?: string
 }
 
-export type McpServerType = 'stdio' | 'http'
+export type McpServerType = 'stdio' | 'http' | 'sse' | 'streamable_http'
+
+export interface McpResource {
+  uri: string
+  name: string
+  description: string
+  mimeType?: string
+}
+
+export interface McpPromptArgument {
+  name: string
+  description?: string
+  required?: boolean
+}
+
+export interface McpPrompt {
+  name: string
+  description: string
+  arguments?: McpPromptArgument[]
+}
 
 export interface McpServer {
   name: string
@@ -90,8 +109,11 @@ export interface McpServer {
   command?: string
   args?: string[]
   url?: string
+  headers?: Record<string, string>
   env?: Record<string, string>
   tools: string[]
+  resources: McpResource[]
+  prompts: McpPrompt[]
   description: string
   enabled: boolean
   discoverStatus?: 'connected' | 'disconnected'

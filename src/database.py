@@ -112,8 +112,11 @@ CREATE TABLE IF NOT EXISTS mcp_servers (
     command TEXT,
     args TEXT NOT NULL DEFAULT '[]',
     url TEXT,
+    headers TEXT NOT NULL DEFAULT '{}',
     env TEXT NOT NULL DEFAULT '{}',
     tools TEXT NOT NULL DEFAULT '[]',
+    resources TEXT NOT NULL DEFAULT '[]',
+    prompts TEXT NOT NULL DEFAULT '[]',
     description TEXT NOT NULL DEFAULT '',
     enabled INTEGER NOT NULL DEFAULT 1,
     access TEXT NOT NULL DEFAULT 'all',
@@ -334,6 +337,12 @@ class Database:
         # Add collective intelligence tables (now that connection is valid)
         try:
             await self.migrate_collective_intelligence()
+        except Exception:
+            pass
+
+        # Add MCP resources, prompts, headers columns
+        try:
+            await self.migrate_v3()
         except Exception:
             pass
 
@@ -609,6 +618,24 @@ class Database:
                     await conn.execute("DROP TABLE skills_old")
             except Exception:
                 pass  # Already migrated
+
+    async def migrate_v3(self) -> None:
+        """Add MCP resources, prompts, and headers columns.
+
+        Safe to run on already-migrated databases (all ALTER statements
+        are wrapped in try/except).
+        """
+        async with self.connection() as conn:
+            for col_stmt in [
+                "ALTER TABLE mcp_servers ADD COLUMN headers TEXT NOT NULL DEFAULT '{}'",
+                "ALTER TABLE mcp_servers ADD COLUMN resources TEXT NOT NULL DEFAULT '[]'",
+                "ALTER TABLE mcp_servers ADD COLUMN prompts TEXT NOT NULL DEFAULT '[]'",
+            ]:
+                try:
+                    await conn.execute(col_stmt)
+                except Exception:
+                    pass  # Column already exists
+            await conn.commit()
 
     async def migrate_collective_intelligence(self) -> None:
         """Add collective intelligence tables and FTS5 indexes.

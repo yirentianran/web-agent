@@ -17,6 +17,8 @@ services:
       - ./data:/data
       - ./logs:/app/logs
     user: root  # Required for Docker socket access (per-user container management)
+    extra_hosts:
+      - "host.docker.internal:host-gateway"  # Linux Docker Engine fallback
     restart: unless-stopped
 
 volumes:

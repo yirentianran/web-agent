@@ -1,13 +1,7 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
+import { formatDate, formatDatetime } from "../../lib/dates";
 import "./TimeRangeSelector.css";
-
-function formatDate(d: Date): string {
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const day = String(d.getDate()).padStart(2, "0");
-  return `${y}-${m}-${day}`;
-}
 
 function today(): Date {
   return new Date();
@@ -51,6 +45,15 @@ export default function TimeRangeSelector({ from, to, onChange }: TimeRangeSelec
     }
   }
 
+  function handleCustomClick() {
+    const opening = !showCustom;
+    setShowCustom(opening);
+    if (opening) {
+      setCustomFrom(formatDatetime(new Date(from.includes('T') ? from : `${from}T00:00`)));
+      setCustomTo(formatDatetime(new Date(to.includes('T') ? to : `${to}T23:59`)));
+    }
+  }
+
   function applyCustom() {
     if (customFrom && customTo) {
       setActivePreset("custom");
@@ -72,7 +75,7 @@ export default function TimeRangeSelector({ from, to, onChange }: TimeRangeSelec
         ))}
         <button
           className={`time-range-btn ${activePreset === "custom" ? "active" : ""}`}
-          onClick={() => setShowCustom(!showCustom)}
+          onClick={handleCustomClick}
         >
           {t("dashboard.time.custom")}
         </button>
@@ -82,7 +85,7 @@ export default function TimeRangeSelector({ from, to, onChange }: TimeRangeSelec
           <label>
             {t("dashboard.time.from")}
             <input
-              type="date"
+              type="datetime-local"
               value={customFrom}
               onChange={(e) => setCustomFrom(e.target.value)}
             />
@@ -90,7 +93,7 @@ export default function TimeRangeSelector({ from, to, onChange }: TimeRangeSelec
           <label>
             {t("dashboard.time.to")}
             <input
-              type="date"
+              type="datetime-local"
               value={customTo}
               onChange={(e) => setCustomTo(e.target.value)}
             />

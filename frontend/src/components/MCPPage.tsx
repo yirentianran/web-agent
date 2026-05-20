@@ -24,26 +24,38 @@ function emptyServer(): McpServer {
     command: '',
     args: [],
     url: '',
+    headers: {},
     env: {},
     tools: [],
+    resources: [],
+    prompts: [],
     description: '',
     enabled: true,
   }
 }
 
 function serverToJson(server: McpServer): string {
-  const { name, type, command, args, url, env, tools, description } = server
+  const { name, type, command, args, url, headers, env, tools, resources, prompts, description } = server
   const obj: Record<string, unknown> = { name, type }
   if (type === 'stdio') {
     if (command) obj.command = command
     if (args?.length) obj.args = args
   } else {
     if (url) obj.url = url
+    if (headers && Object.keys(headers).length > 0) obj.headers = headers
   }
   if (env && Object.keys(env).length > 0) obj.env = env
   if (tools.length > 0) obj.tools = tools
+  if (resources.length > 0) obj.resources = resources
+  if (prompts.length > 0) obj.prompts = prompts
   if (description) obj.description = description
   return JSON.stringify(obj, null, 2)
+}
+
+function inferType(srv: Record<string, unknown>): McpServerType {
+  if (srv.url !== undefined && srv.url !== '') return 'streamable_http'
+  if (srv.command !== undefined && srv.command !== '') return 'stdio'
+  return 'stdio'
 }
 
 function jsonToServer(text: string): McpServer {
@@ -59,12 +71,15 @@ function jsonToServer(text: string): McpServer {
     const srv = config as Record<string, unknown>
     return {
       name,
-      type: ((srv.type as string) ?? 'stdio') as McpServerType,
+      type: (srv.type as McpServerType) ?? inferType(srv),
       command: srv.command as string | undefined,
       args: Array.isArray(srv.args) ? srv.args as string[] : [],
       url: srv.url as string | undefined,
+      headers: (srv.headers as Record<string, string>) ?? {},
       env: (srv.env as Record<string, string>) ?? {},
       tools: Array.isArray(srv.tools) ? srv.tools as string[] : [],
+      resources: Array.isArray(srv.resources) ? srv.resources : [],
+      prompts: Array.isArray(srv.prompts) ? srv.prompts : [],
       description: (srv.description as string) ?? '',
       enabled: true,
     }
@@ -73,12 +88,15 @@ function jsonToServer(text: string): McpServer {
   // Single server format: {"name": "...", "type": "stdio", ...}
   return {
     name: parsed.name ?? '',
-    type: (parsed.type ?? 'stdio') as McpServerType,
+    type: (parsed.type as McpServerType) ?? inferType(parsed as Record<string, unknown>),
     command: parsed.command,
     args: parsed.args ?? [],
     url: parsed.url,
+    headers: parsed.headers ?? {},
     env: parsed.env ?? {},
     tools: parsed.tools ?? [],
+    resources: parsed.resources ?? [],
+    prompts: parsed.prompts ?? [],
     description: parsed.description ?? '',
     enabled: true,
   }
@@ -114,6 +132,8 @@ function getPreviewLines(text: string): string[] | null {
     if (target.command) line2.push(`command: ${target.command}`)
     else if (target.url) line2.push(`url: ${target.url}`)
     if (target.tools) line2.push(`${Array.isArray(target.tools) ? target.tools.length : 0} tools`)
+    if (target.resources) line2.push(`${Array.isArray(target.resources) ? target.resources.length : 0} resources`)
+    if (target.prompts) line2.push(`${Array.isArray(target.prompts) ? target.prompts.length : 0} prompts`)
 
     const lines = [line1.join(' | '), line2.join(' | ')].filter(l => l)
     return lines.length > 0 ? lines : null
@@ -354,6 +374,33 @@ export default function MCPPage({ userId: _userId, authToken, onBack }: MCPPageP
                 <div className="mcp-card-tools">
                   <strong>{t('mcp.toolCount', { count: server.tools.length })}</strong>: {server.tools.join(', ')}
                 </div>
+                {server.resources.length > 0 && (
+                  <div className="mcp-card-resources">
+                    <strong>{t('mcp.resourceCount', { count: server.resources.length })}</strong>
+                    <ul className="mcp-card-list">
+                      {server.resources.map((r, i) => (
+                        <li key={i}>
+                          <span className="mcp-resource-uri">{r.uri}</span>
+                          {r.name && <span className="mcp-resource-name"> — {r.name}</span>}
+                          {r.mimeType && <span className="mcp-resource-mime"> [{r.mimeType}]</span>}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+                {server.prompts.length > 0 && (
+                  <div className="mcp-card-prompts">
+                    <strong>{t('mcp.promptCount', { count: server.prompts.length })}</strong>
+                    <ul className="mcp-card-list">
+                      {server.prompts.map((p, i) => (
+                        <li key={i}>
+                          <span className="mcp-prompt-name">{p.name}</span>
+                          {p.description && <span className="mcp-prompt-desc"> — {p.description}</span>}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
                 {connStatus && (
                   <div className={`mcp-conn-status mcp-conn-status--${connStatus.error ? 'error' : 'ok'}`}>
                     {connStatus.error
@@ -389,7 +436,7 @@ export default function MCPPage({ userId: _userId, authToken, onBack }: MCPPageP
                   onChange={(e) => setModal(prev => ({ ...prev, jsonText: e.target.value, error: '' }))}
                   rows={16}
                   spellCheck={false}
-                  placeholder={'{\n  "name": "mineru",\n  "type": "stdio",\n  "command": "uvx",\n  "args": ["mineru-mcp"],\n  "tools": ["parse_pdf"]\n}'}
+                  placeholder={'{\n  "name": "myserver",\n  "type": "stdio",\n  "command": "uvx",\n  "args": ["my-mcp-package"],\n  "tools": ["list_files"]\n}'}
                 />
               </div>
 

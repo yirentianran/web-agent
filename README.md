@@ -68,10 +68,7 @@ Open `http://localhost:8000`.
 cp .env.example .env   # edit with your API key
 ./start-dev.sh
 
-# Windows (PowerShell)
-.\setup.ps1
-cp .env.example .env   # edit with your API key
-.\start-dev.ps1
+# Windows → use WSL2 (recommended) or Docker Desktop
 ```
 
 Backend at `http://127.0.0.1:8000`, frontend dev server at `http://127.0.0.1:3000`. Open the frontend URL in your browser.

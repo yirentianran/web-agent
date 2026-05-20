@@ -45,11 +45,8 @@ RUN uv sync --frozen --no-dev && \
 COPY src/ ./src/
 COPY agent_server.py ./
 
-# Switch back to root for entrypoint (UID/GID adaptation requires root)
+# Switch back to root for UID/GID adaptation (container_manager.py runs as root)
 USER root
-
-# Copy container entrypoint
-COPY entrypoint.sh /
 
 ENV PYTHONUNBUFFERED=1 \
     HOME=/home/agent \
@@ -57,7 +54,7 @@ ENV PYTHONUNBUFFERED=1 \
     UV_FROZEN=true
 
 EXPOSE 8000
-# Don't set USER — entrypoint.sh runs as root to adapt agent UID/GID,
-# then drops privileges with runuser before executing the CMD.
-ENTRYPOINT ["/entrypoint.sh"]
+# When started by container_manager.py, UID/GID adaptation and the actual
+# command are provided inline (os.getuid/os.getgid from host).  The CMD
+# below serves as a fallback for standalone/manual container execution.
 CMD ["uv", "run", "uvicorn", "agent_server:app", "--host", "0.0.0.0", "--port", "8000"]

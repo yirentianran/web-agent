@@ -86,12 +86,35 @@ class TestDashboardTrends:
         )
         assert resp.status_code == 200
         data = resp.json()
-        assert "daily_active_users" in data
-        assert "daily_sessions" in data
-        assert "daily_tokens" in data
-        assert isinstance(data["daily_active_users"], list)
-        assert isinstance(data["daily_sessions"], list)
-        assert isinstance(data["daily_tokens"], list)
+        assert data["interval"] == "day"
+        assert "active_users" in data
+        assert "sessions" in data
+        assert "tokens" in data
+        assert isinstance(data["active_users"], list)
+        assert isinstance(data["sessions"], list)
+        assert isinstance(data["tokens"], list)
+
+    def test_trends_interval_5min(self, client):
+        resp = client.get(
+            "/api/admin/dashboard/trends?from_date=2026-05-20&to_date=2026-05-20&interval=5min"
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["interval"] == "5min"
+
+    def test_trends_interval_hour(self, client):
+        resp = client.get(
+            "/api/admin/dashboard/trends?from_date=2026-05-01&to_date=2026-05-03&interval=hour"
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["interval"] == "hour"
+
+    def test_trends_rejects_invalid_interval(self, client):
+        resp = client.get(
+            "/api/admin/dashboard/trends?from_date=2026-01-01&to_date=2026-01-31&interval=weekly"
+        )
+        assert resp.status_code == 422
 
     def test_trends_empty_for_no_data(self, client):
         resp = client.get(
@@ -99,9 +122,9 @@ class TestDashboardTrends:
         )
         assert resp.status_code == 200
         data = resp.json()
-        assert data["daily_active_users"] == []
-        assert data["daily_sessions"] == []
-        assert data["daily_tokens"] == []
+        assert data["active_users"] == []
+        assert data["sessions"] == []
+        assert data["tokens"] == []
 
     def test_trends_date_item_structure(self, client):
         resp = client.get(
@@ -109,13 +132,13 @@ class TestDashboardTrends:
         )
         assert resp.status_code == 200
         data = resp.json()
-        for item in data["daily_active_users"]:
+        for item in data["active_users"]:
             assert "date" in item
             assert "count" in item
-        for item in data["daily_sessions"]:
+        for item in data["sessions"]:
             assert "date" in item
             assert "count" in item
-        for item in data["daily_tokens"]:
+        for item in data["tokens"]:
             assert "date" in item
             assert "input" in item
             assert "output" in item

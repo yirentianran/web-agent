@@ -6,7 +6,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Any, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 # ── Session Models ──────────────────────────────────────────────────
@@ -103,21 +103,42 @@ class UsageRecord(BaseModel):
 
 class McpServerConfig(BaseModel):
     name: str
-    type: str = "stdio"  # stdio | http
+    type: str = "stdio"  # stdio | http | sse | streamable_http
     command: Optional[str] = None
     args: list[str] = []
     url: Optional[str] = None
+    headers: dict[str, str] = {}
     env: dict[str, str] = {}
     tools: list[str] = []
+    resources: list[dict[str, Any]] = []
+    prompts: list[dict[str, Any]] = []
     description: str = ""
     enabled: bool = True
     access: str = "all"  # all | admin
 
+    @field_validator("resources", mode="before")
+    @classmethod
+    def _coerce_resources(cls, v: Any) -> list[dict[str, Any]]:
+        if v is None:
+            return []
+        if not isinstance(v, list):
+            return []
+        return v
+
+    @field_validator("prompts", mode="before")
+    @classmethod
+    def _coerce_prompts(cls, v: Any) -> list[dict[str, Any]]:
+        if v is None:
+            return []
+        if not isinstance(v, list):
+            return []
+        return v
+
     def model_post_init(self, __context: Any) -> None:
         if self.type == "stdio" and not self.command:
             raise ValueError("command is required for stdio servers")
-        if self.type == "http" and not self.url:
-            raise ValueError("url is required for http servers")
+        if self.type in ("http", "sse", "streamable_http") and not self.url:
+            raise ValueError("url is required for HTTP-based transports")
 
 
 class ToolToggle(BaseModel):

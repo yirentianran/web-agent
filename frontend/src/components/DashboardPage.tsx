@@ -75,14 +75,14 @@ export default function DashboardPage() {
       />
 
       <TokenTrendChart
-        data={api.trends.data?.daily_tokens ?? []}
+        data={api.trends.data?.tokens ?? []}
         loading={api.trends.loading}
         error={api.trends.error}
       />
 
       <ActivityTrendChart
-        dauData={api.trends.data?.daily_active_users ?? []}
-        sessionsData={api.trends.data?.daily_sessions ?? []}
+        dauData={api.trends.data?.active_users ?? []}
+        sessionsData={api.trends.data?.sessions ?? []}
         loading={api.trends.loading}
         error={api.trends.error}
       />
