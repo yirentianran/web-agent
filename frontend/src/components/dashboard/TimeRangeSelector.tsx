@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useTranslation } from "react-i18next";
 import "./TimeRangeSelector.css";
 
 function formatDate(d: Date): string {
@@ -26,17 +27,18 @@ interface TimeRangeSelectorProps {
   onChange: (from: string, to: string) => void;
 }
 
-const PRESETS: { key: TimePreset; label: string; from: () => Date; to: () => Date }[] = [
-  { key: "today", label: "Today", from: today, to: today },
-  { key: "7d", label: "7 Days", from: () => daysAgo(7), to: today },
-  { key: "30d", label: "30 Days", from: () => daysAgo(30), to: today },
-];
-
 export default function TimeRangeSelector({ from, to, onChange }: TimeRangeSelectorProps) {
+  const { t } = useTranslation();
   const [activePreset, setActivePreset] = useState<TimePreset>("30d");
   const [showCustom, setShowCustom] = useState(false);
   const [customFrom, setCustomFrom] = useState(from);
   const [customTo, setCustomTo] = useState(to);
+
+  const PRESETS: { key: TimePreset; label: string; from: () => Date; to: () => Date }[] = [
+    { key: "today", label: t("dashboard.time.today"), from: today, to: today },
+    { key: "7d", label: t("dashboard.time.7days"), from: () => daysAgo(7), to: today },
+    { key: "30d", label: t("dashboard.time.30days"), from: () => daysAgo(30), to: today },
+  ];
 
   function applyPreset(preset: TimePreset) {
     setActivePreset(preset);
@@ -72,13 +74,13 @@ export default function TimeRangeSelector({ from, to, onChange }: TimeRangeSelec
           className={`time-range-btn ${activePreset === "custom" ? "active" : ""}`}
           onClick={() => setShowCustom(!showCustom)}
         >
-          Custom
+          {t("dashboard.time.custom")}
         </button>
       </div>
       {showCustom && (
         <div className="time-range-custom">
           <label>
-            From:
+            {t("dashboard.time.from")}
             <input
               type="date"
               value={customFrom}
@@ -86,7 +88,7 @@ export default function TimeRangeSelector({ from, to, onChange }: TimeRangeSelec
             />
           </label>
           <label>
-            To:
+            {t("dashboard.time.to")}
             <input
               type="date"
               value={customTo}
@@ -94,7 +96,7 @@ export default function TimeRangeSelector({ from, to, onChange }: TimeRangeSelec
             />
           </label>
           <button className="time-range-btn apply" onClick={applyCustom}>
-            Apply
+            {t("dashboard.time.apply")}
           </button>
         </div>
       )}

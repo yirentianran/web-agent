@@ -1,3 +1,4 @@
+import { useTranslation } from "react-i18next";
 import type { OverviewData } from "../../hooks/useDashboardApi";
 import "./OverviewCards.css";
 
@@ -27,8 +28,10 @@ interface OverviewCardsProps {
 }
 
 export default function OverviewCards({ data, previousData, loading, error }: OverviewCardsProps) {
+  const { t } = useTranslation();
+
   if (error) {
-    return <div className="overview-error">Failed to load overview: {error}</div>;
+    return <div className="overview-error">{t("dashboard.overview.loadFailed", { error })}</div>;
   }
 
   const totalTokens = data
@@ -40,31 +43,31 @@ export default function OverviewCards({ data, previousData, loading, error }: Ov
 
   const cards = [
     {
-      label: "Active Users",
+      label: t("dashboard.overview.activeUsers"),
       value: loading ? "—" : String(data?.active_users ?? 0),
       delta: data && previousData ? formatDelta(data.active_users, previousData.active_users) : "",
       deltaCls: data && previousData ? deltaClass(data.active_users, previousData.active_users) : "",
     },
     {
-      label: "Total Users",
+      label: t("dashboard.overview.totalUsers"),
       value: loading ? "—" : String(data?.total_users ?? 0),
       delta: "",
       deltaCls: "",
     },
     {
-      label: "New Users",
+      label: t("dashboard.overview.newUsers"),
       value: loading ? "—" : `+${data?.new_users ?? 0}`,
       delta: data && previousData ? formatDelta(data.new_users, previousData.new_users) : "",
       deltaCls: data && previousData ? deltaClass(data.new_users, previousData.new_users) : "",
     },
     {
-      label: "Total Sessions",
+      label: t("dashboard.overview.totalSessions"),
       value: loading ? "—" : String(data?.total_sessions ?? 0),
       delta: data && previousData ? formatDelta(data.total_sessions, previousData.total_sessions) : "",
       deltaCls: data && previousData ? deltaClass(data.total_sessions, previousData.total_sessions) : "",
     },
     {
-      label: "Token Usage",
+      label: t("dashboard.overview.tokenUsage"),
       value: loading ? "—" : formatTokens(totalTokens),
       delta: data && previousData ? formatDelta(totalTokens, prevTotalTokens) : "",
       deltaCls: data && previousData ? deltaClass(totalTokens, prevTotalTokens) : "",

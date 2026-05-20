@@ -1,4 +1,5 @@
 import { useEffect, useState, type ComponentType } from "react";
+import { useTranslation } from "react-i18next";
 import type { DailyCount } from "../../hooks/useDashboardApi";
 
 interface ActivityTrendChartProps {
@@ -30,6 +31,7 @@ export default function ActivityTrendChart({
   loading,
   error,
 }: ActivityTrendChartProps) {
+  const { t } = useTranslation();
   const [ChartComponents, setChartComponents] = useState<ChartComponents | null>(null);
 
   useEffect(() => {
@@ -55,18 +57,18 @@ export default function ActivityTrendChart({
   if (error) {
     return (
       <div className="chart-error">
-        Failed to load activity trends: {error}
+        {t("dashboard.chart.activityLoadFailed", { error })}
       </div>
     );
   }
 
   if (loading || !ChartComponents) {
-    return <div className="chart-loading">Loading chart...</div>;
+    return <div className="chart-loading">{t("dashboard.chart.loading")}</div>;
   }
 
   if (dauData.length === 0 && sessionsData.length === 0) {
     return (
-      <div className="chart-empty">No activity data for selected period</div>
+      <div className="chart-empty">{t("dashboard.chart.noActivityData")}</div>
     );
   }
 
@@ -97,7 +99,7 @@ export default function ActivityTrendChart({
 
   return (
     <div className="dashboard-chart">
-      <h3 className="chart-title">Active Users & Sessions</h3>
+      <h3 className="chart-title">{t("dashboard.chart.activityTrends")}</h3>
       <ResponsiveContainer width="100%" height={300}>
         <LineChart
           data={merged}
@@ -110,7 +112,7 @@ export default function ActivityTrendChart({
           <Line
             type="monotone"
             dataKey="dau"
-            name="Daily Active Users"
+            name={t("dashboard.chart.dau")}
             stroke="#4f46e5"
             strokeWidth={2}
             dot={false}
@@ -118,7 +120,7 @@ export default function ActivityTrendChart({
           <Line
             type="monotone"
             dataKey="sessions"
-            name="Sessions"
+            name={t("dashboard.chart.sessions")}
             stroke="#16a34a"
             strokeWidth={2}
             dot={false}

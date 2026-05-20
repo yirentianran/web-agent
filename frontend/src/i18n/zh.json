@@ -54,6 +54,7 @@
     "mcpServers": "MCP 服务器",
     "feedbackManagement": "反馈管理",
     "skillEvolution": "技能进化",
+    "usageDashboard": "使用统计",
     "logout": "退出登录"
   },
   "theme": {
@@ -244,5 +245,67 @@
     "submitted": "回答已提交",
     "submitError": "提交回答失败",
     "submitButton": "提交"
+  },
+  "dashboard": {
+    "title": "使用统计",
+    "time": {
+      "today": "今天",
+      "7days": "7 天",
+      "30days": "30 天",
+      "custom": "自定义",
+      "from": "从:",
+      "to": "至:",
+      "apply": "应用"
+    },
+    "overview": {
+      "activeUsers": "活跃用户",
+      "totalUsers": "总用户数",
+      "newUsers": "新增用户",
+      "totalSessions": "总会话数",
+      "tokenUsage": "Token 用量",
+      "loadFailed": "加载概览失败: {{error}}"
+    },
+    "chart": {
+      "tokenTrends": "Token 消耗趋势",
+      "input": "输入",
+      "output": "输出",
+      "cacheRead": "缓存读取",
+      "cacheWrite": "缓存写入",
+      "loading": "加载图表中...",
+      "noTokenData": "所选时段无 Token 数据",
+      "tokenLoadFailed": "加载 Token 趋势失败: {{error}}",
+      "activityTrends": "活跃用户与会话",
+      "dau": "日活跃用户",
+      "sessions": "会话数",
+      "noActivityData": "所选时段无活动数据",
+      "activityLoadFailed": "加载活动趋势失败: {{error}}"
+    },
+    "ranking": {
+      "topUsers": "用户 Token 消耗排行",
+      "topSkills": "技能使用排行",
+      "rank": "#",
+      "user": "用户",
+      "tokens": "Token",
+      "sessions": "会话",
+      "skill": "技能",
+      "uses": "使用次数",
+      "users": "用户数",
+      "noData": "所选时段无数据",
+      "userLoadFailed": "加载用户排行失败: {{error}}",
+      "skillLoadFailed": "加载技能排行失败: {{error}}"
+    },
+    "resources": {
+      "title": "容器资源",
+      "user": "用户",
+      "container": "容器",
+      "cpu": "CPU",
+      "mem": "内存",
+      "disk": "磁盘",
+      "status": "状态",
+      "running": "运行中",
+      "loading": "加载资源中...",
+      "unavailable": "资源不可用: {{error}}",
+      "noContainers": "无运行中的容器"
+    }
   }
 }

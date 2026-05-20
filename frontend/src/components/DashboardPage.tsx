@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
+import { useTranslation } from "react-i18next";
 import { useDashboardApi, type OverviewData } from "../hooks/useDashboardApi";
 import { formatDate, daysAgoStr, todayStr } from "../lib/dates";
 import TimeRangeSelector from "./dashboard/TimeRangeSelector";
@@ -12,6 +13,7 @@ import ResourcePanel from "./dashboard/ResourcePanel";
 import "./dashboard/dashboard.css";
 
 export default function DashboardPage() {
+  const { t } = useTranslation();
   const navigate = useNavigate();
   const [timeRange, setTimeRange] = useState({ from: daysAgoStr(30), to: todayStr() });
 
@@ -53,11 +55,11 @@ export default function DashboardPage() {
   return (
     <div className="dashboard-page">
       <button className="dashboard-back" onClick={() => navigate("/")}>
-        ← Back
+        {t("common.back")}
       </button>
 
       <div className="dashboard-header">
-        <h2>Usage Dashboard</h2>
+        <h2>{t("dashboard.title")}</h2>
         <TimeRangeSelector
           from={timeRange.from}
           to={timeRange.to}

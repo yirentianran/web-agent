@@ -54,6 +54,7 @@
     "mcpServers": "MCP Servers",
     "feedbackManagement": "Feedback Management",
     "skillEvolution": "Skill Evolution",
+    "usageDashboard": "Usage Dashboard",
     "logout": "Logout"
   },
   "theme": {
@@ -244,5 +245,67 @@
     "submitted": "Answer submitted",
     "submitError": "Failed to submit answer",
     "submitButton": "Submit"
+  },
+  "dashboard": {
+    "title": "Usage Dashboard",
+    "time": {
+      "today": "Today",
+      "7days": "7 Days",
+      "30days": "30 Days",
+      "custom": "Custom",
+      "from": "From:",
+      "to": "To:",
+      "apply": "Apply"
+    },
+    "overview": {
+      "activeUsers": "Active Users",
+      "totalUsers": "Total Users",
+      "newUsers": "New Users",
+      "totalSessions": "Total Sessions",
+      "tokenUsage": "Token Usage",
+      "loadFailed": "Failed to load overview: {{error}}"
+    },
+    "chart": {
+      "tokenTrends": "Token Consumption Trends",
+      "input": "Input",
+      "output": "Output",
+      "cacheRead": "Cache Read",
+      "cacheWrite": "Cache Write",
+      "loading": "Loading chart...",
+      "noTokenData": "No token data for selected period",
+      "tokenLoadFailed": "Failed to load token trends: {{error}}",
+      "activityTrends": "Active Users & Sessions",
+      "dau": "Daily Active Users",
+      "sessions": "Sessions",
+      "noActivityData": "No activity data for selected period",
+      "activityLoadFailed": "Failed to load activity trends: {{error}}"
+    },
+    "ranking": {
+      "topUsers": "Top Users by Token Consumption",
+      "topSkills": "Top Skills by Usage",
+      "rank": "#",
+      "user": "User",
+      "tokens": "Tokens",
+      "sessions": "Sessions",
+      "skill": "Skill",
+      "uses": "Uses",
+      "users": "Users",
+      "noData": "No data for selected period",
+      "userLoadFailed": "Failed to load user rankings: {{error}}",
+      "skillLoadFailed": "Failed to load skill rankings: {{error}}"
+    },
+    "resources": {
+      "title": "Container Resources",
+      "user": "User",
+      "container": "Container",
+      "cpu": "CPU",
+      "mem": "Mem",
+      "disk": "Disk",
+      "status": "St",
+      "running": "Running",
+      "loading": "Loading resources...",
+      "unavailable": "Resources unavailable: {{error}}",
+      "noContainers": "No running containers"
+    }
   }
 }

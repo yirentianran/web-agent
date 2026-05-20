@@ -1,3 +1,4 @@
+import { useTranslation } from "react-i18next";
 import type { TopUser } from "../../hooks/useDashboardApi";
 
 function formatTokens(n: number): string {
@@ -13,25 +14,27 @@ interface UserRankingTableProps {
 }
 
 export default function UserRankingTable({ data, loading, error }: UserRankingTableProps) {
+  const { t } = useTranslation();
+
   if (error) {
-    return <div className="ranking-error">Failed to load user rankings: {error}</div>;
+    return <div className="ranking-error">{t("dashboard.ranking.userLoadFailed", { error })}</div>;
   }
 
   return (
     <div className="ranking-panel">
-      <h3 className="ranking-title">Top Users by Token Consumption</h3>
+      <h3 className="ranking-title">{t("dashboard.ranking.topUsers")}</h3>
       {loading ? (
-        <div className="ranking-loading">Loading...</div>
+        <div className="ranking-loading">{t("common.loading")}</div>
       ) : data.length === 0 ? (
-        <div className="ranking-empty">No data for selected period</div>
+        <div className="ranking-empty">{t("dashboard.ranking.noData")}</div>
       ) : (
         <table className="ranking-table">
           <thead>
             <tr>
-              <th>#</th>
-              <th>User</th>
-              <th className="right">Tokens</th>
-              <th className="right">Sessions</th>
+              <th>{t("dashboard.ranking.rank")}</th>
+              <th>{t("dashboard.ranking.user")}</th>
+              <th className="right">{t("dashboard.ranking.tokens")}</th>
+              <th className="right">{t("dashboard.ranking.sessions")}</th>
             </tr>
           </thead>
           <tbody>

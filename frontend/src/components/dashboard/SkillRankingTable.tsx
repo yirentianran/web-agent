@@ -1,3 +1,4 @@
+import { useTranslation } from "react-i18next";
 import type { TopSkill } from "../../hooks/useDashboardApi";
 
 interface SkillRankingTableProps {
@@ -7,25 +8,27 @@ interface SkillRankingTableProps {
 }
 
 export default function SkillRankingTable({ data, loading, error }: SkillRankingTableProps) {
+  const { t } = useTranslation();
+
   if (error) {
-    return <div className="ranking-error">Failed to load skill rankings: {error}</div>;
+    return <div className="ranking-error">{t("dashboard.ranking.skillLoadFailed", { error })}</div>;
   }
 
   return (
     <div className="ranking-panel">
-      <h3 className="ranking-title">Top Skills by Usage</h3>
+      <h3 className="ranking-title">{t("dashboard.ranking.topSkills")}</h3>
       {loading ? (
-        <div className="ranking-loading">Loading...</div>
+        <div className="ranking-loading">{t("common.loading")}</div>
       ) : data.length === 0 ? (
-        <div className="ranking-empty">No data for selected period</div>
+        <div className="ranking-empty">{t("dashboard.ranking.noData")}</div>
       ) : (
         <table className="ranking-table">
           <thead>
             <tr>
-              <th>#</th>
-              <th>Skill</th>
-              <th className="right">Uses</th>
-              <th className="right">Users</th>
+              <th>{t("dashboard.ranking.rank")}</th>
+              <th>{t("dashboard.ranking.skill")}</th>
+              <th className="right">{t("dashboard.ranking.uses")}</th>
+              <th className="right">{t("dashboard.ranking.users")}</th>
             </tr>
           </thead>
           <tbody>

@@ -50,7 +50,7 @@ export default function SettingsMenu({ onOpenSkills, onOpenFeedback, onOpenEvolu
           {isAdmin && (
             <button className="settings-menu-item" role="menuitem" onClick={() => handleAction(onOpenDashboard)} type="button">
               <span className="settings-menu-item-icon">📊</span>
-              Usage Dashboard
+              {t('header.usageDashboard')}
             </button>
           )}
           {isAdmin && (

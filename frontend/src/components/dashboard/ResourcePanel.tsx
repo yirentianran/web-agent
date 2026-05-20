@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import { useTranslation } from "react-i18next";
 import "./ResourcePanel.css";
 
 interface ContainerInfo {
@@ -32,6 +33,7 @@ function statusDot(status: string): string {
 }
 
 export default function ResourcePanel() {
+  const { t } = useTranslation();
   const [data, setData] = useState<ResourcesData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -60,10 +62,10 @@ export default function ResourcePanel() {
       });
   }, [token]);
 
-  if (loading) return <div className="resource-loading">Loading resources...</div>;
-  if (error) return <div className="resource-empty">Resources unavailable: {error}</div>;
+  if (loading) return <div className="resource-loading">{t("dashboard.resources.loading")}</div>;
+  if (error) return <div className="resource-empty">{t("dashboard.resources.unavailable", { error })}</div>;
   if (!data || Object.keys(data).length === 0) {
-    return <div className="resource-empty">No running containers</div>;
+    return <div className="resource-empty">{t("dashboard.resources.noContainers")}</div>;
   }
 
   const entries = Object.entries(data);
@@ -74,26 +76,26 @@ export default function ResourcePanel() {
 
   return (
     <div className="resource-panel">
-      <h3 className="chart-title">Container Resources</h3>
+      <h3 className="chart-title">{t("dashboard.resources.title")}</h3>
       <div className="resource-summary">
-        <span className="resource-stat">● Running: {entries.length}</span>
-        <span className="resource-stat">CPU: {totalCpu.toFixed(1)}%</span>
+        <span className="resource-stat">● {t("dashboard.resources.running")}: {entries.length}</span>
+        <span className="resource-stat">{t("dashboard.resources.cpu")}: {totalCpu.toFixed(1)}%</span>
         <span className="resource-stat">
-          Mem: {(totalMem / 1024).toFixed(1)} GB
+          {t("dashboard.resources.mem")}: {(totalMem / 1024).toFixed(1)} GB
         </span>
         <span className="resource-stat">
-          Disk: {totalDisk.toFixed(1)} / {totalDiskMax.toFixed(0)} GB
+          {t("dashboard.resources.disk")}: {totalDisk.toFixed(1)} / {totalDiskMax.toFixed(0)} GB
         </span>
       </div>
       <table className="resource-table">
         <thead>
           <tr>
-            <th>User</th>
-            <th>Container</th>
-            <th className="right">CPU</th>
-            <th className="right">Mem</th>
-            <th className="right">Disk</th>
-            <th className="center">St</th>
+            <th>{t("dashboard.resources.user")}</th>
+            <th>{t("dashboard.resources.container")}</th>
+            <th className="right">{t("dashboard.resources.cpu")}</th>
+            <th className="right">{t("dashboard.resources.mem")}</th>
+            <th className="right">{t("dashboard.resources.disk")}</th>
+            <th className="center">{t("dashboard.resources.status")}</th>
           </tr>
         </thead>
         <tbody>
