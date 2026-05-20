@@ -77,3 +77,47 @@ class TestDashboardOverview:
         """No params should default to last 30 days."""
         resp = client.get("/api/admin/dashboard/overview")
         assert resp.status_code == 200
+
+
+class TestDashboardTrends:
+    def test_trends_returns_expected_structure(self, client):
+        resp = client.get(
+            "/api/admin/dashboard/trends?from_date=2026-01-01&to_date=2026-01-31"
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "daily_active_users" in data
+        assert "daily_sessions" in data
+        assert "daily_tokens" in data
+        assert isinstance(data["daily_active_users"], list)
+        assert isinstance(data["daily_sessions"], list)
+        assert isinstance(data["daily_tokens"], list)
+
+    def test_trends_empty_for_no_data(self, client):
+        resp = client.get(
+            "/api/admin/dashboard/trends?from_date=2020-01-01&to_date=2020-01-31"
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["daily_active_users"] == []
+        assert data["daily_sessions"] == []
+        assert data["daily_tokens"] == []
+
+    def test_trends_date_item_structure(self, client):
+        resp = client.get(
+            "/api/admin/dashboard/trends?from_date=2026-01-01&to_date=2026-01-31"
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        for item in data["daily_active_users"]:
+            assert "date" in item
+            assert "count" in item
+        for item in data["daily_sessions"]:
+            assert "date" in item
+            assert "count" in item
+        for item in data["daily_tokens"]:
+            assert "date" in item
+            assert "input" in item
+            assert "output" in item
+            assert "cache_read" in item
+            assert "cache_write" in item

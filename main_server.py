@@ -4796,6 +4796,90 @@ async def dashboard_overview(
     }
 
 
+@app.get("/api/admin/dashboard/trends")
+async def dashboard_trends(
+    from_date: str | None = None,
+    to_date: str | None = None,
+    current_user: str = Depends(require_admin),
+) -> dict[str, Any]:
+    """Daily trends for dashboard charts (active users, sessions, tokens)."""
+    from datetime import date, timedelta
+
+    today = date.today()
+    try:
+        to_dt = date.fromisoformat(to_date) if to_date else today
+        from_dt = date.fromisoformat(from_date) if from_date else today - timedelta(days=30)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=f"Invalid date format: {e}")
+
+    if from_dt > to_dt:
+        raise HTTPException(status_code=422, detail="from_date must be <= to_date")
+    if (to_dt - from_dt).days > 365:
+        raise HTTPException(status_code=422, detail="Date range must not exceed 365 days")
+
+    from_str = from_dt.isoformat()
+    to_str = to_dt.isoformat()
+
+    if _db is None:
+        return {
+            "daily_active_users": [],
+            "daily_sessions": [],
+            "daily_tokens": [],
+        }
+
+    async with _db.connection() as conn:
+        # Daily active users
+        cursor = await conn.execute(
+            "SELECT date(last_active_at) as d, COUNT(DISTINCT user_id) "
+            "FROM sessions WHERE last_active_at >= ? AND last_active_at <= ? "
+            "GROUP BY d ORDER BY d",
+            (from_str, to_str),
+        )
+        rows = await cursor.fetchall()
+        daily_active_users = [{"date": r[0], "count": r[1]} for r in rows]
+
+        # Daily sessions
+        cursor = await conn.execute(
+            "SELECT date(created_at) as d, COUNT(*) "
+            "FROM sessions WHERE created_at >= ? AND created_at <= ? "
+            "GROUP BY d ORDER BY d",
+            (from_str, to_str),
+        )
+        rows = await cursor.fetchall()
+        daily_sessions = [{"date": r[0], "count": r[1]} for r in rows]
+
+        # Daily tokens
+        cursor = await conn.execute(
+            "SELECT date(m.created_at) as d, "
+            "COALESCE(SUM(CAST(json_extract(m.usage, '$.input_tokens') AS INTEGER)), 0), "
+            "COALESCE(SUM(CAST(json_extract(m.usage, '$.output_tokens') AS INTEGER)), 0), "
+            "COALESCE(SUM(CAST(json_extract(m.usage, '$.cache_read_tokens') AS INTEGER)), 0), "
+            "COALESCE(SUM(CAST(json_extract(m.usage, '$.cache_write_tokens') AS INTEGER)), 0) "
+            "FROM messages m "
+            "JOIN sessions s ON m.session_id = s.session_id "
+            "WHERE m.created_at >= ? AND m.created_at <= ? "
+            "GROUP BY d ORDER BY d",
+            (from_str, to_str),
+        )
+        rows = await cursor.fetchall()
+        daily_tokens = [
+            {
+                "date": r[0],
+                "input": r[1],
+                "output": r[2],
+                "cache_read": r[3],
+                "cache_write": r[4],
+            }
+            for r in rows
+        ]
+
+    return {
+        "daily_active_users": daily_active_users,
+        "daily_sessions": daily_sessions,
+        "daily_tokens": daily_tokens,
+    }
+
+
 @app.get("/api/admin/skills/analytics")
 async def get_all_skills_analytics(
     current_user: str = Depends(require_admin),
