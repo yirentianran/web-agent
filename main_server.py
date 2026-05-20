@@ -27,6 +27,7 @@ import time
 import uuid
 import zipfile
 from collections.abc import Iterator
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from io import BytesIO
 from pathlib import Path
@@ -41,8 +42,17 @@ from pydantic import BaseModel
 
 from src.admin_auth import require_admin
 from src.auth import create_token, get_current_user, verify_path_user, verify_token
-from src.workspace_enforcement import normalize_write_path
-from src.constants import BUILTIN_TOOLS, DISABLED_TOOLS
+from src.security_filter import BashCommandFilter, FileAccessFilter
+from src.workspace_enforcement import (
+    HostPaths,
+    check_bash_command_for_external_writes as _ws_check_bash,
+    is_path_within_user_dir as _ws_is_path_within_user_dir,
+    is_path_within_workspace as _ws_is_path_within_workspace,
+    normalize_write_path,
+    rewrite_path_to_workspace as _ws_rewrite_path,
+    _rewrite_bash_command as _ws_rewrite_bash_cmd,
+)
+from src.constants import BUILTIN_TOOLS, DISABLED_TOOLS, CONTAINER_MODE
 from src.message_buffer import HEARTBEAT_INTERVAL, MessageBuffer, make_heartbeat
 from src.models import (
     McpServerConfig,
@@ -226,9 +236,8 @@ async def cleanup_session_client(session_id: str) -> None:
     pass
 
 
-# ── Container mode toggle ─────────────────────────────────────────
-
-CONTAINER_MODE = os.getenv("CONTAINER_MODE", "false").lower() == "true"
+# ── Container mode ────────────────────────────────────────────────
+# CONTAINER_MODE is imported from src.constants (single source of truth)
 
 # Lazy import: only needed when CONTAINER_MODE is enabled
 _container_manager = None
@@ -453,30 +462,23 @@ def build_file_generation_rules_prompt(workspace: Path) -> str:
     )
 
 
+@dataclass(frozen=True)
+class _SimplePaths:
+    """Adapter for workspace_enforcement PathContext protocol — two-field paths."""
+
+    workspace: Path
+    user_dir: Path
+
+
 def is_path_within_workspace(file_path: str, workspace: Path) -> bool:
     """Check if a file path (relative or absolute) resolves within the workspace."""
-    path = Path(file_path)
-    if path.is_absolute():
-        resolved = path.resolve()
-    else:
-        resolved = (workspace / path).resolve()
-    return str(resolved).startswith(str(workspace.resolve()))
+    return _ws_is_path_within_workspace(file_path, _SimplePaths(workspace, workspace))
 
 
 def is_path_within_user_dir(file_path: str, user_id: str) -> bool:
-    """Check if a file path resolves within the user's data directory.
-
-    Broader than is_path_within_workspace — also permits access to
-    outputs/ and other subdirectories under the user's isolated data root.
-    """
-    user_dir = user_data_dir(user_id)
-    workspace = user_workspace_dir(user_id)
-    path = Path(file_path)
-    if path.is_absolute():
-        resolved = path.resolve()
-    else:
-        resolved = (workspace / path).resolve()
-    return str(resolved).startswith(str(user_dir.resolve()))
+    """Check if a file path resolves within the user's data directory."""
+    paths = HostPaths(user_id=user_id, data_root=DATA_ROOT)
+    return _ws_is_path_within_user_dir(file_path, paths)
 
 
 async def _summarize_and_store_session(session_id: str, user_id: str) -> None:
@@ -758,71 +760,17 @@ def check_bash_command_for_external_writes(cmd: str, workspace: Path, user_dir: 
     """Return an error message if the command writes outside workspace, or None if safe."""
     if user_dir is None:
         user_dir = workspace
-    # Patterns that indicate writes to paths outside the workspace
-    outside_patterns = [
-        r"(?:>\s*|\w+\s+)(/Users/[^\s'\"]+)",
-        r"(?:>\s*|\w+\s+)(/tmp/[^\s'\"]+)",
-        r"(?:>\s*|\w+\s+)(/home/[^\s'\"]+)",
-        r"(?:>\s*|\w+\s+)(/var/[^\s'\"]+)",
-        r"(?:>\s*|\w+\s+)(/etc/[^\s'\"]+)",
-        r"(?:>\s*|\w+\s+)(/root/[^\s'\"]+)",
-    ]
-    _user_dir_str = str(user_dir.resolve())
-    for pat in outside_patterns:
-        match = re.search(pat, cmd)
-        if match:
-            target = match.group(1) if match.lastindex else match.group(0)
-            target_path = Path(target)
-            # Allow writes inside the user's isolated data directory
-            if target_path.is_absolute() and str(target_path.resolve()).startswith(_user_dir_str):
-                continue
-            return (
-                f"Command writes to '{target}' which is outside the workspace. "
-                "Save all files within the workspace directory (use outputs/ for generated files)."
-            )
-    return None
+    return _ws_check_bash(cmd, _SimplePaths(workspace, user_dir))
 
 
 def rewrite_path_to_workspace(file_path: str, workspace: Path) -> str:
     """Rewrite an absolute external path to a workspace-relative path under outputs/."""
-    path = Path(file_path)
-    if not path.is_absolute():
-        return file_path  # Relative paths are fine — already within workspace
-    resolved = path.resolve()
-    ws = workspace.resolve()
-    if str(resolved).startswith(str(ws)):
-        return file_path  # Already within workspace
-    # External absolute path → rewrite to outputs/<filename>
-    return f"outputs/{path.name}"
+    return _ws_rewrite_path(file_path, _SimplePaths(workspace, workspace))
 
 
 def _rewrite_bash_command(cmd: str, workspace: Path) -> str:
     """Rewrite a bash command so that output redirections point inside workspace."""
-    ws = str(workspace.resolve())
-
-    def replace_external_path(match: re.Match) -> str:
-        # Group 2 is always the path; group 1 is the operator (> , >> , -o , etc.)
-        target = match.group(2)
-        target_path = Path(target)
-        if target_path.is_absolute() and not str(target_path.resolve()).startswith(ws):
-            replacement = f"outputs/{target_path.name}"
-            return match.group(0).replace(target, replacement, 1)
-        return match.group(0)
-
-    # Patterns: > path, >> path, -o path, --output path, >'path', >"path"
-    # Group 1 = operator prefix, Group 2 = target path
-    patterns = [
-        r'(>\s*)(/[^\s\'"]+)',  # > /path/to/file
-        r'(>>\s*)(/[^\s\'"]+)',  # >> /path/to/file
-        r'(-o\s+)(/[^\s\'"]+)',  # -o /path/to/file
-        r'(--output\s+)(/[^\s\'"]+)',  # --output /path/to/file
-        r"(>\s*\'(/[^\']+)\')",  # > '/path/to/file'
-        r'(>\s*"(/[^"]+)")',  # > "/path/to/file"
-    ]
-    result = cmd
-    for pat in patterns:
-        result = re.sub(pat, replace_external_path, result)
-    return result
+    return _ws_rewrite_bash_cmd(cmd, _SimplePaths(workspace, workspace))
 
 
 def _load_extraction_rules() -> str:
@@ -1411,24 +1359,18 @@ async def _build_sdk_config(
     project_skills = workspace / ".claude" / "skills"
     await _sync_shared_skills(project_skills)
 
-    # SDK env
+    # SDK env — per-user token override works in both modes
     sdk_env: dict[str, str] = {}
+    api_key = (
+        os.getenv(f"ANTHROPIC_AUTH_TOKEN_{user_id.upper()}")
+        or os.getenv("ANTHROPIC_AUTH_TOKEN")
+        or os.getenv("ANTHROPIC_API_KEY")
+        or ""
+    )
+    if api_key:
+        sdk_env["ANTHROPIC_AUTH_TOKEN"] = api_key
     if user_data_dir_override:
-        # Local mode: use global token + isolate HOME
-        api_key = os.getenv("ANTHROPIC_AUTH_TOKEN") or os.getenv("ANTHROPIC_API_KEY")
-        if api_key:
-            sdk_env["ANTHROPIC_AUTH_TOKEN"] = api_key
         sdk_env["HOME"] = str(user_data_dir_override.resolve())
-    else:
-        # Container mode: per-user token override
-        api_key = (
-            os.getenv(f"ANTHROPIC_AUTH_TOKEN_{user_id.upper()}")
-            or os.getenv("ANTHROPIC_AUTH_TOKEN")
-            or os.getenv("ANTHROPIC_API_KEY")
-            or ""
-        )
-        if api_key:
-            sdk_env["ANTHROPIC_AUTH_TOKEN"] = api_key
 
     base_url = os.getenv("ANTHROPIC_BASE_URL", "")
     if base_url:
@@ -1640,7 +1582,7 @@ async def build_sdk_options(
     )
 
 
-def message_to_dicts(msg: Any) -> Iterator[dict[str, Any]]:
+def message_to_dicts(msg: Any, model: str | None = None) -> Iterator[dict[str, Any]]:
     """Convert a Claude SDK Message dataclass to one or more serializable dicts.
 
     An ``AssistantMessage`` may contain multiple content blocks (e.g. a
@@ -1684,6 +1626,8 @@ def message_to_dicts(msg: Any) -> Iterator[dict[str, Any]]:
             result["total_cost_usd"] = msg.total_cost_usd
         if msg.usage:
             result["usage"] = msg.usage
+            if model:
+                result["usage"]["model"] = model
         if msg.result:
             result["content"] = msg.result
         if msg.session_id:
@@ -1700,6 +1644,8 @@ def message_to_dicts(msg: Any) -> Iterator[dict[str, Any]]:
         }
         if msg.usage:
             result["cost_usd"] = msg.usage.get("total_cost_usd", 0)
+            if model:
+                msg.usage["model"] = model
         yield result
         return
 
@@ -1710,6 +1656,8 @@ def message_to_dicts(msg: Any) -> Iterator[dict[str, Any]]:
         }
         if msg.usage:
             result["cost_usd"] = msg.usage.get("total_cost_usd", 0)
+            if model:
+                msg.usage["model"] = model
         if msg.data:
             result.update(msg.data)
         yield result
@@ -2179,6 +2127,17 @@ async def run_agent_task(
             error = check_bash_command_for_external_writes(cmd, workspace, user_dir)
             if error:
                 return PermissionResultDeny(message=error)
+            allowed, reason = BashCommandFilter.check(cmd)
+            if not allowed:
+                return PermissionResultDeny(message=reason)
+
+        # Block file reads of sensitive files
+        if tool_name == "Read":
+            file_path = str(tool_input.get("file_path", ""))
+            if file_path:
+                allowed, reason = FileAccessFilter.check(file_path)
+                if not allowed:
+                    return PermissionResultDeny(message=reason)
 
         agent_log.tool_call(tool_name, tool_input, session_id=session_id)
         result = await _can_use_tool_for_session(session_id, tool_name, tool_input, ctx, user_id)
@@ -2258,7 +2217,7 @@ async def run_agent_task(
         async for msg in client.receive_response():
             msg_count += 1
             logger.debug("[AGENT_TASK] Received message #%d: type=%s", msg_count, type(msg).__name__)
-            for event in message_to_dicts(msg):
+            for event in message_to_dicts(msg, model=options.model):
                 # User message already persisted at function start — skip duplicates from agent response
                 if event.get("type") == "user":
                     continue
