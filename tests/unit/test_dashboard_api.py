@@ -121,3 +121,47 @@ class TestDashboardTrends:
             assert "output" in item
             assert "cache_read" in item
             assert "cache_write" in item
+
+
+class TestDashboardRankings:
+    def test_rankings_returns_expected_structure(self, client):
+        resp = client.get(
+            "/api/admin/dashboard/rankings?from_date=2026-01-01&to_date=2026-01-31"
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "top_users" in data
+        assert "top_skills" in data
+        assert isinstance(data["top_users"], list)
+        assert isinstance(data["top_skills"], list)
+
+    def test_rankings_empty_for_no_data(self, client):
+        resp = client.get(
+            "/api/admin/dashboard/rankings?from_date=2020-01-01&to_date=2020-01-31"
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["top_users"] == []
+        assert data["top_skills"] == []
+
+    def test_rankings_user_item_structure(self, client):
+        resp = client.get(
+            "/api/admin/dashboard/rankings?from_date=2026-01-01&to_date=2026-01-31"
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        for user in data["top_users"]:
+            assert "user_id" in user
+            assert "total_tokens" in user
+            assert "session_count" in user
+
+    def test_rankings_skill_item_structure(self, client):
+        resp = client.get(
+            "/api/admin/dashboard/rankings?from_date=2026-01-01&to_date=2026-01-31"
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        for skill in data["top_skills"]:
+            assert "skill_name" in skill
+            assert "use_count" in skill
+            assert "unique_users" in skill

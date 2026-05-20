@@ -4880,6 +4880,79 @@ async def dashboard_trends(
     }
 
 
+@app.get("/api/admin/dashboard/rankings")
+async def dashboard_rankings(
+    from_date: str | None = None,
+    to_date: str | None = None,
+    current_user: str = Depends(require_admin),
+) -> dict[str, Any]:
+    """Top users by token usage and top skills by use count."""
+    from datetime import date, timedelta
+
+    today = date.today()
+    try:
+        to_dt = date.fromisoformat(to_date) if to_date else today
+        from_dt = date.fromisoformat(from_date) if from_date else today - timedelta(days=30)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=f"Invalid date format: {e}")
+
+    if from_dt > to_dt:
+        raise HTTPException(status_code=422, detail="from_date must be <= to_date")
+    if (to_dt - from_dt).days > 365:
+        raise HTTPException(status_code=422, detail="Date range must not exceed 365 days")
+
+    from_str = from_dt.isoformat()
+    to_str = to_dt.isoformat()
+
+    if _db is None:
+        return {"top_users": [], "top_skills": []}
+
+    async with _db.connection() as conn:
+        # Top users by total token usage
+        cursor = await conn.execute(
+            "SELECT s.user_id, "
+            "COALESCE(SUM("
+            "CAST(json_extract(m.usage, '$.input_tokens') AS INTEGER) + "
+            "CAST(json_extract(m.usage, '$.output_tokens') AS INTEGER) + "
+            "CAST(json_extract(m.usage, '$.cache_read_tokens') AS INTEGER) + "
+            "CAST(json_extract(m.usage, '$.cache_write_tokens') AS INTEGER)"
+            "), 0) as total_tokens, "
+            "COUNT(DISTINCT s.session_id) as session_count "
+            "FROM messages m "
+            "JOIN sessions s ON m.session_id = s.session_id "
+            "WHERE m.created_at >= ? AND m.created_at <= ? "
+            "GROUP BY s.user_id "
+            "ORDER BY total_tokens DESC LIMIT 10",
+            (from_str, to_str),
+        )
+        user_rows = await cursor.fetchall()
+
+        # Top skills by use count
+        cursor = await conn.execute(
+            "SELECT su.skill_name, COUNT(*) as use_count, "
+            "COUNT(DISTINCT su.user_id) as unique_users "
+            "FROM skill_usage su "
+            "JOIN sessions s ON su.session_id = s.session_id "
+            "WHERE su.created_at >= ? AND su.created_at <= ? "
+            "AND su.session_id != '' "
+            "GROUP BY su.skill_name "
+            "ORDER BY use_count DESC LIMIT 10",
+            (from_str, to_str),
+        )
+        skill_rows = await cursor.fetchall()
+
+    return {
+        "top_users": [
+            {"user_id": r[0], "total_tokens": r[1], "session_count": r[2]}
+            for r in user_rows
+        ],
+        "top_skills": [
+            {"skill_name": r[0], "use_count": r[1], "unique_users": r[2]}
+            for r in skill_rows
+        ],
+    }
+
+
 @app.get("/api/admin/skills/analytics")
 async def get_all_skills_analytics(
     current_user: str = Depends(require_admin),
