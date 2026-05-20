@@ -5,7 +5,7 @@ import {
   useRef,
   type FormEvent,
 } from "react";
-import { Routes, Route, useNavigate, useMatch } from "react-router-dom";
+import { Routes, Route, useNavigate, useMatch, Navigate } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import { generateUUID } from "./lib/uuid";
 import Sidebar from "./components/Sidebar";
@@ -19,6 +19,7 @@ import SessionFilePanel from "./components/SessionFilePanel";
 import FeedbackPage from "./components/FeedbackPage";
 import EvolutionPanel from "./components/EvolutionPanel";
 import MCPPage from "./components/MCPPage";
+import DashboardPage from "./components/DashboardPage";
 import DesignPreviewPage from "./DesignPreviewPage";
 import SettingsPreviewPage from "./SettingsPreviewPage";
 import TechPreviewPage from "./TechPreviewPage";
@@ -278,6 +279,7 @@ function MainLayout({
         onOpenFeedback={() => navigate("/feedback")}
         onOpenEvolution={() => navigate("/evolution")}
         onOpenMCP={() => navigate("/mcp")}
+        onOpenDashboard={() => navigate("/dashboard")}
         onLogout={handleLogout}
         userRole={userRole}
       />
@@ -1584,6 +1586,16 @@ function MainApp() {
             authToken={authToken}
             onBack={() => navigate("/")}
           />
+        }
+      />
+      <Route
+        path="/dashboard"
+        element={
+          userRole === "admin" ? (
+            <DashboardPage />
+          ) : (
+            <Navigate to="/" replace />
+          )
         }
       />
       <Route

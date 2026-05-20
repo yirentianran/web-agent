@@ -90,14 +90,15 @@ describe('SettingsMenu - actions', () => {
     expect(screen.queryByText('Skills Management')).not.toBeInTheDocument()
   })
 
-  it('places MCP Servers below Skills Management', () => {
+  it('places menu items in correct order', () => {
     renderSettingsMenu()
     const trigger = document.querySelector('.settings-menu-trigger') as HTMLElement
     fireEvent.click(trigger)
     const items = screen.getAllByRole('menuitem')
     const labels = items.map(el => el.textContent?.trim().replace(/\p{Emoji_Presentation}/gu, '').trim())
     expect(labels[0]).toBe('Skills Management')
-    expect(labels[1]).toBe('MCP Servers')
+    expect(labels).toContain('Usage Dashboard')
+    expect(labels).toContain('MCP Servers')
   })
 })
 

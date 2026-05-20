@@ -6,10 +6,11 @@ interface SettingsMenuProps {
   onOpenFeedback: () => void
   onOpenEvolution: () => void
   onOpenMCP: () => void
+  onOpenDashboard: () => void
   userRole: string
 }
 
-export default function SettingsMenu({ onOpenSkills, onOpenFeedback, onOpenEvolution, onOpenMCP, userRole }: SettingsMenuProps) {
+export default function SettingsMenu({ onOpenSkills, onOpenFeedback, onOpenEvolution, onOpenMCP, onOpenDashboard, userRole }: SettingsMenuProps) {
   const { t } = useTranslation()
   const [open, setOpen] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
@@ -46,6 +47,12 @@ export default function SettingsMenu({ onOpenSkills, onOpenFeedback, onOpenEvolu
             <span className="settings-menu-item-icon">🧩</span>
             {t('header.skillsManagement')}
           </button>
+          {isAdmin && (
+            <button className="settings-menu-item" role="menuitem" onClick={() => handleAction(onOpenDashboard)} type="button">
+              <span className="settings-menu-item-icon">📊</span>
+              Usage Dashboard
+            </button>
+          )}
           {isAdmin && (
             <button className="settings-menu-item" role="menuitem" onClick={() => handleAction(onOpenMCP)} type="button">
               <span className="settings-menu-item-icon">⚡</span>
