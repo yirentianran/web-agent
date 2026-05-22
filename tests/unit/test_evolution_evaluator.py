@@ -77,3 +77,65 @@ async def test_get_expired_reviews(db):
     expired = await store.get_expired_reviews()
     assert len(expired) == 1
     assert expired[0]["id"] == r["id"]
+
+
+from unittest.mock import AsyncMock, MagicMock, patch
+
+
+class TestCompositeScore:
+    def test_score_calculation(self):
+        """composite = 0.4*(4.0/5.0) + 0.3*1.0 + 0.3*0.9 = 0.32+0.3+0.27 = 0.89"""
+        from src.evolution_evaluator import W_RATING, W_USAGE, W_SUCCESS
+        rating = 4.0
+        usage_ratio = 1.0
+        success_rate = 0.9
+        score = W_RATING * (rating / 5.0) + W_USAGE * usage_ratio + W_SUCCESS * success_rate
+        assert round(score, 4) == 0.89
+
+    def test_score_calculation_low(self):
+        from src.evolution_evaluator import W_RATING, W_USAGE, W_SUCCESS
+        rating = 1.0
+        usage_ratio = 0.2
+        success_rate = 0.5
+        score = W_RATING * (rating / 5.0) + W_USAGE * usage_ratio + W_SUCCESS * success_rate
+        assert round(score, 4) == 0.29
+
+
+@pytest.mark.asyncio
+async def test_daily_eval_creates_snapshots(db):
+    import time
+    from src.evolution_log import EvolutionLogStore
+    from src.evolution_evaluator import EvolutionEvaluator
+
+    store = EvolutionLogStore(db)
+    r = await store.create_log("skill-x", "1.0", "1.1")
+    evaluator = EvolutionEvaluator(db)
+    await evaluator.run_daily_eval()
+    snaps = await store.get_snapshots(r["id"])
+    assert len(snaps) == 1
+    assert "composite_score" in snaps[0]
+
+
+@pytest.mark.asyncio
+async def test_degradation_triggers_under_review(db):
+    import time
+    from src.evolution_log import EvolutionLogStore
+    from src.evolution_evaluator import EvolutionEvaluator
+
+    store = EvolutionLogStore(db)
+    r = await store.create_log("skill-y", "1.0", "1.1")
+
+    # Insert 7 low-score snapshots (all below 0.6 baseline)
+    for i in range(7):
+        await store.create_snapshot(
+            r["id"], f"2026-05-{15+i:02d}",
+            usage_count=1, unique_users=1,
+            avg_rating=1.0, session_success_rate=0.3, composite_score=0.2,
+        )
+
+    evaluator = EvolutionEvaluator(db)
+    await evaluator.run_daily_eval()
+
+    log = await store.get_log(r["id"])
+    assert log["status"] == "under_review"
+    assert log["auto_rollback_at"] is not None
