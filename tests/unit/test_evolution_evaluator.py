@@ -136,3 +136,49 @@ async def test_degradation_triggers_under_review(db):
     log = await store.get_log(r["id"])
     assert log["status"] == "under_review"
     assert log["auto_rollback_at"] is not None
+
+
+@pytest.mark.asyncio
+async def test_rollback_delegates_to_skill_manager(db):
+    from pathlib import Path
+    from unittest.mock import AsyncMock, MagicMock
+    from src.evolution_log import EvolutionLogStore
+    from src.evolution_rollback import EvolutionRollback
+
+    store = EvolutionLogStore(db)
+    r = await store.create_log("test-skill", "1.0", "1.1")
+    log_id = r["id"]
+
+    mock_skill_mgr = MagicMock()
+    mock_skill_mgr.rollback_version = AsyncMock(return_value=None)
+
+    rollback = EvolutionRollback(db, Path("/tmp"), skill_manager=mock_skill_mgr)
+    result = await rollback.execute_rollback(log_id)
+    assert result is True
+    mock_skill_mgr.rollback_version.assert_called_once_with("test-skill")
+
+    log = await store.get_log(log_id)
+    assert log["status"] == "rolled_back"
+
+
+@pytest.mark.asyncio
+async def test_process_expired_reviews_executes_rollbacks(db):
+    import time
+    from pathlib import Path
+    from unittest.mock import AsyncMock, MagicMock
+    from src.evolution_log import EvolutionLogStore
+    from src.evolution_rollback import EvolutionRollback
+
+    store = EvolutionLogStore(db)
+    r = await store.create_log("skill-z", "1.0", "1.1")
+    await store.update_status(r["id"], "under_review", auto_rollback_at=int(time.time()) - 3600)
+
+    mock_skill_mgr = MagicMock()
+    mock_skill_mgr.rollback_version = AsyncMock(return_value=None)
+
+    rollback = EvolutionRollback(db, Path("/tmp"), skill_manager=mock_skill_mgr)
+    count = await rollback.process_expired_reviews()
+    assert count == 1
+
+    log = await store.get_log(r["id"])
+    assert log["status"] == "rolled_back"
