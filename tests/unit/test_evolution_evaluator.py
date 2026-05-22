@@ -79,9 +79,6 @@ async def test_get_expired_reviews(db):
     assert expired[0]["id"] == r["id"]
 
 
-from unittest.mock import AsyncMock, MagicMock, patch
-
-
 class TestCompositeScore:
     def test_score_calculation(self):
         """composite = 0.4*(4.0/5.0) + 0.3*1.0 + 0.3*0.9 = 0.32+0.3+0.27 = 0.89"""

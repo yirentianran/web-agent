@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import logging
 import time
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 if __name__ != "__main__":
     from src.database import Database
@@ -25,12 +25,16 @@ class EvolutionEvaluator:
         self.store = EvolutionLogStore(db)
 
     async def run_daily_eval(self) -> None:
-        """Run the daily evaluation cycle (called by CI scheduler at 02:00)."""
+        """Run the daily evaluation cycle (called by CI scheduler at 02:00).
+
+        Snapshots yesterday's full day of data (since the scheduler fires
+        at 02:00 today, yesterday is the most recent complete day).
+        """
         active = await self.store.get_active_evolutions()
-        today = datetime.now(UTC).strftime("%Y-%m-%d")
+        yesterday = (datetime.now(UTC) - timedelta(days=1)).strftime("%Y-%m-%d")
 
         for log in active:
-            snap = await self._compute_snapshot(log, today)
+            snap = await self._compute_snapshot(log, yesterday)
             await self.store.create_snapshot(**snap)
 
             last_7 = await self.store.get_last_snapshots(log["id"], 7)
@@ -38,7 +42,9 @@ class EvolutionEvaluator:
                 continue
 
             # Use baseline_composite stored at evolution creation time
-            baseline = log.get("baseline_composite") or 0.6
+            baseline = log.get("baseline_composite")
+            if baseline is None:
+                baseline = 0.6
             if all(s["composite_score"] < baseline for s in last_7):
                 rollback_at = int(time.time()) + 48 * 3600
                 await self.store.update_status(
@@ -60,11 +66,12 @@ class EvolutionEvaluator:
         date_end = f"{date_str}T23:59:59"
 
         async with self.db.connection() as conn:
-            # Usage count since last snapshot
+            # Usage count for the snapshot date
             cursor = await conn.execute(
                 """SELECT COUNT(*) FROM skill_usage
-                   WHERE skill_name = ? AND created_at >= strftime('%s', ?)""",
-                (skill_name, date_start),
+                   WHERE skill_name = ? AND created_at >= strftime('%s', ?)
+                   AND created_at <= strftime('%s', ?)""",
+                (skill_name, date_start, date_end),
             )
             row = await cursor.fetchone()
             usage_count = row[0] if row else 0
