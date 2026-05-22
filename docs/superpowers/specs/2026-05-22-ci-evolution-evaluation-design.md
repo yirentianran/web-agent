@@ -21,7 +21,7 @@ This spec replaces the complex pipeline with an ECC-inspired approach: **session
 
 ### Trigger
 
-Session ends in `main_server.py` → fire-and-forget call to `session_learner.analyze_session(session_id)`.
+Session ends with `status="completed"` in `main_server.py` → fire-and-forget call to `session_learner.analyze_session(session_id)`. Timeout / cancelled / error sessions are skipped — only successful completions provide meaningful signal.
 
 ### Data
 
@@ -48,7 +48,13 @@ Sessions can exceed Haiku's context window. Before building the prompt:
 
 ### Haiku Analysis
 
-Send the above data to Haiku with this prompt:
+Send the above data to Haiku with this prompt. Messages are formatted as:
+
+```
+[{seq}] {type}/{name}: {content[:2000]}
+```
+
+Full prompt template:
 
 ```
 Analyze this AI agent session and identify what we can learn.
@@ -128,10 +134,11 @@ instead of manual file rename. This reuses the existing `skill_versions` table.
 
 When `session_learner` creates a new skill from a `new_pattern`, it must make the skill discoverable:
 
-1. **Write `SKILL.md`** to `shared-skills/{skill-name}/`
-2. **Write `skill-meta.json`** alongside it (`source: "learned"`, `owner: "system"`)
-3. **Register in DB** via `SkillManager.register_skill(skill_name, source="learned", ...)` — immediate, not via async scan
-4. **Bump generation** via `_bump_shared_skills_gen()` — triggers `_sync_shared_skills()` for all users on their next session
+1. **Check for name collision** — if `shared-skills/{skill-name}/` or a DB entry with the same name already exists, append `-learned` suffix (or skip if that also exists)
+2. **Write `SKILL.md`** to `shared-skills/{skill-name}/`
+3. **Write `skill-meta.json`** alongside it (`source: "learned"`, `owner: "system"`)
+4. **Register in DB** via `SkillManager.register_skill(skill_name, source="learned", ...)` — immediate, not via async scan
+5. **Bump generation** via `_bump_shared_skills_gen()` — triggers `_sync_shared_skills()` for all users on their next session
 
 This ensures the new skill is immediately:
 - Discoverable by `load_skills()` (disk scan with `iterdir()`)
@@ -184,7 +191,38 @@ CREATE TABLE skill_eval_snapshots (
 composite = 0.4 * (avg_rating / 5.0) + 0.3 * usage_trend_ratio + 0.3 * session_success_rate
 ```
 
-Where `usage_trend_ratio = current_daily / baseline_daily` (capped at 1.0). Baseline = 7 days before evolution.
+Where `usage_trend_ratio = current_daily / baseline_daily` (capped at 1.0).
+
+**Baseline (7 days before evolution):**
+```sql
+SELECT COUNT(*) / 7.0 AS baseline_daily
+FROM skill_usage
+WHERE skill_name = ?
+  AND created_at BETWEEN ? AND ?  -- evolution_created_at - 7d → evolution_created_at
+```
+
+**Current snapshot (daily average since last snapshot):**
+```sql
+SELECT COUNT(*) / CAST(julianday('now') - julianday(?) AS REAL) AS current_daily
+FROM skill_usage
+WHERE skill_name = ?
+  AND created_at >= ?  -- last snapshot date
+```
+
+**Session success rate:**
+```sql
+SELECT
+    CAST(SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) AS REAL) / COUNT(*)
+FROM agent_log
+WHERE session_id IN (
+    SELECT DISTINCT session_id FROM skill_usage WHERE skill_name = ?
+)
+```
+
+**Average rating:**
+```sql
+SELECT AVG(rating) FROM skill_feedback WHERE skill_name = ?
+```
 
 ### State Machine
 
@@ -232,7 +270,16 @@ session_learner
 
 ### Daily Evaluation Task
 
-A simple daily task (02:00) in `collective_intelligence.py`:
+A daily task (02:00) in `collective_intelligence.py`. `compute_snapshot(log)` queries these tables:
+
+| Metric | Source Table | Query |
+|--------|-------------|-------|
+| `usage_count` | `skill_usage` | `COUNT(*) WHERE skill_name = ? AND created_at >= ?` |
+| `unique_users` | `skill_usage` | `COUNT(DISTINCT user_id) WHERE skill_name = ? AND created_at >= ?` |
+| `avg_rating` | `skill_feedback` | `AVG(rating) WHERE skill_name = ?` |
+| `session_success_rate` | `agent_log` + `skill_usage` | Sessions using the skill: `completed / total` |
+
+Implementation:
 
 ```python
 async def _eval_snapshot_loop():
@@ -306,7 +353,7 @@ Monaco loaded from CDN on demand (`@monaco-editor/react`), admin-only.
 | File | Change |
 |------|--------|
 | `main_server.py` | Session-end → call `session_learner.analyze_session()` |
-| `src/collective_intelligence.py` | Add `_eval_snapshot_loop()`, simplify `_auto_evolve_loop()` |
+| `src/collective_intelligence.py` | Replace `_auto_evolve_loop()` with `_eval_snapshot_loop()` (daily 02:00). Evolution is now triggered by session_learner at session-end, not by a 4h background loop. The other three loops (wiki mining, pattern extraction, auto-promotion) are unchanged. |
 | `src/database.py` | Add `evolution_log` + `skill_eval_snapshots` tables |
 | `frontend/src/App.tsx` | Add `/dashboard/evolution` route |
 
