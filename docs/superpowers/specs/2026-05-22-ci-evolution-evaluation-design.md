@@ -152,7 +152,8 @@ CREATE TABLE evolution_log (
     to_version TEXT NOT NULL,
     source TEXT NOT NULL DEFAULT 'session_learner',  -- session_learner / manual / feedback
     evolve_reason TEXT,
-    baseline_composite REAL,                         -- composite score at evolution time (7-day pre-evolution baseline)
+    proposed_content TEXT,                            -- suggested SKILL.md content when status=proposed (admin reviews this)
+    baseline_composite REAL,                          -- composite score at evolution time (7-day pre-evolution baseline)
     status TEXT NOT NULL DEFAULT 'active',           -- active / proposed / under_review / rolled_back
     created_at INTEGER NOT NULL,
     reviewed_at INTEGER,
