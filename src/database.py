@@ -235,6 +235,40 @@ CREATE TABLE IF NOT EXISTS skill_versions (
 
 CREATE INDEX IF NOT EXISTS idx_versions_skill ON skill_versions(skill_name, version_number DESC);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_versions_unique ON skill_versions(skill_name, version_number);
+
+-- Evolution evaluation tables
+CREATE TABLE IF NOT EXISTS evolution_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    skill_name TEXT NOT NULL,
+    from_version TEXT NOT NULL,
+    to_version TEXT NOT NULL,
+    source TEXT NOT NULL DEFAULT 'session_learner',
+    evolve_reason TEXT,
+    proposed_content TEXT,
+    baseline_composite REAL,
+    status TEXT NOT NULL DEFAULT 'active',
+    created_at REAL NOT NULL DEFAULT (strftime('%s', 'now')),
+    reviewed_at REAL,
+    reviewed_by TEXT,
+    review_decision TEXT,
+    auto_rollback_at REAL
+);
+
+CREATE TABLE IF NOT EXISTS skill_eval_snapshots (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    evolution_log_id INTEGER NOT NULL REFERENCES evolution_log(id),
+    snapshot_date TEXT NOT NULL,
+    usage_count INTEGER DEFAULT 0,
+    unique_users INTEGER DEFAULT 0,
+    avg_rating REAL,
+    session_success_rate REAL,
+    composite_score REAL,
+    created_at REAL NOT NULL DEFAULT (strftime('%s', 'now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_evolution_log_status ON evolution_log(status);
+CREATE INDEX IF NOT EXISTS idx_evolution_log_skill ON evolution_log(skill_name);
+CREATE INDEX IF NOT EXISTS idx_eval_snap_log ON skill_eval_snapshots(evolution_log_id);
 """
 
 
@@ -343,6 +377,12 @@ class Database:
         # Add MCP resources, prompts, headers columns
         try:
             await self.migrate_v3()
+        except Exception:
+            pass
+
+        # Convert absolute skill paths to DATA_ROOT-relative
+        try:
+            await self.migrate_v4()
         except Exception:
             pass
 
@@ -635,6 +675,34 @@ class Database:
                     await conn.execute(col_stmt)
                 except Exception:
                     pass  # Column already exists
+            await conn.commit()
+
+    async def migrate_v4(self) -> None:
+        """Convert absolute skill paths to DATA_ROOT-relative paths.
+
+        Previously, skill paths were stored as absolute paths. This broke
+        when running in Docker where DATA_ROOT differs from the host.
+        Now paths are stored relative to DATA_ROOT for portability.
+        """
+        import os
+        data_root = os.getenv("DATA_ROOT", "/data")
+        if not data_root.startswith("/"):
+            return  # only convert absolute paths
+        async with self.connection() as conn:
+            cursor = await conn.execute(
+                "SELECT skill_name, path FROM skills WHERE path LIKE ?",
+                (f"{data_root}/%",),
+            )
+            rows = await cursor.fetchall()
+            for row in rows:
+                try:
+                    rel = Path(row[1]).relative_to(data_root)
+                    await conn.execute(
+                        "UPDATE skills SET path = ? WHERE skill_name = ? AND path = ?",
+                        (str(rel), row[0], row[1]),
+                    )
+                except ValueError:
+                    pass
             await conn.commit()
 
     async def migrate_collective_intelligence(self) -> None:
