@@ -9,6 +9,11 @@ objects from leaking to any code that runs in the same Python process after test
 from __future__ import annotations
 
 import sys
+from pathlib import Path
+
+import pytest
+
+from src.database import Database
 
 
 def pytest_sessionstart(session) -> None:  # noqa: ARG001
@@ -29,3 +34,12 @@ def pytest_sessionfinish(session, exitstatus) -> None:  # noqa: ARG001
             sys.modules.pop(key, None)
     if hasattr(sys, "_saved_modules"):
         delattr(sys, "_saved_modules")
+
+
+@pytest.fixture
+async def db(tmp_path: Path):
+    """Create and initialize a test Database, cleanup after."""
+    database = Database(db_path=tmp_path / "test.db")
+    await database.init()
+    yield database
+    await database.close()
