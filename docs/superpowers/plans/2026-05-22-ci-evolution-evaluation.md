@@ -803,6 +803,7 @@ import json
 import logging
 import os
 from pathlib import Path
+from typing import Any, Callable
 
 if __name__ != "__main__":
     from src.database import Database
@@ -839,11 +840,25 @@ Return ONLY valid JSON (no markdown fences, no explanation):
 
 
 class SessionLearner:
-    """Analyzes completed sessions and evolves skills."""
+    """Analyzes completed sessions and evolves skills.
 
-    def __init__(self, db: "Database", data_root: Path) -> None:
+    Uses callback injection to avoid circular imports with main_server:
+    - skill_manager: SkillManager instance for DB registration
+    - on_skill_changed: callable to bump shared-skills generation counter
+      (triggers _sync_shared_skills for all users on their next session)
+    """
+
+    def __init__(
+        self,
+        db: "Database",
+        data_root: Path,
+        skill_manager: Any = None,
+        on_skill_changed: "Callable[[], None] | None" = None,
+    ) -> None:
         self.db = db
         self.data_root = data_root
+        self.skill_manager = skill_manager
+        self.on_skill_changed = on_skill_changed
         self.store = EvolutionLogStore(db)
 
     async def analyze_session(self, session_id: str) -> dict:
@@ -1056,9 +1071,10 @@ class SessionLearner:
             evolve_reason=imp.get("issue", "")[:500],
         )
 
-        # Bump shared skills generation
-        from main_server import _bump_shared_skills_gen
-        _bump_shared_skills_gen()
+        # Bump shared skills generation so Windows copy-based sync refreshes
+        # (Unix symlinks are transparent, but copies need re-sync)
+        if self.on_skill_changed:
+            self.on_skill_changed()
 
         logger.info("Applied improvement to %s: v%s → v%s", skill_name, from_version, to_version)
 
@@ -1103,9 +1119,8 @@ class SessionLearner:
         (skill_dir / "skill-meta.json").write_text(json.dumps(meta, indent=2))
 
         # Register in DB via SkillManager (idempotent — ON CONFLICT safe)
-        from main_server import _skill_manager, _bump_shared_skills_gen
-        if _skill_manager is not None:
-            await _skill_manager.register_skill(
+        if self.skill_manager is not None:
+            await self.skill_manager.register_skill(
                 skill_name=name,
                 source="learned",
                 owner_id="system",
@@ -1123,7 +1138,9 @@ class SessionLearner:
         )
 
         # Bump generation so all users sync this skill on next session
-        _bump_shared_skills_gen()
+        # (Unix: creates symlink; Windows: copies directory)
+        if self.on_skill_changed:
+            self.on_skill_changed()
 
         logger.info("Created learned skill: %s (disk + DB + gen-bump)", name)
 
@@ -1329,25 +1346,32 @@ git commit -m "feat: replace auto_evolve loop with daily eval snapshot loop"
 - Modify: `main_server.py`
 - Create: `tests/unit/test_evolution_api.py`
 
-- [ ] **Step 1: Add session-end trigger**
+- [ ] **Step 1: Add session-end trigger (both modes)**
 
-In `run_agent_task()` and `run_agent_task_container()`, after `agent_log.end_session()`, add:
+In `run_agent_task()` (non-container) AND `run_agent_task_container()` (container), after the `"completed"` branch's `agent_log.end_session()` and `_summarize_and_store_session()`, add:
 
 ```python
 # Fire-and-forget session analysis (don't block agent task cleanup)
-import asyncio as _asyncio
-_try_session = session_id
-asyncio.get_event_loop().create_task(_analyze_completed_session(_try_session))
+asyncio.ensure_future(_analyze_completed_session(session_id))
 ```
 
-And add the helper function:
+And add the helper function (module level):
 
 ```python
 async def _analyze_completed_session(session_id: str) -> None:
-    """Fire-and-forget session analysis for skill evolution."""
+    """Fire-and-forget session analysis for skill evolution.
+
+    Runs on the host side for BOTH container and non-container modes.
+    Injects main_server globals via constructor to avoid circular imports.
+    """
     try:
         from src.session_learner import SessionLearner
-        learner = SessionLearner(_db, DATA_ROOT)
+        learner = SessionLearner(
+            _db,
+            DATA_ROOT,
+            skill_manager=_skill_manager,
+            on_skill_changed=_bump_shared_skills_gen,
+        )
         await learner.analyze_session(session_id)
     except Exception:
         logger.exception("Session analysis failed for %s", session_id)
@@ -2377,7 +2401,39 @@ Navigate to `/dashboard/evolution`, verify:
 - Empty state shows "No evolution records found"
 - Admin APIs return 200 (test with curl)
 
-- [ ] **Step 4: Commit final integration fixes**
+- [ ] **Step 4: Verify OS & mode compatibility**
+
+```bash
+# Verify no circular imports (session_learner must not import from main_server)
+uv run python -c "
+from src.session_learner import SessionLearner
+print('OK: session_learner imports without main_server')
+"
+
+# Verify SessionLearner constructor accepts callback injection
+uv run python -c "
+from pathlib import Path
+from src.session_learner import SessionLearner
+learner = SessionLearner(None, Path('/tmp'), skill_manager=None, on_skill_changed=lambda: None)
+print('OK: callback injection works')
+"
+
+# Verify gen bump is callable
+uv run python -c "
+# Simulate what main_server does
+called = []
+def bump():
+    called.append(1)
+from src.session_learner import SessionLearner
+learner = SessionLearner(None, Path('/tmp'), skill_manager=None, on_skill_changed=bump)
+assert learner.on_skill_changed is not None
+learner.on_skill_changed()
+assert called == [1]
+print('OK: on_skill_changed callback functional')
+"
+```
+
+- [ ] **Step 5: Commit final integration fixes**
 
 ```bash
 git add -A

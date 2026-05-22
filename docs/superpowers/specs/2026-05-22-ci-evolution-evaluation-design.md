@@ -246,7 +246,42 @@ Monaco loaded from CDN on demand (`@monaco-editor/react`), admin-only.
 
 ---
 
-## 6. Comparison: Before vs After
+## 6. OS & Mode Compatibility
+
+### Container vs Non-Container
+
+`session_learner` runs in `main_server.py` on the **host side** for both modes. The session-end hook is added identically to `run_agent_task()` (non-container) and `run_agent_task_container()` (container). Both paths have access to `_db`, `DATA_ROOT`, `_skill_manager`, and `_bump_shared_skills_gen`.
+
+`agent_server.py` (container process) has no session lifecycle logic and is unaffected.
+
+### Circular Import Avoidance
+
+`session_learner.py` lives in `src/` and must not import from `main_server.py`. Instead, `SkillManager` and `_bump_shared_skills_gen` are injected via constructor:
+
+```python
+learner = SessionLearner(
+    _db, DATA_ROOT,
+    skill_manager=_skill_manager,        # for register_skill()
+    on_skill_changed=_bump_shared_skills_gen,  # for sync trigger
+)
+```
+
+### macOS / Linux
+
+- `pathlib.Path` used for all path construction — cross-platform
+- `_sync_shared_skills()` uses symlinks — learned skills appear instantly in all user workspaces
+- Gen bump on skill creation triggers re-sync on next `_build_sdk_config()` call
+
+### Windows
+
+- `_sync_shared_skills()` uses directory copies + `.shared_skill_source` marker files instead of symlinks
+- Gen bump is critical: without it, `_sync_shared_skills()` returns early (generation cache), and Windows users never get the updated/copied skill
+- `platform.system()` detection is already built into `_sync_shared_skills()` — no changes needed
+- `skill-meta.json` written alongside SKILL.md ensures `migrate_from_filesystem()` can read metadata on Windows
+
+---
+
+## 7. Comparison: Before vs After
 
 | | Before | After |
 |---|--------|-------|
@@ -260,7 +295,7 @@ Monaco loaded from CDN on demand (`@monaco-editor/react`), admin-only.
 
 ---
 
-## 7. Verification
+## 8. Verification
 
 1. Session with skill usage ends → `session_learner` runs → check `evolution_log` for new entry
 2. Low-confidence finding → appears in admin dashboard as "proposed" (not auto-applied)
