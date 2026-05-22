@@ -20,6 +20,7 @@ import FeedbackPage from "./components/FeedbackPage";
 import EvolutionPanel from "./components/EvolutionPanel";
 import MCPPage from "./components/MCPPage";
 import DashboardPage from "./components/DashboardPage";
+import EvolutionPage from "./pages/EvolutionPage";
 import DesignPreviewPage from "./DesignPreviewPage";
 import SettingsPreviewPage from "./SettingsPreviewPage";
 import TechPreviewPage from "./TechPreviewPage";
@@ -1593,6 +1594,16 @@ function MainApp() {
         element={
           userRole === "admin" ? (
             <DashboardPage />
+          ) : (
+            <Navigate to="/" replace />
+          )
+        }
+      />
+      <Route
+        path="/dashboard/evolution"
+        element={
+          userRole === "admin" ? (
+            <EvolutionPage />
           ) : (
             <Navigate to="/" replace />
           )

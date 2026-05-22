@@ -68,6 +68,14 @@ async function fetchJson<T>(url: string, token: string): Promise<T> {
   return resp.json() as Promise<T>
 }
 
+export interface EvolutionApi {
+  overview: AsyncState<{ items: EvolutionItem[]; total: number; page: number }>
+  fetchDetail: (id: number) => Promise<EvolutionDetail>
+  fetchDiff: (id: number) => Promise<EvolutionDiff>
+  review: (id: number, decision: 'keep' | 'rollback' | 'discard') => Promise<void>
+  refetch: () => void
+}
+
 export function useEvolutionApi(statusFilter?: string, page: number = 1) {
   const authToken = useMemo(() => localStorage.getItem('authToken') || '', [])
   const [refreshKey, setRefreshKey] = useState(0)
