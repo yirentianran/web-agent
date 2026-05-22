@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from src.auto_evolve import AutoEvolvePolicy
+from src.evolution_evaluator import EvolutionEvaluator
+from src.evolution_rollback import EvolutionRollback
 from src.pattern_learner import PatternLearner
 from src.semantic_search import SemanticSearch
 from src.wiki_generator import WikiGenerator
@@ -35,7 +38,7 @@ class CollectiveIntelligenceEngine:
         asyncio.create_task(self._wiki_mining_loop())
         asyncio.create_task(self._pattern_extraction_loop())
         asyncio.create_task(self._auto_promotion_loop())
-        asyncio.create_task(self._auto_evolve_loop())
+        asyncio.create_task(self._eval_snapshot_loop())
         logger.info("Collective intelligence background jobs started")
 
     async def _wiki_mining_loop(self) -> None:
@@ -77,55 +80,34 @@ class CollectiveIntelligenceEngine:
                 logger.exception("Auto-promotion check failed")
             await asyncio.sleep(2 * 3600)
 
-    async def _auto_evolve_loop(self) -> None:
-        """Analyze evolution candidates and apply safe auto-fixes.
-
-        Applies user edits directly (safest). AUTO_FIX attempts LLM-generated
-        repairs. Other actions (PROPOSE, REQUIRE_REVIEW) are logged for admin review.
-        """
-        from src.auto_evolve import EvolveAction
+    async def _eval_snapshot_loop(self) -> None:
+        """Daily evaluation: snapshot active evolutions, detect degradation, auto-rollback."""
+        evaluator = EvolutionEvaluator(self.db)
+        rollback = EvolutionRollback(self.db, self.data_root)
 
         while True:
             try:
-                decisions = await self.auto_evolve.analyze_all_candidates()
-                for decision in decisions:
-                    if decision.action == EvolveAction.APPLY_EDITS:
-                        # Safest: apply user edits directly
-                        edits = (decision.data or {}).get("user_edits", "")
-                        if edits:
-                            result = await self.auto_evolve.apply_user_edits(
-                                decision.skill_name, edits
-                            )
-                            if result:
-                                logger.info(
-                                    f"Auto-evolved {decision.skill_name}: "
-                                    f"applied user edits (v{result['version']})"
-                                )
-                            else:
-                                logger.warning(
-                                    f"Failed to apply user edits for {decision.skill_name}"
-                                )
-                    elif decision.action == EvolveAction.AUTO_FIX:
-                        bugs = (decision.data or {}).get("bugs", [])
-                        if bugs:
-                            result = await self.auto_evolve.auto_fix_skill(
-                                decision.skill_name, bugs
-                            )
-                            if result:
-                                logger.info(
-                                    f"Auto-fixed {decision.skill_name}: "
-                                    f"v{result['version']} ({decision.reason})"
-                                )
-                            else:
-                                logger.warning(
-                                    f"Failed to auto-fix {decision.skill_name}"
-                                )
-                    else:
-                        # Log other actions for admin review
-                        logger.info(
-                            f"Auto-evolve candidate: {decision.skill_name} — "
-                            f"action={decision.action.value}, reason={decision.reason}"
-                        )
+                # Wait until 02:00 local time, then run once per day
+                now = datetime.now()
+                next_run = now.replace(hour=2, minute=0, second=0, microsecond=0)
+                if now >= next_run:
+                    next_run += timedelta(days=1)
+                wait_seconds = (next_run - now).total_seconds()
+                await asyncio.sleep(wait_seconds)
+
+                await evaluator.run_daily_eval()
+                count = await rollback.process_expired_reviews()
+                if count:
+                    logger.info("Auto-rolled back %d degraded evolutions", count)
             except Exception:
-                logger.exception("Auto-evolve loop failed")
-            await asyncio.sleep(4 * 3600)
+                logger.exception("Eval snapshot loop failed")
+                await asyncio.sleep(3600)  # retry after 1h on error
+
+    async def _auto_evolve_loop(self) -> None:
+        """Deprecated: evolution is now driven by session_learner at session end.
+
+        Kept as a no-op to avoid breaking imports from auto_evolve module.
+        """
+        logger.debug("_auto_evolve_loop is deprecated — evolution now via session_learner")
+        while True:
+            await asyncio.sleep(86400)
