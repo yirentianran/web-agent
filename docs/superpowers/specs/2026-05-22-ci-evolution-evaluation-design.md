@@ -4,13 +4,13 @@
 
 The web-agent Collective Intelligence system has four background loops (wiki mining, pattern extraction, auto-promotion, auto-evolution) with a five-tier AutoEvolvePolicy (APPLY_EDITS → AUTO_FIX → PROPOSE → REQUIRE_REVIEW → SKIP). However, there is **no post-evolution verification** — the system auto-evolves skills but never checks whether the evolution actually improved or degraded skill quality. Evolution results are only passively visible through the next cycle's feedback aggregation, which may take weeks.
 
-This spec adds: (1) an automated evaluation/verification system, (2) semi-automatic rollback for degraded evolutions, and (3) an admin dashboard for monitoring the CI evolution lifecycle.
+This spec adds: (1) an ECC-inspired session-based evolution engine that uses full conversation context instead of keyword matching, (2) an automated evaluation/verification system, (3) semi-automatic rollback for degraded evolutions, and (4) an admin dashboard for monitoring the CI evolution lifecycle.
 
 ## Scope
 
-- **Backend**: 3 new modules (`evolution_log.py`, `evolution_evaluator.py`, `evolution_rollback.py`), 5 new admin APIs, evolution policy adjustments
+- **Backend**: 4 new modules (`session_learner.py`, `evolution_log.py`, `evolution_evaluator.py`, `evolution_rollback.py`), 5 new admin APIs, evolution pipeline rework
 - **Frontend**: 1 new page at `/dashboard/evolution`, 6 new components, Monaco DiffEditor dependency
-- **Database**: 2 new tables (`evolution_log`, `skill_eval_snapshots`)
+- **Database**: 2 new tables (`evolution_log`, `skill_eval_snapshots`); existing `messages` table becomes evolution data source
 - **Not in scope**: Real-time WebSocket push, external notification (Slack/email), multi-admin approval workflows
 
 ---
@@ -68,37 +68,130 @@ When `composite_score` stays below baseline (pre-evolution 7-day average) for **
 
 ---
 
-## 2. Backend Architecture
+## 2. Evolution Engine — Dual-Source Design
+
+Web-agent's evolution currently has ONE data source (`skill_feedback` table — user ratings and short comments). It uses keyword matching (`_summarize_feedback`) to determine HOW to optimize, then calls Haiku with thin context ("bug: timeout, error — fix this skill").
+
+Inspired by Everything Claude Code's `continuous-learning` skill, we add a SECOND data source that uses **full conversation context from the `messages` table**.
+
+### Comparison: Old vs New vs ECC
+
+| | Old Web Agent | **New Web Agent** | ECC |
+|---|---|---|---|
+| Data source | `skill_feedback` (ratings + short comments) | `skill_feedback` + **`messages` table (full conversation)** | Session transcript file |
+| Analysis | Keyword matching (`BUG_KEYWORDS`, `VAGUE_KEYWORDS`) | **LLM reads full context, identifies patterns** | Stop hook Claude reasoning |
+| How to optimize | Haiku blind-fixes from bug keywords | **Haiku sees actual errors and conversation flow** | Claude extracts from transcript |
+| Trigger | 4h background loop | 4h loop + **session end** | Stop hook |
+| Output | Modified SKILL.md (vertical only) | Modified SKILL.md + **new learned skills** (vertical + horizontal) | New learned skill files (horizontal only) |
+| Evaluation | None | evolution_log + composite scoring + rollback | EDD eval harness (manual) |
+
+### Dual Data Sources
+
+#### Source 1: Feedback-based (existing, retained)
+
+`skill_feedback` table — user ratings, comments, and edits. This remains as the quick-reaction path for user-initiated changes (APPLY_EDITS) and explicit complaints.
+
+#### Source 2: Session-based (NEW, ECC-inspired)
+
+`messages` table JOIN `skill_usage` — captures the full conversation context around skill invocations. This replaces keyword matching as the primary "how to optimize" mechanism.
+
+```
+Session ends
+    ↓
+Query messages table for the session:
+  SELECT m.seq, m.type, m.name, m.content
+  FROM messages m
+  WHERE m.session_id = ?
+  ORDER BY m.seq
+    ↓
+JOIN skill_usage to identify which skills were active and when:
+  SELECT su.skill_name, su.invoked_at
+  FROM skill_usage su
+  WHERE su.session_id = ?
+    ↓
+Assemble context for Haiku:
+  - Full conversation messages (already structured: type/name/content)
+  - Which skills were called at which points
+  - Tool call outputs and error messages
+  - User feedback submitted during session
+    ↓
+Haiku analysis prompt:
+  "Analyze this session and identify:
+   1. Existing skills that performed poorly — specific issues, context, suggested fixes
+   2. Reusable patterns the user employed — can this become a new skill?
+   Output as JSON."
+    ↓
+Output:
+  → improvements → write to skill_feedback (source='ai_session_analysis')
+  → new_patterns → create SKILL.md in data/shared-skills/learned/
+```
 
 ### New Modules
 
 | Module | Responsibility | Called by |
 |--------|---------------|-----------|
+| `src/session_learner.py` | Query `messages` + `skill_usage`, assemble Haiku analysis prompt, process improvements and new patterns | Session-end callback, CI scheduler |
 | `src/evolution_log.py` | CRUD for `evolution_log` + `skill_eval_snapshots` | evaluator, rollback, APIs |
 | `src/evolution_evaluator.py` | Daily snapshot generation, composite scoring, degradation detection | CI scheduler, APIs |
 | `src/evolution_rollback.py` | Rollback state machine, 48h auto-rollback timer | evaluator, APIs |
 
 ### Modified Modules
 
-**`src/collective_intelligence.py`** — Changes:
+**`main_server.py`** — Session-end callback:
+- When a session completes (WebSocket close / session cleanup), call `session_learner.analyze_session(session_id)`
+- Fire-and-forget background task; does not block session cleanup
 
-1. `_auto_evolve_loop()`: after successful evolution, write to `evolution_log` (status=active), trigger baseline snapshot
-2. New `_eval_snapshot_loop()`: daily at 02:00 local time — snapshot all active/under_review records, check degradation conditions
-3. New loop registration in `start_background_loops()`
+**`src/collective_intelligence.py`** — Rework `_auto_evolve_loop`:
+1. `_auto_evolve_loop()`: after successful evolution, write to `evolution_log` (status=active)
+2. New `_eval_snapshot_loop()`: daily at 02:00 — snapshot all active/under_review records
+3. `_auto_evolve_loop` now processes BOTH feedback-based candidates AND session-based findings
 
-**`src/auto_evolve.py`** — Policy adjustments:
+**`src/auto_evolve.py`** — Supplemented (not replaced):
+- `_summarize_feedback()` keyword matching retained as fallback for feedback-based candidates
+- New `analyze_session_findings()` processes Haiku-generated analysis results
+- Policy priority: APPLY_EDITS → AUTO_FIX (LLM-confident) → PROPOSE → REQUIRE_REVIEW → SKIP
+- Cooldown period: 7 days (checked against `evolution_log`)
+- AUTO_FIX confidence gate: Haiku self-scores its fix (1-10), <6 demoted to PROPOSE
+- HIGH_USAGE_THRESHOLD: 100
 
-| Change | Detail |
-|--------|--------|
-| Cooldown period | 7 days — skip if skill was evolved within cooldown |
-| AUTO_FIX confidence gate | Haiku self-scores its fix (1-10), <6 demoted to PROPOSE |
-| HIGH_USAGE_THRESHOLD | Raised from 50 to 100 |
-| New priority order | APPLY_EDITS → AUTO_FIX (high conf) → PROPOSE → REQUIRE_REVIEW (>100 uses + low-conf auto) → SKIP |
+### Evolution Comparison Summary
+
+```
+┌── Feedback-based (existing) ──────────────────┐
+│  skill_feedback table                          │
+│       ↓                                        │
+│  Keyword matching (_summarize_feedback)        │
+│       ↓                                        │
+│  APPLY_EDITS / AUTO_FIX (Haiku blind-fix)      │
+│       ↓                                        │
+│  Modified SKILL.md                             │
+└────────────────────────────────────────────────┘
+
+┌── Session-based (NEW, ECC-inspired) ──────────┐
+│  messages table + skill_usage (DB)             │
+│       ↓                                        │
+│  Haiku analyzes full conversation context      │
+│       ↓                                        │
+│  Identifies:                                   │
+│    - Existing skill improvements (→ feedback)  │
+│    - New reusable patterns (→ new skills)      │
+│       ↓                                        │
+│  Modified SKILL.md + new learned skills         │
+└────────────────────────────────────────────────┘
+
+┌── Evaluation (NEW) ────────────────────────────┐
+│  evolution_log + skill_eval_snapshots          │
+│       ↓                                        │
+│  Composite scoring (rating + usage + success)  │
+│       ↓                                        │
+│  Degradation → under_review → 48h rollback    │
+└────────────────────────────────────────────────┘
+```
 
 ### State Machine
 
 ```
-         auto_evolve triggers
+    auto_evolve / session_learner
               │
               ▼
          ┌─────────┐
@@ -222,29 +315,142 @@ Page layout follows the existing dashboard design language (Recharts charts, tab
 
 ---
 
-## 4. Evolution Policy Adjustments
+## 4. Session Learner — ECC-Inspired Evolution
 
-Applied to `src/auto_evolve.py`:
+### Haiku Analysis Prompt
 
-1. **Cooldown period (7 days)**: Check `evolution_log` for the skill's last evolution; skip if within cooldown. Configurable via `EVOLVE_COOLDOWN_DAYS`.
+The `session_learner` sends the following structured context to Haiku:
 
-2. **AUTO_FIX confidence gate**: After Haiku generates the fix, Haiku self-scores the fix quality (1-10). Score ≥ 6 → AUTO_FIX; score < 6 → demote to PROPOSE.
+**Input:**
+- Full `messages` rows for the session (seq, type, name, content)
+- `skill_usage` data showing which skills were called and when
+- Existing `skill_feedback` for those skills (if any)
+- Current SKILL.md for each skill used in the session
 
-3. **HIGH_USAGE_THRESHOLD**: Raised from 50 to 100. High-usage skills with high-confidence AUTO_FIX or APPLY_EDITS still proceed automatically (rollback safety net in place).
-
-4. **Adjusted priority order**:
-
+**Prompt template:**
 ```
-APPLY_EDITS     → always direct merge (evaluation safety net catches regressions)
-AUTO_FIX        → confidence ≥ 6: auto-fix; < 6: demote to PROPOSE
-PROPOSE         → generate suggestion, admin approval required before apply
-REQUIRE_REVIEW  → usage > 100 AND not high-confidence auto strategy
-SKIP            → cooldown active / insufficient signal
+You are analyzing a completed AI agent session to improve skills.
+
+## Session Messages
+{messages formatted as: [seq] type:name → content}
+
+## Skills Used in This Session
+{skill_name}: called at {timestamp}, current SKILL.md: {content}
+
+## Existing User Feedback for These Skills
+{ratings and comments from skill_feedback}
+
+## Analysis Tasks
+
+1. **Skill improvements**: For each skill used, did it perform well?
+   - What went wrong? (look for errors, user corrections, retries)
+   - What should change in SKILL.md to prevent this?
+   - If no issues, say so.
+
+2. **New patterns**: Did the user demonstrate any reusable workflow?
+   - A troubleshooting technique
+   - A specific tool usage pattern
+   - A workaround for a limitation
+   → Could this become a new reusable skill?
+
+Output as JSON:
+{
+  "improvements": [
+    {
+      "skill_name": "xxx",
+      "confidence": 1-10,
+      "issue": "specific issue description with context",
+      "suggested_fix": "updated SKILL.md content or specific changes"
+    }
+  ],
+  "new_patterns": [
+    {
+      "name": "descriptive-kebab-case-name",
+      "description": "what this pattern does and when to use it",
+      "suggested_skill_content": "full SKILL.md if confident, or outline"
+    }
+  ]
+}
 ```
+
+### Output Handling
+
+**For improvements** (confidence >= 6):
+- Write to `skill_feedback` table with `source='ai_session_analysis'` and `skill_version` tracking
+- Feed into existing `auto_evolve` pipeline as AUTO_FIX candidates
+- The Haiku-generated `suggested_fix` replaces the blind-fix approach
+
+**For improvements** (confidence < 6):
+- Write as PROPOSE candidate for admin review
+
+**For new patterns** (confidence >= 7):
+- Create `data/shared-skills/learned/{name}/SKILL.md`
+- Register in `skills` table with `source='learned'`
+- Create `evolution_log` entry with `evolve_policy='SESSION_LEARNED'`
+
+**For new patterns** (confidence < 7):
+- Save as draft for admin review in the dashboard
+
+### Implementation
+
+```python
+# src/session_learner.py
+
+class SessionLearner:
+    def __init__(self, db: Database, skills_dir: Path):
+        self.db = db
+        self.skills_dir = skills_dir
+
+    async def analyze_session(self, session_id: str) -> dict:
+        """Analyze a completed session and extract learnings."""
+        # 1. Query messages + skill_usage from DB
+        messages = await self._get_session_messages(session_id)
+        skills_used = await self._get_session_skills(session_id)
+
+        if not skills_used:
+            return {"improvements": [], "new_patterns": []}
+
+        # 2. Build analysis context
+        context = self._build_analysis_context(messages, skills_used)
+
+        # 3. Call Haiku for analysis
+        result = await self._call_haiku_analyze(context)
+
+        # 4. Process improvements → skill_feedback table
+        for imp in result.get("improvements", []):
+            await self._process_improvement(imp, session_id)
+
+        # 5. Process new patterns → create learned skills
+        for pat in result.get("new_patterns", []):
+            await self._process_new_pattern(pat, session_id)
+
+        return result
+```
+
+### Comparison with Old AUTO_FIX
+
+| | Old AUTO_FIX | New Session Learner |
+|---|---|---|
+| Data | Bug keywords from comments | Full conversation messages |
+| Context | "timeout, error" | Actual error messages, user corrections, tool outputs |
+| Skill content | Current SKILL.md only | SKILL.md + conversation context + existing feedback |
+| Output | Modified SKILL.md | Modified SKILL.md + new learned skills |
+| Quality | Blind guess from keywords | Informed analysis from real behavior |
 
 ---
 
 ## 5. Testing Strategy
+
+### Backend Tests (`tests/unit/test_session_learner.py`)
+
+- `_get_session_messages()` returns messages ordered by seq
+- `_get_session_skills()` returns skills used in the session
+- `_build_analysis_context()` formats messages and skills into correct prompt structure
+- `_call_haiku_analyze()` handles success response (JSON parsed correctly)
+- `_call_haiku_analyze()` handles error response (returns empty improvements/patterns)
+- `_process_improvement()` writes to `skill_feedback` table with correct source flag
+- `_process_new_pattern()` creates SKILL.md in correct directory
+- Session with no skills used → early return empty result
 
 ### Backend Tests (`tests/unit/test_evolution_evaluator.py`)
 
@@ -278,11 +484,14 @@ SKIP            → cooldown active / insufficient signal
 ## 6. Verification
 
 1. **DB migration**: Run `CREATE TABLE` for `evolution_log` and `skill_eval_snapshots`, verify tables exist
-2. **Policy cooldown**: Trigger auto-evolve twice for the same skill within 7 days → second attempt SKIPs
-3. **Snapshot generation**: Run `_eval_snapshot_loop()` → verify snapshots created for all active evolutions
-4. **Degradation → under_review**: Manually insert 7 low-score snapshots → next loop run transitions to `under_review`
-5. **Auto-rollback**: Set `auto_rollback_at` in the past → next loop run executes rollback
-6. **API integration**: `curl /api/admin/evolution/overview` with admin token returns paginated list
-7. **UI**: Navigate to `/dashboard/evolution`, verify table renders, click row → detail page with charts
-8. **Diff**: Click into a skill with version diff → Monaco DiffEditor shows side-by-side markdown diff
-9. **Admin review**: POST `{"decision": "keep"}` → status transitions back to `active`
+2. **Session learner**: Complete a session that invokes skills → `session_learner.analyze_session()` runs → check `skill_feedback` for AI-generated entries with `source='ai_session_analysis'`
+3. **New pattern creation**: Session with a novel workflow → Haiku identifies pattern → `data/shared-skills/learned/{name}/SKILL.md` created
+4. **Policy cooldown**: Trigger auto-evolve twice for the same skill within 7 days → second attempt SKIPs
+5. **Snapshot generation**: Run `_eval_snapshot_loop()` → verify snapshots created for all active evolutions
+6. **Degradation → under_review**: Manually insert 7 low-score snapshots → next loop run transitions to `under_review`
+7. **Auto-rollback**: Set `auto_rollback_at` in the past → next loop run executes rollback
+8. **API integration**: `curl /api/admin/evolution/overview` with admin token returns paginated list (includes both feedback-based and session-learned evolutions)
+9. **UI overview**: Navigate to `/dashboard/evolution`, verify table renders with mixed evolution sources
+10. **UI detail**: Click into a session-learned evolution → detail page shows Haiku-identified issue context alongside score trend
+11. **Diff**: Click into any evolution → Monaco DiffEditor shows side-by-side markdown diff
+12. **Admin review**: POST `{"decision": "keep"}` → status transitions back to `active`
