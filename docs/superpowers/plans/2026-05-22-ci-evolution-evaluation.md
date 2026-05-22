@@ -54,6 +54,8 @@ if not await cursor.fetchone():
             to_version TEXT NOT NULL,
             source TEXT NOT NULL DEFAULT 'session_learner',
             evolve_reason TEXT,
+            proposed_content TEXT,
+            baseline_composite REAL,
             status TEXT NOT NULL DEFAULT 'active',
             created_at INTEGER NOT NULL,
             reviewed_at INTEGER,
@@ -74,8 +76,8 @@ if not await cursor.fetchone():
             created_at INTEGER NOT NULL
         );
 
-        CREATE INDEX IF NOT EXISTS idx_evo_log_status ON evolution_log(status);
-        CREATE INDEX IF NOT EXISTS idx_evo_log_skill ON evolution_log(skill_name);
+        CREATE INDEX IF NOT EXISTS idx_evolution_log_status ON evolution_log(status);
+        CREATE INDEX IF NOT EXISTS idx_evolution_log_skill ON evolution_log(skill_name);
         CREATE INDEX IF NOT EXISTS idx_eval_snap_log ON skill_eval_snapshots(evolution_log_id);
     """)
 ```
@@ -122,13 +124,19 @@ class EvolutionLogStore:
         *,
         source: str = "session_learner",
         evolve_reason: str = "",
+        proposed_content: str = "",
+        baseline_composite: float | None = None,
+        status: str = "active",
     ) -> dict[str, Any]:
         async with self.db.connection() as conn:
             cursor = await conn.execute(
                 """INSERT INTO evolution_log
-                   (skill_name, from_version, to_version, source, evolve_reason, created_at)
-                   VALUES (?, ?, ?, ?, ?, ?)""",
-                (skill_name, from_version, to_version, source, evolve_reason, int(time.time())),
+                   (skill_name, from_version, to_version, source, evolve_reason,
+                    proposed_content, baseline_composite, status, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (skill_name, from_version, to_version, source, evolve_reason,
+                 proposed_content, baseline_composite, status,
+                 int(time.time())),
             )
             return {"id": cursor.lastrowid}
 
@@ -247,6 +255,15 @@ class EvolutionLogStore:
                 """SELECT * FROM evolution_log
                    WHERE status IN ('active', 'under_review')
                    ORDER BY created_at""",
+            )
+            return [dict(r) for r in await cursor.fetchall()]
+
+    async def get_proposed(self) -> list[dict[str, Any]]:
+        async with self.db.connection() as conn:
+            cursor = await conn.execute(
+                """SELECT * FROM evolution_log
+                   WHERE status = 'proposed'
+                   ORDER BY created_at DESC""",
             )
             return [dict(r) for r in await cursor.fetchall()]
 
@@ -411,9 +428,9 @@ class EvolutionEvaluator:
             if len(last_7) < 7:
                 continue
 
-            baseline = self._baseline_score(log["skill_name"], log["created_at"])
+            # Use baseline_composite stored at evolution creation time
+            baseline = log.get("baseline_composite") or 0.6
             if all(s["composite_score"] < baseline for s in last_7):
-                from datetime import UTC as _utc
                 import time
                 rollback_at = int(time.time()) + 48 * 3600
                 await self.store.update_status(
@@ -427,20 +444,26 @@ class EvolutionEvaluator:
     async def _compute_snapshot(
         self, log: dict, date_str: str
     ) -> dict:
-        """Compute a single day's snapshot for an evolution."""
+        """Compute a single day's snapshot for an evolution.
+
+        Data sources (per spec):
+        - usage_count, unique_users: skill_usage table
+        - avg_rating: skill_feedback table
+        - session_success_rate: agent_log + skill_usage tables
+        """
         skill_name = log["skill_name"]
         date_start = f"{date_str}T00:00:00"
         date_end = f"{date_str}T23:59:59"
 
         async with self.db.connection() as conn:
-            # Usage count for this skill since evolution
+            # Usage count since last snapshot
             cursor = await conn.execute(
                 """SELECT COUNT(*) FROM skill_usage
-                   WHERE skill_name = ? AND created_at >= ?""",
-                (skill_name, log["created_at"]),
+                   WHERE skill_name = ? AND created_at >= strftime('%s', ?)""",
+                (skill_name, date_start),
             )
             row = await cursor.fetchone()
-            usage_total = row[0] if row else 0
+            usage_count = row[0] if row else 0
 
             # Daily unique users
             cursor = await conn.execute(
@@ -453,44 +476,49 @@ class EvolutionEvaluator:
             row = await cursor.fetchone()
             unique_users = row[0] if row else 0
 
-            # Avg rating from feedback since evolution
+            # Avg rating
             cursor = await conn.execute(
-                """SELECT AVG(rating) FROM skill_feedback
-                   WHERE skill_name = ?""",
+                "SELECT AVG(rating) FROM skill_feedback WHERE skill_name = ?",
                 (skill_name,),
             )
             row = await cursor.fetchone()
             avg_rating = row[0] if row and row[0] else 0.0
 
-            # Session success rate (sessions NOT ending in error)
+            # Session success rate: completed / total for sessions using this skill
             cursor = await conn.execute(
-                """SELECT COUNT(*) FROM sessions
-                   WHERE session_id IN (
-                       SELECT DISTINCT session_id FROM skill_usage
-                       WHERE skill_name = ? AND created_at >= ?
+                """SELECT
+                    CAST(SUM(CASE WHEN al.status = 'completed' THEN 1 ELSE 0 END) AS REAL) / COUNT(*)
+                   FROM agent_log al
+                   WHERE al.session_id IN (
+                       SELECT DISTINCT session_id FROM skill_usage WHERE skill_name = ?
                    )""",
-                (skill_name, log["created_at"]),
+                (skill_name,),
             )
             row = await cursor.fetchone()
-            total_sessions = row[0] if row else 1
+            session_success_rate = row[0] if row and row[0] else 0.0
 
-            # Sessions with this skill that had errors
-            cursor = await conn.execute(
-                """SELECT COUNT(DISTINCT m.session_id) FROM messages m
-                   JOIN skill_usage su ON m.session_id = su.session_id
-                   WHERE su.skill_name = ?
-                   AND su.created_at >= ?
-                   AND m.type IN ('error', 'system')
-                   AND m.subtype = 'error'""",
-                (skill_name, log["created_at"]),
-            )
-            row = await cursor.fetchone()
-            error_sessions = row[0] if row else 0
+        # Baseline daily usage from 7 days before evolution
+        evolved_at = log["created_at"]
+        baseline_period_start = evolved_at - 7 * 86400
+        baseline_daily = 5  # default
+        try:
+            async with self.db.connection() as conn:
+                cursor = await conn.execute(
+                    """SELECT COUNT(*) / 7.0 FROM skill_usage
+                       WHERE skill_name = ? AND created_at BETWEEN ? AND ?""",
+                    (skill_name, baseline_period_start, evolved_at),
+                )
+                row = await cursor.fetchone()
+                if row and row[0]:
+                    baseline_daily = max(row[0], 1)
+        except Exception:
+            pass
 
-            session_success_rate = 1.0 - (error_sessions / max(total_sessions, 1))
+        # Usage trend ratio
+        days_since_evo = max((int(__import__("time").time()) - evolved_at) / 86400, 1)
+        current_daily = usage_count / days_since_evo if usage_count > 0 else 0
+        usage_trend_ratio = min(current_daily / baseline_daily, 1.0)
 
-        # Composite score
-        usage_trend_ratio = min(usage_total / max(self._baseline_usage(skill_name, log["created_at"]), 1), 1.0)
         composite = (
             W_RATING * (avg_rating / 5.0)
             + W_USAGE * usage_trend_ratio
@@ -500,23 +528,12 @@ class EvolutionEvaluator:
         return {
             "evolution_log_id": log["id"],
             "snapshot_date": date_str,
-            "usage_count": usage_total,
+            "usage_count": usage_count,
             "unique_users": unique_users,
             "avg_rating": round(avg_rating, 2),
             "session_success_rate": round(session_success_rate, 2),
             "composite_score": round(composite, 4),
         }
-
-    def _baseline_score(self, skill_name: str, evolved_at: int) -> float:
-        """Compute baseline composite score from 7 days before evolution.
-        Fixed at 0.6 default when insufficient pre-evolution data exists."""
-        # For initial implementation, use a fixed baseline of 0.6.
-        # This can be enhanced later to compute from pre-evolution snapshots.
-        return 0.6
-
-    def _baseline_usage(self, skill_name: str, evolved_at: int) -> int:
-        """Baseline daily usage before evolution. Default 5."""
-        return 5
 ```
 
 - [ ] **Step 2: Add evaluator tests to the test file**
@@ -626,15 +643,28 @@ logger = logging.getLogger(__name__)
 
 
 class EvolutionRollback:
-    """Executes skill version rollback when evolution degrades."""
+    """Executes skill version rollback when evolution degrades.
 
-    def __init__(self, db: "Database", data_root: Path) -> None:
+    Uses SkillManager.rollback_version() (src/skill_manager.py:382), not
+    DBSkillFeedbackManager.rollback_version() — SkillManager resolves paths
+    from the DB and handles both shared/personal skills without a skills_dir param.
+    """
+
+    def __init__(
+        self,
+        db: "Database",
+        data_root: Path,
+        skill_manager: Any = None,
+        on_skill_changed: "Callable[[], None] | None" = None,
+    ) -> None:
         self.db = db
         self.data_root = data_root
+        self.skill_manager = skill_manager
+        self.on_skill_changed = on_skill_changed
         self.store = EvolutionLogStore(db)
 
     async def execute_rollback(self, log_id: int, reason: str = "auto-rollback") -> bool:
-        """Roll back a skill to its previous version.
+        """Roll back a skill to its previous version via SkillManager.
 
         Returns True on success, False if rollback not possible.
         """
@@ -644,29 +674,16 @@ class EvolutionRollback:
             return False
 
         skill_name = log["skill_name"]
-        from_version = log["from_version"]
-        to_version = log["to_version"]
 
-        skill_dir = self.data_root / "shared-skills" / skill_name
-        skill_file = skill_dir / "SKILL.md"
-        backup_file = skill_dir / f"SKILL_backup_v{to_version}.md"
-
-        if not skill_file.exists():
-            logger.error("Rollback failed: SKILL.md not found for %s", skill_name)
-            return False
-
-        # Restore from backup or from version file
-        version_file = skill_dir / f"SKILL_v{from_version}.md"
-
-        if version_file.exists():
-            # Save current as backup before rolling back
-            skill_file.rename(backup_file)
-            version_file.rename(skill_file)
+        # Delegate to SkillManager.rollback_version() for proper version restore
+        if self.skill_manager is not None:
+            try:
+                await self.skill_manager.rollback_version(skill_name)
+            except Exception as e:
+                logger.error("SkillManager rollback failed for %s: %s", skill_name, e)
+                return False
         else:
-            logger.warning(
-                "No version file for %s v%s — cannot rollback",
-                skill_name, from_version,
-            )
+            logger.error("Rollback failed: no SkillManager available")
             return False
 
         # Update evolution_log
@@ -674,15 +691,15 @@ class EvolutionRollback:
         await self.store.update_status(
             log_id,
             "rolled_back",
-            rolledback_at=int(time.time()),
-            rollback_reason=reason,
+            reviewed_at=int(time.time()),
+            review_decision="rolled_back",
         )
 
         # Bump shared skills generation so user workspaces re-sync
-        from main_server import _bump_shared_skills_gen
-        _bump_shared_skills_gen()
+        if self.on_skill_changed:
+            self.on_skill_changed()
 
-        logger.info("Rolled back %s from v%s to v%s (reason: %s)", skill_name, to_version, from_version, reason)
+        logger.info("Rolled back %s (log %d, reason: %s)", skill_name, log_id, reason)
         return True
 
     async def process_expired_reviews(self) -> int:
@@ -705,59 +722,42 @@ class EvolutionRollback:
 # Append to tests/unit/test_evolution_evaluator.py
 
 @pytest.mark.asyncio
-async def test_rollback_restores_previous_version(db, tmp_path):
-    import time
+async def test_rollback_delegates_to_skill_manager(db):
+    from unittest.mock import AsyncMock, MagicMock
     from src.evolution_log import EvolutionLogStore
     from src.evolution_rollback import EvolutionRollback
-
-    # Setup: create shared-skills dir with versioned files
-    skills_dir = tmp_path / "shared-skills" / "test-skill"
-    skills_dir.mkdir(parents=True)
-    (skills_dir / "SKILL_v1.0.md").write_text("# Old version")
-    (skills_dir / "SKILL.md").write_text("# New broken version")
 
     store = EvolutionLogStore(db)
     r = await store.create_log("test-skill", "1.0", "1.1")
     log_id = r["id"]
 
-    rollback = EvolutionRollback(db, tmp_path)
-    import main_server
-    main_server.DATA_ROOT = tmp_path
+    mock_skill_mgr = MagicMock()
+    mock_skill_mgr.rollback_version = AsyncMock(return_value=None)
 
+    rollback = EvolutionRollback(db, __import__("pathlib").Path("/tmp"), skill_manager=mock_skill_mgr)
     result = await rollback.execute_rollback(log_id)
     assert result is True
+    mock_skill_mgr.rollback_version.assert_called_once_with("test-skill")
 
-    # Verify SKILL.md was restored to old version
-    content = (skills_dir / "SKILL.md").read_text()
-    assert content == "# Old version"
-
-    # Verify backup was created
-    assert (skills_dir / "SKILL_backup_v1.1.md").exists()
-
-    # Verify log updated
     log = await store.get_log(log_id)
     assert log["status"] == "rolled_back"
 
 
 @pytest.mark.asyncio
-async def test_process_expired_reviews_executes_rollbacks(db, tmp_path):
+async def test_process_expired_reviews_executes_rollbacks(db):
     import time
+    from unittest.mock import AsyncMock, MagicMock
     from src.evolution_log import EvolutionLogStore
     from src.evolution_rollback import EvolutionRollback
-
-    skills_dir = tmp_path / "shared-skills" / "skill-z"
-    skills_dir.mkdir(parents=True)
-    (skills_dir / "SKILL_v1.0.md").write_text("# Old")
-    (skills_dir / "SKILL.md").write_text("# New")
 
     store = EvolutionLogStore(db)
     r = await store.create_log("skill-z", "1.0", "1.1")
     await store.update_status(r["id"], "under_review", auto_rollback_at=int(time.time()) - 3600)
 
-    import main_server
-    main_server.DATA_ROOT = tmp_path
-    rollback = EvolutionRollback(db, tmp_path)
+    mock_skill_mgr = MagicMock()
+    mock_skill_mgr.rollback_version = AsyncMock(return_value=None)
 
+    rollback = EvolutionRollback(db, __import__("pathlib").Path("/tmp"), skill_manager=mock_skill_mgr)
     count = await rollback.process_expired_reviews()
     assert count == 1
 
@@ -962,17 +962,18 @@ class SessionLearner:
         skills_used: list[str],
         feedback: dict,
     ) -> str:
-        # Format messages compactly: skip empty content, truncate long lines
+        # Format messages: [{seq}] {type}/{name}: {content[:2000]}
+        # Cap at last 200 messages, skip empty/system-heavy content
         lines = []
-        for m in messages[-200:]:  # last 200 messages max to fit context
-            content = (m.get("content") or "")[:300]
+        for m in messages[-200:]:
+            content = (m.get("content") or "")[:2000]
             if not content.strip():
                 continue
             name = m.get("name") or ""
             prefix = f"[{m['seq']}] {m['type']}"
             if name:
-                prefix += f":{name}"
-            lines.append(f"{prefix} {content}")
+                prefix += f"/{name}"
+            lines.append(f"{prefix}: {content}")
         msg_text = "\n".join(lines)
 
         skills_text = ", ".join(skills_used)
@@ -990,28 +991,32 @@ class SessionLearner:
         )
 
     async def _call_haiku(self, prompt: str) -> dict | None:
-        api_key = os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_AUTH_TOKEN")
+        """Call Haiku following main_server.py pattern (env-based config)."""
+        import httpx
+
+        api_key = os.getenv("ANTHROPIC_AUTH_TOKEN") or os.getenv("ANTHROPIC_API_KEY")
         if not api_key:
             logger.warning("SessionLearner: no API key available")
             return None
 
-        try:
-            import httpx
+        model = os.getenv("MODEL", "claude-haiku-4-5-20251001")
+        base_url = os.getenv("ANTHROPIC_BASE_URL", "https://api.anthropic.com").rstrip("/")
 
-            async with httpx.AsyncClient() as client:
+        try:
+            async with httpx.AsyncClient(timeout=120) as client:
                 resp = await client.post(
-                    "https://api.anthropic.com/v1/messages",
+                    f"{base_url}/v1/messages",
                     headers={
                         "x-api-key": api_key,
                         "anthropic-version": "2023-06-01",
                         "content-type": "application/json",
                     },
                     json={
-                        "model": "claude-haiku-4-5-20251001",
+                        "model": model,
                         "max_tokens": 4000,
+                        "system": "You analyze AI agent sessions to improve skills. Return ONLY valid JSON.",
                         "messages": [{"role": "user", "content": prompt}],
                     },
-                    timeout=60.0,
                 )
                 resp.raise_for_status()
                 data = resp.json()
@@ -1034,7 +1039,11 @@ class SessionLearner:
     # ── Apply / Propose / Create ──────────────────────────────────
 
     async def _apply_improvement(self, imp: dict, session_id: str) -> None:
-        """Auto-apply a high-confidence skill improvement."""
+        """Auto-apply a high-confidence skill improvement.
+
+        Delegates to DBSkillFeedbackManager.create_version() for proper backup
+        and version tracking (reuses existing skill_versions table).
+        """
         skill_name = imp["skill_name"]
         suggested_fix = imp["suggested_fix"]
         skill_dir = self.data_root / "shared-skills" / skill_name
@@ -1043,24 +1052,30 @@ class SessionLearner:
         if not skill_file.exists():
             return
 
-        # Read current version
         old_content = skill_file.read_text()
         from_version = self._extract_version(old_content)
 
-        # Create versioned backup
-        existing_versions = list(skill_dir.glob("SKILL_v*.md"))
-        next_version_num = len(existing_versions) + 1
-        to_version = str(next_version_num)
+        try:
+            from src.skill_feedback import DBSkillFeedbackManager
+            mgr = DBSkillFeedbackManager(self.db)
+            version_result = await mgr.create_version(
+                skill_name=skill_name,
+                skills_dir=str(self.data_root / "shared-skills"),
+                new_content=suggested_fix,
+                user_id="system",
+            )
+            to_version = version_result["version"] if version_result else "unknown"
+        except Exception as e:
+            logger.error("create_version failed for %s: %s", skill_name, e)
+            # Fallback: write directly
+            backup_path = skill_dir / f"SKILL_backup_v{from_version}.md"
+            if not backup_path.exists():
+                skill_file.rename(backup_path)
+            skill_file.write_text(suggested_fix)
+            to_version = str(len(list(skill_dir.glob("SKILL_v*.md"))) + 1)
 
-        # Save old version
-        backup_path = skill_dir / f"SKILL_v{from_version}.md"
-        if not backup_path.exists():
-            skill_file.rename(backup_path)
-        else:
-            skill_file.rename(skill_dir / f"SKILL_v{from_version}_backup_{next_version_num}.md")
-
-        # Write new version
-        skill_file.write_text(suggested_fix)
+        # Compute baseline composite score for future degradation detection
+        baseline = await self._compute_baseline_composite(skill_name)
 
         # Create evolution_log entry
         await self.store.create_log(
@@ -1069,6 +1084,7 @@ class SessionLearner:
             to_version=to_version,
             source="session_learner",
             evolve_reason=imp.get("issue", "")[:500],
+            baseline_composite=baseline,
         )
 
         # Bump shared skills generation so Windows copy-based sync refreshes
@@ -1079,20 +1095,21 @@ class SessionLearner:
         logger.info("Applied improvement to %s: v%s → v%s", skill_name, from_version, to_version)
 
     async def _propose_improvement(self, imp: dict, session_id: str) -> None:
-        """Save a medium-confidence improvement as a proposal in skill_feedback."""
-        async with self.db.connection() as conn:
-            await conn.execute(
-                """INSERT INTO skill_feedback
-                   (skill_name, user_id, session_id, rating, comment, user_edits)
-                   VALUES (?, ?, ?, 3, ?, ?)""",
-                (
-                    imp["skill_name"],
-                    "system",
-                    session_id,
-                    f"[AI PROPOSAL] {imp.get('issue', '')[:400]}",
-                    imp.get("suggested_fix", ""),
-                ),
-            )
+        """Save a medium-confidence (4-6) improvement as a proposal in evolution_log.
+
+        Admin can review via dashboard → POST /review with keep/discard.
+        proposed_content stores the suggested SKILL.md for admin preview.
+        """
+        await self.store.create_log(
+            skill_name=imp["skill_name"],
+            from_version="—",
+            to_version="—",
+            source="session_learner",
+            evolve_reason=imp.get("issue", "")[:500],
+            proposed_content=imp.get("suggested_fix", ""),
+            status="proposed",
+        )
+        logger.info("Proposed improvement for %s", imp["skill_name"])
 
     async def _create_learned_skill(self, pat: dict, session_id: str) -> None:
         """Create a new learned skill from a discovered pattern.
@@ -1106,6 +1123,15 @@ class SessionLearner:
         name = pat["name"].strip().lower().replace(" ", "-")
         description = pat.get("description", "")
         skill_dir = self.data_root / "shared-skills" / name
+
+        # Check for name collision — append -learned if name exists on disk or in DB
+        if skill_dir.exists():
+            name = f"{name}-learned"
+            skill_dir = self.data_root / "shared-skills" / name
+        if skill_dir.exists():
+            logger.warning("Skill name conflict for %s, skipping", name)
+            return
+
         skill_dir.mkdir(parents=True, exist_ok=True)
 
         content = pat.get("skill_content", "")
@@ -1143,6 +1169,46 @@ class SessionLearner:
             self.on_skill_changed()
 
         logger.info("Created learned skill: %s (disk + DB + gen-bump)", name)
+
+    async def _compute_baseline_composite(self, skill_name: str) -> float:
+        """Compute pre-evolution baseline composite score (7 days before now).
+
+        Used at evolution creation time — stored in evolution_log.baseline_composite
+        so evaluator can compare future snapshots against this baseline.
+        """
+        import time
+        now = int(time.time())
+        period_start = now - 7 * 86400
+
+        async with self.db.connection() as conn:
+            # Baseline daily usage
+            cursor = await conn.execute(
+                """SELECT COUNT(*) / 7.0 FROM skill_usage
+                   WHERE skill_name = ? AND created_at BETWEEN ? AND ?""",
+                (skill_name, period_start, now),
+            )
+            row = await cursor.fetchone()
+            baseline_daily = max(row[0] if row and row[0] else 0, 1)
+
+            # Baseline avg rating
+            cursor = await conn.execute(
+                "SELECT AVG(rating) FROM skill_feedback WHERE skill_name = ?",
+                (skill_name,),
+            )
+            row = await cursor.fetchone()
+            avg_rating = row[0] if row and row[0] else 0.0
+
+        # Session success rate — use 0.8 as default baseline
+        session_success_rate = 0.8
+
+        from src.evolution_evaluator import W_RATING, W_USAGE, W_SUCCESS
+        usage_trend_ratio = 1.0  # baseline compared to itself = 1.0
+        return round(
+            W_RATING * (avg_rating / 5.0)
+            + W_USAGE * usage_trend_ratio
+            + W_SUCCESS * session_success_rate,
+            4,
+        )
 
     @staticmethod
     def _extract_version(content: str) -> str:
@@ -1348,10 +1414,10 @@ git commit -m "feat: replace auto_evolve loop with daily eval snapshot loop"
 
 - [ ] **Step 1: Add session-end trigger (both modes)**
 
-In `run_agent_task()` (non-container) AND `run_agent_task_container()` (container), after the `"completed"` branch's `agent_log.end_session()` and `_summarize_and_store_session()`, add:
+In `run_agent_task()` (non-container) AND `run_agent_task_container()` (container), ONLY in the `"completed"` branch (after `agent_log.end_session(status="completed")` and `_summarize_and_store_session()`). Do NOT add to timeout/cancelled/error branches — only successful completions provide meaningful evolution signal.
 
 ```python
-# Fire-and-forget session analysis (don't block agent task cleanup)
+# Fire-and-forget session analysis (only for completed sessions)
 asyncio.ensure_future(_analyze_completed_session(session_id))
 ```
 
@@ -1476,10 +1542,14 @@ async def evolution_review(
     decision: dict,
     admin: dict = Depends(require_admin),
 ):
-    """Admin reviews an under_review evolution: keep or rollback."""
+    """Admin reviews an evolution: keep / rollback / discard.
+
+    For status=under_review: keep (return to active) or rollback
+    For status=proposed: keep (apply the proposed SKILL.md change → active) or discard (delete)
+    """
     d = decision.get("decision")
-    if d not in ("keep", "rollback"):
-        raise HTTPException(422, "decision must be 'keep' or 'rollback'")
+    if d not in ("keep", "rollback", "discard"):
+        raise HTTPException(422, "decision must be 'keep', 'rollback', or 'discard'")
 
     from src.evolution_log import EvolutionLogStore
     from src.evolution_rollback import EvolutionRollback
@@ -1490,28 +1560,54 @@ async def evolution_review(
     if not log:
         raise HTTPException(404, "Evolution record not found")
 
+    # Handle proposed: keep → apply the proposed SKILL.md, discard → delete
+    if log["status"] == "proposed":
+        if d == "keep":
+            # Apply the proposed SKILL.md change
+            proposed = log.get("proposed_content") or ""
+            if proposed:
+                skill_dir = DATA_ROOT / "shared-skills" / log["skill_name"]
+                skill_file = skill_dir / "SKILL.md"
+                if skill_file.exists():
+                    old_content = skill_file.read_text()
+                    from src.session_learner import SessionLearner
+                    from_ver = SessionLearner._extract_version(old_content)
+                    # Backup old, write new
+                    backup_path = skill_dir / f"SKILL_backup_v{from_ver}.md"
+                    if not backup_path.exists():
+                        skill_file.rename(backup_path)
+                    skill_file.write_text(proposed)
+            await store.update_status(
+                evolution_id, "active",
+                reviewed_at=int(time.time()), reviewed_by=admin["user_id"],
+                review_decision="kept",
+                from_version=from_ver if proposed else log["from_version"],
+                to_version=str(int(time.time()) % 1000) if proposed else log["to_version"],
+            )
+            return {"status": "active", "message": "Proposal approved and applied"}
+        else:  # discard
+            async with _db.connection() as conn:
+                await conn.execute("DELETE FROM evolution_log WHERE id = ?", (evolution_id,))
+            return {"status": "deleted", "message": "Proposal discarded"}
+
+    # Handle under_review / active: keep or rollback
     if d == "keep":
         await store.update_status(
-            evolution_id,
-            "active",
-            reviewed_at=int(time.time()),
-            reviewed_by=admin["user_id"],
+            evolution_id, "active",
+            reviewed_at=int(time.time()), reviewed_by=admin["user_id"],
             review_decision="kept",
         )
         return {"status": "active", "message": "Evolution kept"}
     else:
-        rollback = EvolutionRollback(_db, DATA_ROOT)
+        rollback = EvolutionRollback(_db, DATA_ROOT, skill_manager=_skill_manager, on_skill_changed=_bump_shared_skills_gen)
         success = await rollback.execute_rollback(
             evolution_id, reason=f"Admin rollback by {admin['user_id']}"
         )
         if not success:
-            raise HTTPException(500, "Rollback failed — version file not found")
-        # Update review metadata
+            raise HTTPException(500, "Rollback failed")
         await store.update_status(
-            evolution_id,
-            "rolled_back",
-            reviewed_at=int(time.time()),
-            reviewed_by=admin["user_id"],
+            evolution_id, "rolled_back",
+            reviewed_at=int(time.time()), reviewed_by=admin["user_id"],
             review_decision="rolled_back",
         )
         return {"status": "rolled_back", "message": "Evolution rolled back"}
@@ -1622,7 +1718,9 @@ export interface EvolutionItem {
   to_version: string
   source: string
   evolve_reason: string
-  status: 'active' | 'under_review' | 'rolled_back' | 'superseded'
+  status: 'active' | 'under_review' | 'rolled_back' | 'proposed' | 'superseded'
+  baseline_composite: number | null
+  proposed_content: string | null
   created_at: number
   reviewed_at: number | null
   reviewed_by: string | null
@@ -1668,7 +1766,7 @@ export interface EvolutionApi {
   overview: AsyncState<{ items: EvolutionItem[]; total: number; page: number }>
   detail: (id: number) => AsyncState<EvolutionDetail>
   diff: (id: number) => AsyncState<EvolutionDiff>
-  review: (id: number, decision: 'keep' | 'rollback') => Promise<void>
+  review: (id: number, decision: 'keep' | 'rollback' | 'discard') => Promise<void>
   refetch: () => void
 }
 
@@ -1736,7 +1834,7 @@ export function useEvolutionApi(statusFilter?: string, page: number = 1): Evolut
     return state
   }, [authToken])
 
-  const review = useCallback(async (id: number, decision: 'keep' | 'rollback') => {
+  const review = useCallback(async (id: number, decision: 'keep' | 'rollback' | 'discard') => {
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
     }
@@ -1837,7 +1935,7 @@ export default function EvolutionPage() {
       <div className="evolution-header">
         <h2>CI Evolution Monitor</h2>
         <div className="status-tabs">
-          {['All', 'Active', 'Under Review', 'Rolled Back'].map((label) => {
+          {['All', 'Active', 'Proposed', 'Under Review', 'Rolled Back'].map((label) => {
             const value = label === 'All' ? undefined : label.toLowerCase().replace(' ', '_')
             return (
               <button
@@ -1877,6 +1975,7 @@ interface Props {
 
 const STATUS_LABELS: Record<string, { label: string; className: string }> = {
   active: { label: 'Active', className: 'status-active' },
+  proposed: { label: 'Proposed', className: 'status-proposed' },
   under_review: { label: 'Under Review', className: 'status-review' },
   rolled_back: { label: 'Rolled Back', className: 'status-rolled' },
 }
@@ -1953,7 +2052,7 @@ export default function EvolutionDetail({ evolutionId }: { evolutionId: number }
       .finally(() => setLoading(false))
   }, [evolutionId])
 
-  const handleReview = async (decision: 'keep' | 'rollback') => {
+  const handleReview = async (decision: 'keep' | 'rollback' | 'discard') => {
     setActionLoading(true)
     try {
       const token = localStorage.getItem('authToken') || ''
@@ -1988,14 +2087,44 @@ export default function EvolutionDetail({ evolutionId }: { evolutionId: number }
       </p>
       {data.evolve_reason && <p className="evo-reason">{data.evolve_reason}</p>}
 
+      {/* Show proposed SKILL.md content for admin review */}
+      {data.status === 'proposed' && data.proposed_content && (
+        <div className="evo-proposed">
+          <h4>Proposed SKILL.md Content</h4>
+          <pre className="evo-proposed-content"><code>{data.proposed_content}</code></pre>
+        </div>
+      )}
+
       {(data.snapshots?.length ?? 0) > 0 && (
         <>
-          <ScoreTrendChart snapshots={data.snapshots!} />
+          <ScoreTrendChart snapshots={data.snapshots!} baseline={data.baseline_composite} />
           {data.signal_breakdown && <SignalBreakdown breakdown={data.signal_breakdown} />}
         </>
       )}
 
       <VersionDiff evolutionId={evolutionId} />
+
+      {/* Proposed: keep (apply + activate) or discard (delete) */}
+      {data.status === 'proposed' && (
+        <div className="evo-actions">
+          <button
+            className="btn-keep"
+            disabled={actionLoading}
+            onClick={() => handleReview('keep')}
+          >
+            Approve & Apply
+          </button>
+          <button
+            className="btn-discard"
+            disabled={actionLoading}
+            onClick={() => handleReview('discard')}
+          >
+            Discard
+          </button>
+        </div>
+      )}
+
+      {/* Under review: keep (return to active) or rollback */}
       {data.status === 'under_review' && (
         <div className="evo-actions">
           <button
@@ -2027,13 +2156,15 @@ import type { Snapshot } from '../../hooks/useEvolutionApi'
 
 interface Props {
   snapshots: Snapshot[]
+  baseline?: number | null
 }
 
-export default function ScoreTrendChart({ snapshots }: Props) {
+export default function ScoreTrendChart({ snapshots, baseline }: Props) {
+  const baselineValue = baseline ?? 0.6
   const data = snapshots.map((s) => ({
     date: s.snapshot_date,
     score: s.composite_score,
-    baseline: 0.6,
+    baseline: baselineValue,
   }))
 
   return (
@@ -2063,23 +2194,32 @@ interface Props {
   breakdown: SB
 }
 
+function DeltaIndicator({ deltaPct }: { deltaPct: number }) {
+  const isPositive = deltaPct >= 0
+  return (
+    <div className={`signal-delta ${isPositive ? 'positive' : 'negative'}`}>
+      {isPositive ? '↑' : '↓'} {Math.abs(deltaPct).toFixed(1)}%
+    </div>
+  )
+}
+
 export default function SignalBreakdown({ breakdown }: Props) {
   return (
     <div className="signal-breakdown">
       <div className="signal-card">
         <h5>User Rating</h5>
         <div className="signal-value">{breakdown.rating.current.toFixed(1)} / 5</div>
-        <div className="signal-delta negative">↓ {Math.abs(breakdown.rating.delta_pct)}%</div>
+        <DeltaIndicator deltaPct={breakdown.rating.delta_pct} />
       </div>
       <div className="signal-card">
         <h5>Usage</h5>
         <div className="signal-value">{breakdown.usage.current} / day</div>
-        <div className="signal-delta negative">↓ {Math.abs(breakdown.usage.delta_pct)}%</div>
+        <DeltaIndicator deltaPct={breakdown.usage.delta_pct} />
       </div>
       <div className="signal-card">
         <h5>Session Success</h5>
         <div className="signal-value">{(breakdown.session_success.current * 100).toFixed(0)}%</div>
-        <div className="signal-delta negative">↓ {Math.abs(breakdown.session_success.delta_pct)}%</div>
+        <DeltaIndicator deltaPct={breakdown.session_success.delta_pct} />
       </div>
     </div>
   )
@@ -2237,8 +2377,30 @@ export default function RollbackTimeline() {
 }
 
 .status-active { background: #dcfce7; color: #166534; }
+.status-proposed { background: #dbeafe; color: #1e40af; }
 .status-review { background: #fef9c3; color: #854d0e; }
 .status-rolled { background: #fee2e2; color: #991b1b; }
+
+.evo-proposed {
+  margin-bottom: 2rem;
+}
+
+.evo-proposed h4 {
+  margin-bottom: 0.5rem;
+}
+
+.evo-proposed-content {
+  background: #f8fafc;
+  border: 1px solid var(--border-color, #e2e8f0);
+  border-radius: 6px;
+  padding: 1rem;
+  max-height: 400px;
+  overflow-y: auto;
+  font-size: 0.8125rem;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
 
 .evo-detail { margin-top: 1rem; }
 
@@ -2286,9 +2448,14 @@ export default function RollbackTimeline() {
   margin-bottom: 0.25rem;
 }
 
-.signal-delta {
+.signal-delta.negative {
   font-size: 0.875rem;
   color: #ef4444;
+}
+
+.signal-delta.positive {
+  font-size: 0.875rem;
+  color: #059669;
 }
 
 .evo-diff {
@@ -2326,6 +2493,17 @@ export default function RollbackTimeline() {
 }
 
 .btn-rollback:hover { background: #b91c1c; }
+
+.btn-discard {
+  padding: 0.625rem 1.5rem;
+  background: #6b7280;
+  color: white;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.btn-discard:hover { background: #4b5563; }
 
 .evolution-back {
   background: none;
@@ -2399,9 +2577,91 @@ cd frontend && npm run dev
 Navigate to `/dashboard/evolution`, verify:
 - Page loads without errors
 - Empty state shows "No evolution records found"
+- Filter tabs show: All, Active, Proposed, Under Review, Rolled Back
 - Admin APIs return 200 (test with curl)
 
-- [ ] **Step 4: Verify OS & mode compatibility**
+- [ ] **Step 4: Verify proposed flow (confidence 4-6)**
+
+Using curl or admin UI, verify the end-to-end proposed flow:
+
+1. **Insert test proposed evolution** — use the debug endpoint or direct DB insert:
+   ```bash
+   uv run python -c "
+   import asyncio, time, sqlite3
+   from pathlib import Path
+   conn = sqlite3.connect('data/web-agent.db')
+   conn.execute('''INSERT INTO evolution_log
+       (skill_name, from_version, to_version, source, evolve_reason, proposed_content, status, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)''',
+       ('test-skill', '1', '2', 'session_learner', 'Test proposal',
+        '# Proposed SKILL.md\n\nImproved content here.',
+        'proposed', int(time.time())))
+   conn.commit()
+   conn.close()
+   print('OK: test proposed evolution inserted')
+   "
+   ```
+
+2. **Verify API returns proposed entry:**
+   ```bash
+   curl -s http://localhost:8000/api/admin/evolution/overview?status=proposed | python3 -m json.tool | grep -E '"status"|"proposed_content"|"total"'
+   ```
+   Expected: `"status": "proposed"`, `"proposed_content"` present, `"total"` >= 1
+
+3. **Verify detail endpoint includes proposed_content:**
+   ```bash
+   # Replace {id} with the actual ID from overview
+   curl -s http://localhost:8000/api/admin/evolution/{id} | python3 -m json.tool | grep "proposed_content"
+   ```
+   Expected: proposed_content field present with SKILL.md content
+
+4. **Test keep decision:**
+   ```bash
+   curl -s -X POST http://localhost:8000/api/admin/evolution/{id}/review \
+     -H 'Content-Type: application/json' \
+     -d '{"decision": "keep"}'
+   ```
+   Expected: `{"status": "active", "message": "Proposal approved and applied"}`
+   Verify SKILL.md written to `data/shared-skills/test-skill/SKILL.md`
+
+5. **Test discard decision** (insert another proposed entry first):
+   ```bash
+   curl -s -X POST http://localhost:8000/api/admin/evolution/{id}/review \
+     -H 'Content-Type: application/json' \
+     -d '{"decision": "discard"}'
+   ```
+   Expected: `{"status": "deleted", "message": "Proposal discarded"}`
+   Verify no SKILL.md changes, record deleted from evolution_log
+
+6. **Clean up test data:**
+   ```bash
+   uv run python -c "
+   import sqlite3
+   conn = sqlite3.connect('data/web-agent.db')
+   conn.execute(\"DELETE FROM evolution_log WHERE skill_name = 'test-skill'\")
+   conn.execute(\"DELETE FROM skill_eval_snapshots WHERE evolution_log_id NOT IN (SELECT id FROM evolution_log)\")
+   conn.commit()
+   conn.close()
+   print('OK: test data cleaned up')
+   "
+   ```
+
+- [ ] **Step 5: Verify degradation detection flow**
+
+```bash
+# Insert 7 snapshots with composite below baseline to trigger under_review
+uv run python -c "
+import asyncio, time
+from src.evolution_log import EvolutionLogStore
+# Manual test: insert evolution_log entry, then 7 snapshots with low scores
+# Verify status transitions to under_review via _eval_snapshot_loop
+from src.evolution_evaluator import EvolutionEvaluator
+print('TODO: full integration test for degradation detection')
+print('Manual verification: check evolution_log status after inserting 7 low-score snapshots')
+"
+```
+
+- [ ] **Step 6: Verify OS & mode compatibility**
 
 ```bash
 # Verify no circular imports (session_learner must not import from main_server)
@@ -2433,7 +2693,18 @@ print('OK: on_skill_changed callback functional')
 "
 ```
 
-- [ ] **Step 5: Commit final integration fixes**
+- [ ] **Step 7: Verify frontend UI for all statuses**
+
+Navigate to `/dashboard/evolution` in browser and verify:
+- **Proposed filter** shows only proposed items
+- **Proposed detail view** shows proposed_content in a pre block
+- **Approve & Apply** button calls `POST /review {"decision": "keep"}`
+- **Discard** button calls `POST /review {"decision": "discard"}`
+- **Under Review detail** shows Keep / Rollback buttons
+- **ScoreTrendChart** renders with correct baseline line
+- **SignalBreakdown** shows positive deltas in green, negative in red
+
+- [ ] **Step 8: Commit final integration fixes**
 
 ```bash
 git add -A
