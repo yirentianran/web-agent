@@ -527,6 +527,26 @@ async def _summarize_and_store_session(session_id: str, user_id: str) -> None:
         pass
 
 
+async def _analyze_completed_session(session_id: str) -> None:
+    """Fire-and-forget session analysis for skill evolution.
+
+    Runs on the host side for BOTH container and non-container modes.
+    Injects main_server globals via constructor to avoid circular imports.
+    """
+    try:
+        from src.session_learner import SessionLearner
+
+        learner = SessionLearner(
+            _db,
+            DATA_ROOT,
+            skill_manager=_skill_manager,
+            on_skill_changed=_bump_shared_skills_gen,
+        )
+        await learner.analyze_session(session_id)
+    except Exception:
+        logger.exception("Session analysis failed for %s", session_id)
+
+
 def build_download_url(user_id: str, file_path: str, *, directory: str | None = None) -> str:
     """Build a download URL for a file, including the correct directory prefix.
 
@@ -2333,6 +2353,8 @@ async def run_agent_task(
         # Scan for agent-created skills and register any not yet in DB
         if _skill_manager is not None:
             asyncio.ensure_future(_skill_manager.migrate_from_filesystem())
+        # Fire-and-forget session analysis for skill evolution
+        asyncio.ensure_future(_analyze_completed_session(session_id))
 
     except TimeoutError:
         await buffer.add_message(
@@ -2527,6 +2549,8 @@ async def run_agent_task_container(
         # Scan for agent-created skills and register any not yet in DB
         if _skill_manager is not None:
             asyncio.ensure_future(_skill_manager.migrate_from_filesystem())
+        # Fire-and-forget session analysis for skill evolution
+        asyncio.ensure_future(_analyze_completed_session(session_id))
 
     except TimeoutError:
         logger.error("Container task %s: timeout", session_id)
@@ -6274,6 +6298,213 @@ async def trigger_log_cleanup(
     from src.log_cleanup import cleanup_old_logs
 
     return cleanup_old_logs()
+
+
+# ── Evolution Admin APIs ──────────────────────────────────────────
+
+
+@app.get("/api/admin/evolution/overview")
+async def evolution_overview(
+    status: str | None = None,
+    page: int = 1,
+    page_size: int = 20,
+    current_user: str = Depends(require_admin),
+):
+    """List all evolution records with optional status filter."""
+    from src.evolution_log import EvolutionLogStore
+
+    store = EvolutionLogStore(_db)
+    return await store.list_logs(status=status, page=page, page_size=page_size)
+
+
+@app.get("/api/admin/evolution/{evolution_id}")
+async def evolution_detail(
+    evolution_id: int,
+    current_user: str = Depends(require_admin),
+):
+    """Get evolution detail with snapshots and signal breakdown."""
+    from src.evolution_log import EvolutionLogStore
+
+    store = EvolutionLogStore(_db)
+    log = await store.get_log(evolution_id)
+    if not log:
+        raise HTTPException(404, "Evolution record not found")
+
+    snaps = await store.get_snapshots(evolution_id)
+
+    # Build signal breakdown from most recent snapshot
+    if snaps and log.get("baseline_composite"):
+        current_snap = snaps[-1]
+        signal_breakdown = {
+            "rating": {
+                "current": current_snap["avg_rating"],
+                "baseline": 3.0,
+                "delta_pct": round((current_snap["avg_rating"] - 3.0) / 3.0 * 100, 1)
+                if current_snap["avg_rating"]
+                else 0,
+            },
+            "usage": {
+                "current": current_snap["usage_count"],
+                "baseline": 5,
+                "delta_pct": round((current_snap["usage_count"] - 5) / 5 * 100, 1)
+                if current_snap["usage_count"]
+                else 0,
+            },
+            "session_success": {
+                "current": current_snap["session_success_rate"],
+                "baseline": 0.8,
+                "delta_pct": round((current_snap["session_success_rate"] - 0.8) / 0.8 * 100, 1)
+                if current_snap["session_success_rate"]
+                else 0,
+            },
+        }
+    else:
+        signal_breakdown = None
+
+    return {
+        **log,
+        "snapshots": snaps,
+        "signal_breakdown": signal_breakdown,
+    }
+
+
+@app.get("/api/admin/evolution/{evolution_id}/diff")
+async def evolution_diff(
+    evolution_id: int,
+    current_user: str = Depends(require_admin),
+):
+    """Get SKILL.md diff between from_version and to_version."""
+    from src.evolution_log import EvolutionLogStore
+
+    store = EvolutionLogStore(_db)
+    log = await store.get_log(evolution_id)
+    if not log:
+        raise HTTPException(404, "Evolution record not found")
+
+    skill_name = log["skill_name"]
+
+    # For proposed entries, show proposed_content vs current SKILL.md
+    if log["status"] == "proposed" and log.get("proposed_content"):
+        skill_dir = DATA_ROOT / "shared-skills" / skill_name
+        old_content = (
+            skill_dir.joinpath("SKILL.md").read_text()
+            if skill_dir.joinpath("SKILL.md").exists()
+            else ""
+        )
+        new_content = log["proposed_content"]
+    else:
+        from_ver = log["from_version"]
+        to_ver = log["to_version"]
+        skill_dir = DATA_ROOT / "shared-skills" / skill_name
+        old_file = skill_dir / f"SKILL_v{from_ver}.md"
+        old_content = old_file.read_text() if old_file.exists() else ""
+        new_file = skill_dir / "SKILL.md"
+        new_content = new_file.read_text() if new_file.exists() else ""
+
+    import difflib
+
+    diff_lines = list(
+        difflib.unified_diff(
+            old_content.splitlines(keepends=True),
+            new_content.splitlines(keepends=True),
+            fromfile=f"{skill_name}/old",
+            tofile=f"{skill_name}/new",
+        )
+    )
+
+    return {
+        "from_version": log.get("from_version", ""),
+        "to_version": log.get("to_version", ""),
+        "diff": "".join(diff_lines),
+    }
+
+
+@app.post("/api/admin/evolution/{evolution_id}/review")
+async def evolution_review(
+    evolution_id: int,
+    decision: dict,
+    current_user: str = Depends(require_admin),
+):
+    """Admin reviews an evolution: keep / rollback / discard.
+
+    For status=under_review: keep (return to active) or rollback
+    For status=proposed: keep (apply the proposed SKILL.md change to active) or discard (delete)
+    """
+    d = decision.get("decision")
+    if d not in ("keep", "rollback", "discard"):
+        raise HTTPException(422, "decision must be 'keep', 'rollback', or 'discard'")
+
+    from src.evolution_log import EvolutionLogStore
+    from src.evolution_rollback import EvolutionRollback
+
+    store = EvolutionLogStore(_db)
+    log = await store.get_log(evolution_id)
+    if not log:
+        raise HTTPException(404, "Evolution record not found")
+
+    # Handle proposed: keep -> apply the proposed SKILL.md, discard -> delete
+    if log["status"] == "proposed":
+        if d == "keep":
+            from_ver = "-"
+            proposed = log.get("proposed_content") or ""
+            if proposed:
+                skill_dir = DATA_ROOT / "shared-skills" / log["skill_name"]
+                skill_dir.mkdir(parents=True, exist_ok=True)
+                skill_file = skill_dir / "SKILL.md"
+                if skill_file.exists():
+                    old_content = skill_file.read_text()
+                    from src.session_learner import SessionLearner
+
+                    from_ver = SessionLearner._extract_version(old_content)
+                    backup_path = skill_dir / f"SKILL_backup_v{from_ver}.md"
+                    if not backup_path.exists():
+                        skill_file.rename(backup_path)
+                skill_file.write_text(proposed)
+            await store.update_status(
+                evolution_id,
+                "active",
+                reviewed_at=int(time.time()),
+                reviewed_by=current_user,
+                review_decision="kept",
+                from_version=from_ver,
+                to_version=str(int(time.time()) % 1000) if proposed else log["to_version"],
+            )
+            return {"status": "active", "message": "Proposal approved and applied"}
+        else:  # discard
+            async with _db.connection() as conn:
+                await conn.execute("DELETE FROM evolution_log WHERE id = ?", (evolution_id,))
+            return {"status": "deleted", "message": "Proposal discarded"}
+
+    # Handle under_review / active: keep or rollback
+    if d == "keep":
+        await store.update_status(
+            evolution_id,
+            "active",
+            reviewed_at=int(time.time()),
+            reviewed_by=current_user,
+            review_decision="kept",
+        )
+        return {"status": "active", "message": "Evolution kept"}
+    else:
+        rollback = EvolutionRollback(
+            _db,
+            DATA_ROOT,
+            skill_manager=_skill_manager,
+            on_skill_changed=_bump_shared_skills_gen,
+        )
+        success = await rollback.execute_rollback(
+            evolution_id, reason=f"Admin rollback by {current_user}"
+        )
+        if not success:
+            raise HTTPException(500, "Rollback failed")
+        await store.update_status(
+            evolution_id,
+            "rolled_back",
+            reviewed_at=int(time.time()),
+            reviewed_by=current_user,
+            review_decision="rolled_back",
+        )
+        return {"status": "rolled_back", "message": "Evolution rolled back"}
 
 
 # ── Health ───────────────────────────────────────────────────────
