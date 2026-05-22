@@ -73,11 +73,25 @@ Return JSON:
 
 | Confidence | Action |
 |-----------|--------|
-| &ge; 7 | Auto-apply: modify SKILL.md / create new skill, write `evolution_log` status=active |
+| &ge; 7 | Auto-apply: modify SKILL.md / create new skill, register in DB, write `evolution_log` status=active, bump shared-skills generation |
 | 4-6 | Propose: save suggestion, admin reviews in dashboard |
 | < 4 | Discard |
 
 No keyword matching. No five-tier policy. Haiku makes the call.
+
+### Skill Registration (new skill only)
+
+When `session_learner` creates a new skill from a `new_pattern`, it must make the skill discoverable:
+
+1. **Write `SKILL.md`** to `shared-skills/{skill-name}/`
+2. **Write `skill-meta.json`** alongside it (`source: "learned"`, `owner: "system"`)
+3. **Register in DB** via `SkillManager.register_skill(skill_name, source="learned", ...)` — immediate, not via async scan
+4. **Bump generation** via `_bump_shared_skills_gen()` — triggers `_sync_shared_skills()` for all users on their next session
+
+This ensures the new skill is immediately:
+- Discoverable by `load_skills()` (disk scan with `iterdir()`)
+- Queryable via DB `skills` table (admin dashboard, search)
+- Synced to user workspaces (`workspace/.claude/skills/` → SDK reads)
 
 ---
 
@@ -250,7 +264,7 @@ Monaco loaded from CDN on demand (`@monaco-editor/react`), admin-only.
 
 1. Session with skill usage ends → `session_learner` runs → check `evolution_log` for new entry
 2. Low-confidence finding → appears in admin dashboard as "proposed" (not auto-applied)
-3. New pattern from session → new `SKILL.md` in `data/shared-skills/learned/`
+3. New pattern from session → new `SKILL.md` in `data/shared-skills/{skill-name}/` + DB registered + synced to user workspace
 4. Insert 7 low-score snapshots → status transitions to `under_review`
 5. `under_review` + 48h no action → auto-rollback executes
 6. Admin POST `{"decision": "keep"}` → status returns to `active`
