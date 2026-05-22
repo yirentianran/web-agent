@@ -38,6 +38,14 @@ SELECT skill_name FROM skill_usage WHERE session_id = ?
 SELECT skill_name, rating, comment FROM skill_feedback WHERE skill_name IN (...)
 ```
 
+### Truncation
+
+Sessions can exceed Haiku's context window. Before building the prompt:
+
+1. Cap messages at **last 200** (user and assistant messages, filters out verbose system/tool-result where possible)
+2. Truncate each message content to **2000 chars** max
+3. If session has 0 skill usage records, skip analysis entirely
+
 ### Haiku Analysis
 
 Send the above data to Haiku with this prompt:
@@ -69,15 +77,52 @@ Return JSON:
 }
 ```
 
+### API Call
+
+Follow `main_server.py` title-generation pattern (not `skill_feedback.py` hardcoded pattern):
+
+```python
+import httpx
+
+model = os.getenv("MODEL", "claude-haiku-4-5-20251001")
+base_url = os.getenv("ANTHROPIC_BASE_URL", "https://api.anthropic.com").rstrip("/")
+api_key = os.getenv("ANTHROPIC_AUTH_TOKEN") or os.getenv("ANTHROPIC_API_KEY")
+
+async with httpx.AsyncClient(timeout=120) as client:
+    resp = await client.post(
+        f"{base_url}/v1/messages",
+        headers={"x-api-key": api_key, "anthropic-version": "2023-06-01"},
+        json={
+            "model": model,
+            "max_tokens": 4000,
+            "system": "You analyze AI agent sessions to improve skills. Return ONLY valid JSON.",
+            "messages": [{"role": "user", "content": prompt}],
+        },
+    )
+    resp.raise_for_status()
+    data = resp.json()
+    return json.loads(data["content"][0]["text"])
+```
+
+Key differences from `skill_feedback.py` pattern:
+- Uses `ANTHROPIC_BASE_URL` env (respects proxies / private deployments)
+- Uses `MODEL` env (allows model override)
+- Has `system` parameter (sets context)
+- Timeout 120s (vs 60s in skill_feedback)
+
 ### Confidence-Based Action
 
 | Confidence | Action |
 |-----------|--------|
 | &ge; 7 | Auto-apply: modify SKILL.md / create new skill, register in DB, write `evolution_log` status=active, bump shared-skills generation |
-| 4-6 | Propose: save suggestion, admin reviews in dashboard |
+| 4-6 | Propose: write `evolution_log` status=proposed, admin reviews in dashboard |
 | < 4 | Discard |
 
 No keyword matching. No five-tier policy. Haiku makes the call.
+
+When modifying an existing skill (confidence &ge; 7), delegate to
+`DBSkillFeedbackManager.create_version()` for proper backup + version tracking
+instead of manual file rename. This reuses the existing `skill_versions` table.
 
 ### Skill Registration (new skill only)
 
@@ -107,13 +152,17 @@ CREATE TABLE evolution_log (
     to_version TEXT NOT NULL,
     source TEXT NOT NULL DEFAULT 'session_learner',  -- session_learner / manual / feedback
     evolve_reason TEXT,
-    status TEXT NOT NULL DEFAULT 'active',           -- active / under_review / rolled_back
+    baseline_composite REAL,                         -- composite score at evolution time (7-day pre-evolution baseline)
+    status TEXT NOT NULL DEFAULT 'active',           -- active / proposed / under_review / rolled_back
     created_at INTEGER NOT NULL,
     reviewed_at INTEGER,
     reviewed_by TEXT,
     review_decision TEXT,                            -- kept / rolled_back
     auto_rollback_at INTEGER                         -- 48h after under_review
 );
+
+CREATE INDEX idx_evolution_log_status ON evolution_log(status);
+CREATE INDEX idx_evolution_log_skill ON evolution_log(skill_name);
 
 CREATE TABLE skill_eval_snapshots (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -139,28 +188,46 @@ Where `usage_trend_ratio = current_daily / baseline_daily` (capped at 1.0). Base
 ### State Machine
 
 ```
-session_learner (confidence >= 7)
+session_learner
+    │
+    ├── confidence >= 7
+    │       │
+    │       ▼
+    │  ┌─────────┐
+    ├─▶│ active  │◀─── kept (admin)
+    │  └────┬────┘
+    │       │ 7 consecutive days composite < baseline_composite
+    │       ▼
+    │  ┌──────────────┐
+    │  │ under_review │
+    │  └──┬────────┬──┘
+    │     │        │ 48h no action → auto-rollback
+    │     │        ▼
+    │     │   ┌────────────┐
+    │     │   │ rolled_back│
+    │     │   └────────────┘
+    │     │ admin rollback
+    │     ▼
+    │  ┌────────────┐
+    └──│ rolled_back│
+       └────────────┘
+
+    confidence 4-6
         │
         ▼
-   ┌─────────┐
-┌─▶│ active  │◀─── kept (admin)
-│  └────┬────┘
-│       │ 7 days composite < baseline
-│       ▼
-│  ┌──────────────┐
-│  │ under_review │
-│  └──┬────────┬──┘
-│     │        │ 48h no action → auto-rollback
-│     │        ▼
-│     │   ┌────────────┐
-│     │   │ rolled_back│
-│     │   └────────────┘
-│     │ admin rollback
-│     ▼
-│  ┌────────────┐
-└──│ rolled_back│
-   └────────────┘
+   ┌──────────┐     admin approve
+   │ proposed │──────────────────┐
+   └────┬─────┘                  │
+        │ admin discard          │
+        ▼                        ▼
+   (deleted)               ┌─────────┐
+                           │ active  │
+                           └─────────┘
 ```
+
+### Rollback Implementation
+
+`evolution_rollback.execute_rollback()` uses `SkillManager.rollback_version()` (from `src/skill_manager.py` line 382), **not** `DBSkillFeedbackManager.rollback_version()` (from `src/skill_feedback.py` line 339). Reason: `SkillManager` resolves skill paths from the DB and handles both shared and personal skills; `DBSkillFeedbackManager` requires a `skills_dir` parameter that isn't always available.
 
 ### Daily Evaluation Task
 
@@ -172,7 +239,8 @@ async def _eval_snapshot_loop():
         snap = compute_snapshot(log)
         save_snapshot(snap)
         last_7 = get_last_7_snapshots(log.id)
-        if all(s.composite < log.baseline for s in last_7):
+        # baseline_composite is stored at evolution creation time
+        if len(last_7) >= 7 and all(s.composite < log.baseline_composite for s in last_7):
             mark_under_review(log)  # sets auto_rollback_at = now + 48h
 
     # Check expired under_review
@@ -184,14 +252,18 @@ async def _eval_snapshot_loop():
 
 ## 3. Admin APIs
 
-All require `Depends(require_admin)`. Same as before:
+All require `Depends(require_admin)`.
 
 | Endpoint | Purpose |
 |----------|---------|
-| `GET /api/admin/evolution/overview` | List all evolutions, filter `?status=`, paginated |
+| `GET /api/admin/evolution/overview` | List all evolutions, filter `?status=` (active/proposed/under_review/rolled_back), paginated |
 | `GET /api/admin/evolution/{id}` | Detail: version info + snapshot trend + signal breakdown |
 | `GET /api/admin/evolution/{id}/diff` | SKILL.md diff (from → to) |
-| `POST /api/admin/evolution/{id}/review` | Admin decision: `{"decision": "keep" \| "rollback"}` |
+| `POST /api/admin/evolution/{id}/review` | Admin decision: `{"decision": "keep" \| "rollback" \| "discard"}`. "discard" deletes proposed entries |
+
+For `status=proposed` entries, the review endpoint accepts:
+- `{"decision": "keep"}` → promotes to `active`, applies the proposed SKILL.md change
+- `{"decision": "discard"}` → deletes the proposal (no file changes made)
 
 ---
 
@@ -201,7 +273,7 @@ Route: `/dashboard/evolution`. Two views:
 
 ### Overview Table
 
-Filterable by status (All / Active / Under Review / Rolled Back). Columns: skill name, version, source, composite score, status badge, days active.
+Filterable by status (All / Active / Proposed / Under Review / Rolled Back). Columns: skill name, version, source, composite score, status badge, days active.
 
 ### Detail Page (click row)
 
@@ -297,10 +369,13 @@ learner = SessionLearner(
 
 ## 8. Verification
 
-1. Session with skill usage ends → `session_learner` runs → check `evolution_log` for new entry
-2. Low-confidence finding → appears in admin dashboard as "proposed" (not auto-applied)
-3. New pattern from session → new `SKILL.md` in `data/shared-skills/{skill-name}/` + DB registered + synced to user workspace
-4. Insert 7 low-score snapshots → status transitions to `under_review`
-5. `under_review` + 48h no action → auto-rollback executes
-6. Admin POST `{"decision": "keep"}` → status returns to `active`
-7. Navigate `/dashboard/evolution` → table renders, click row → detail with charts and diff
+1. Session with skill usage ends → `session_learner` runs → check `evolution_log` for new entry (status=active if confidence &ge; 7)
+2. Medium-confidence finding (4-6) → `evolution_log` status=proposed → appears in admin dashboard under "Proposed" filter
+3. Admin approves proposal via `POST /review {"decision": "keep"}` → status transitions to `active`, SKILL.md applied
+4. Admin discards proposal via `POST /review {"decision": "discard"}` → record deleted
+5. New pattern from session → new `SKILL.md` + `skill-meta.json` in `data/shared-skills/{skill-name}/` + DB registered + gen bumped
+6. Insert 7 consecutive snapshots with composite < baseline_composite → status transitions to `under_review`
+7. `under_review` + 48h no admin action → auto-rollback executes via `SkillManager.rollback_version()`
+8. Admin POST `{"decision": "keep"}` on under_review item → status returns to `active`
+9. Navigate `/dashboard/evolution` → table renders with status filter, click row → detail with charts and diff
+10. Long session (300+ messages) → truncated to last 200 messages, each capped at 2000 chars → Haiku still returns valid JSON
