@@ -528,26 +528,6 @@ async def _summarize_and_store_session(session_id: str, user_id: str) -> None:
         pass
 
 
-async def _analyze_completed_session(session_id: str) -> None:
-    """Fire-and-forget session analysis for skill evolution.
-
-    Runs on the host side for BOTH container and non-container modes.
-    Injects main_server globals via constructor to avoid circular imports.
-    """
-    try:
-        from src.session_learner import SessionLearner
-
-        learner = SessionLearner(
-            _db,
-            DATA_ROOT,
-            skill_manager=_skill_manager,
-            on_skill_changed=_bump_shared_skills_gen,
-        )
-        await learner.analyze_session(session_id)
-    except Exception:
-        logger.exception("Session analysis failed for %s", session_id)
-
-
 def build_download_url(user_id: str, file_path: str, *, directory: str | None = None) -> str:
     """Build a download URL for a file, including the correct directory prefix.
 
@@ -6151,9 +6131,11 @@ async def evolution_review(
                 skill_file = skill_dir / "SKILL.md"
                 if skill_file.exists():
                     old_content = skill_file.read_text()
-                    from src.session_learner import SessionLearner
-
-                    from_ver = SessionLearner.extract_version(old_content)
+                    from_ver = "1.0"
+                    for line in old_content.split("\n"):
+                        if line.startswith("version:"):
+                            from_ver = line.split(":", 1)[1].strip()
+                            break
                     backup_path = skill_dir / f"SKILL_backup_v{from_ver}.md"
                     if not backup_path.exists():
                         skill_file.rename(backup_path)
