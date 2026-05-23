@@ -22,6 +22,7 @@ export interface EvolutionItem {
 export interface EvolutionDetail extends EvolutionItem {
   snapshots: Snapshot[]
   signal_breakdown: SignalBreakdown | null
+  instincts?: InstinctItem[]
 }
 
 export interface Snapshot {
@@ -43,6 +44,44 @@ export interface EvolutionDiff {
   from_version: string
   to_version: string
   diff: string
+}
+
+export interface InstinctItem {
+  id: number
+  domain: 'tool_usage' | 'task_orchestration'
+  normalized_trigger: string
+  trigger: string
+  action: string
+  confidence: number
+  source_count: number
+  unique_user_count: number
+  scope: 'active' | 'deprecated'
+  created_at: number
+}
+
+export interface ObservationItem {
+  id: number
+  session_id: string
+  user_id: string
+  event_type: string
+  tool_name: string
+  success: boolean | null
+  error_message: string
+  duration_ms: number
+  created_at: number
+}
+
+export interface EvolutionStats {
+  today_events: number
+  active_instincts: number
+  pending_reviews: number
+  week_auto_applied: number
+  funnel: {
+    observations: number
+    active_instincts: number
+    active_evolutions: number
+    proposed_evolutions: number
+  }
 }
 
 interface AsyncState<T> {
@@ -70,9 +109,15 @@ async function fetchJson<T>(url: string, token: string): Promise<T> {
 
 export interface EvolutionApi {
   overview: AsyncState<{ items: EvolutionItem[]; total: number; page: number }>
+  stats: AsyncState<EvolutionStats | null>
+  instincts: AsyncState<{ items: InstinctItem[]; total: number; page: number }>
+  observations: AsyncState<{ items: ObservationItem[]; total: number; page: number }>
   fetchDetail: (id: number) => Promise<EvolutionDetail>
   fetchDiff: (id: number) => Promise<EvolutionDiff>
   review: (id: number, decision: 'keep' | 'rollback' | 'discard') => Promise<void>
+  fetchStats: () => Promise<void>
+  fetchInstincts: (params?: { domain?: string; scope?: string; page?: number }) => Promise<void>
+  fetchObservations: (params?: { session_id?: string; event_type?: string; page?: number }) => Promise<void>
   refetch: () => void
 }
 
@@ -143,9 +188,103 @@ export function useEvolutionApi(statusFilter?: string, page: number = 1) {
     [authToken],
   )
 
+  // --- NEW: stats state ---
+  const [stats, setStats] = useState<AsyncState<EvolutionStats | null>>({
+    data: null,
+    loading: false,
+    error: null,
+  })
+
+  const fetchStats = useCallback(async () => {
+    setStats((s) => ({ ...s, loading: true, error: null }))
+    try {
+      const data = await fetchJson<EvolutionStats>(
+        `${API_BASE}/stats`,
+        authToken,
+      )
+      setStats({ data, loading: false, error: null })
+    } catch (e: unknown) {
+      setStats({
+        data: null,
+        loading: false,
+        error: e instanceof Error ? e.message : 'Unknown error',
+      })
+    }
+  }, [authToken])
+
+  // --- NEW: instincts state ---
+  const [instincts, setInstincts] = useState<
+    AsyncState<{ items: InstinctItem[]; total: number; page: number }>
+  >({ data: null, loading: false, error: null })
+
+  const fetchInstincts = useCallback(
+    async (params?: { domain?: string; scope?: string; page?: number }) => {
+      setInstincts((s) => ({ ...s, loading: true, error: null }))
+      try {
+        const qs = new URLSearchParams()
+        if (params?.domain) qs.set('domain', params.domain)
+        if (params?.scope) qs.set('scope', params.scope)
+        if (params?.page) qs.set('page', String(params.page))
+        const data = await fetchJson<{ items: InstinctItem[]; total: number; page: number }>(
+          `${API_BASE}/instincts?${qs.toString()}`,
+          authToken,
+        )
+        setInstincts({ data, loading: false, error: null })
+      } catch (e: unknown) {
+        setInstincts({
+          data: null,
+          loading: false,
+          error: e instanceof Error ? e.message : 'Unknown error',
+        })
+      }
+    },
+    [authToken],
+  )
+
+  // --- NEW: observations state ---
+  const [observations, setObservations] = useState<
+    AsyncState<{ items: ObservationItem[]; total: number; page: number }>
+  >({ data: null, loading: false, error: null })
+
+  const fetchObservations = useCallback(
+    async (params?: { session_id?: string; event_type?: string; page?: number }) => {
+      setObservations((s) => ({ ...s, loading: true, error: null }))
+      try {
+        const qs = new URLSearchParams()
+        if (params?.session_id) qs.set('session_id', params.session_id)
+        if (params?.event_type) qs.set('event_type', params.event_type)
+        if (params?.page) qs.set('page', String(params.page))
+        const data = await fetchJson<{ items: ObservationItem[]; total: number; page: number }>(
+          `${API_BASE}/observations?${qs.toString()}`,
+          authToken,
+        )
+        setObservations({ data, loading: false, error: null })
+      } catch (e: unknown) {
+        setObservations({
+          data: null,
+          loading: false,
+          error: e instanceof Error ? e.message : 'Unknown error',
+        })
+      }
+    },
+    [authToken],
+  )
+
   const refetch = useCallback(() => {
     setRefreshKey((k) => k + 1)
   }, [])
 
-  return { overview, fetchDetail, fetchDiff, review, refetch }
+  return {
+    overview,
+    stats,
+    instincts,
+    observations,
+    fetchDetail,
+    fetchDiff,
+    review,
+    fetchStats,
+    fetchInstincts,
+    fetchObservations,
+    refetch,
+  }
 }
