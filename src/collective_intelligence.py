@@ -4,11 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime, timedelta
 from pathlib import Path
 
-from src.evolution_evaluator import EvolutionEvaluator
-from src.evolution_rollback import EvolutionRollback
+from src.evolution_log import EvolutionLogStore
 from src.pattern_learner import PatternLearner
 from src.semantic_search import SemanticSearch
 from src.wiki_generator import WikiGenerator
@@ -29,74 +27,73 @@ class CollectiveIntelligenceEngine:
         self.wiki_generator = WikiGenerator(db)
         self.semantic_search = SemanticSearch(db)
         self.pattern_learner = PatternLearner(db)
-        self.skill_manager = SkillManager(db)
+        self._skill_manager = SkillManager(db)
+        self._evo_log_store = EvolutionLogStore(db)
 
     async def start_background_jobs(self) -> None:
-        """Launch all background intelligence loops."""
-        asyncio.create_task(self._wiki_mining_loop())
-        asyncio.create_task(self._pattern_extraction_loop())
-        asyncio.create_task(self._auto_promotion_loop())
-        asyncio.create_task(self._eval_snapshot_loop())
+        """Start the instinct evolution background loops."""
+        from src.instinct_extractor import InstinctExtractor, InstinctStore
+        from src.observation import ObservationStore
+
+        obs_store = ObservationStore(self.db)
+        instinct_store = InstinctStore(self.db)
+
+        self._extractor = InstinctExtractor(
+            db=self.db,
+            obs_store=obs_store,
+            instinct_store=instinct_store,
+            evolution_store=self._evo_log_store,
+            skill_manager=self._skill_manager,
+            data_root=str(self.data_root),
+        )
+
+        # Loop 1: instinct extraction every 10 minutes
+        asyncio.create_task(self._extraction_loop())
+
+        # Loop 2: daily eval at 02:00
+        asyncio.create_task(self._daily_eval_loop())
+
         logger.info("Collective intelligence background jobs started")
 
-    async def _wiki_mining_loop(self) -> None:
+    async def _extraction_loop(self) -> None:
+        import asyncio as _asyncio
         while True:
             try:
-                generated = await self.wiki_generator.mine_and_generate(lookback_hours=6)
-                if generated:
-                    logger.info(f"Wiki generated {len(generated)} new pages: {generated}")
-            except Exception:
-                logger.exception("Wiki mining loop failed")
-            await asyncio.sleep(6 * 3600)
-
-    async def _pattern_extraction_loop(self) -> None:
-        while True:
-            try:
-                result = await self.pattern_learner.extract_tool_patterns()
-                logger.info(
-                    f"Pattern extraction: {len(result.get('tool_pairs', []))} pairs found"
-                )
-            except Exception:
-                logger.exception("Pattern extraction loop failed")
-            await asyncio.sleep(12 * 3600)
-
-    async def _auto_promotion_loop(self) -> None:
-        while True:
-            try:
-                candidates = await self.skill_manager.check_auto_promotion()
-                if candidates:
+                result = await self._extractor.run_once()
+                if not result.get("skipped"):
                     logger.info(
-                        f"Auto-promotion candidates: "
-                        f"{[c['skill_name'] for c in candidates]}"
+                        "Extraction cycle: %d extracted, %d clusters, %d applied, %d proposed",
+                        result["extracted"], result["clusters"],
+                        result["applied"], result["proposed"],
                     )
+            except Exception as exc:
+                logger.error("Extraction cycle failed: %s", exc)
+            await _asyncio.sleep(10 * 60)  # 10 minutes
 
-                # Clean up expired promotions
-                expired = await self.skill_manager.cleanup_expired_promotions()
-                if expired:
-                    logger.info(f"Auto-rejected {expired} expired promotions")
-            except Exception:
-                logger.exception("Auto-promotion check failed")
-            await asyncio.sleep(2 * 3600)
-
-    async def _eval_snapshot_loop(self) -> None:
-        """Daily evaluation: snapshot active evolutions, detect degradation, auto-rollback."""
-        evaluator = EvolutionEvaluator(self.db)
-        rollback = EvolutionRollback(self.db, self.data_root)
+    async def _daily_eval_loop(self) -> None:
+        import asyncio as _asyncio
+        import time
+        from src.evolution_signals import EvolutionSignals
 
         while True:
-            try:
-                # Wait until 02:00 local time, then run once per day
-                now = datetime.now()
-                next_run = now.replace(hour=2, minute=0, second=0, microsecond=0)
-                if now >= next_run:
-                    next_run += timedelta(days=1)
-                wait_seconds = (next_run - now).total_seconds()
-                await asyncio.sleep(wait_seconds)
+            now = time.localtime()
+            seconds_until_0200 = (
+                (24 - now.tm_hour - 2) % 24 * 3600
+                - now.tm_min * 60
+                - now.tm_sec
+            )
+            if seconds_until_0200 <= 0:
+                seconds_until_0200 = 24 * 3600
+            await _asyncio.sleep(seconds_until_0200)
 
-                await evaluator.run_daily_eval()
-                count = await rollback.process_expired_reviews()
-                if count:
-                    logger.info("Auto-rolled back %d degraded evolutions", count)
-            except Exception:
-                logger.exception("Eval snapshot loop failed")
-                await asyncio.sleep(3600)  # retry after 1h on error
+            try:
+                signals = EvolutionSignals(
+                    self.db, self._evo_log_store, self._skill_manager
+                )
+                result = await signals.run_daily_eval()
+                logger.info(
+                    "Daily eval: %d evaluated, %d degraded, %d rolled back",
+                    result["evaluated"], result["degraded"], result["rolled_back"],
+                )
+            except Exception as exc:
+                logger.error("Daily eval failed: %s", exc)
