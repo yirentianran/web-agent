@@ -150,6 +150,7 @@ if not PROD:
 # Global state
 _db: Database | None = None  # SQLite database
 _mcp_store: MCPServerStore | None = None  # MCP server DB store
+_obs_store: Any = None  # ObservationStore for agent loop event capture
 _audit_logger: Any = None  # AuditLogger, initialized at startup
 _skill_manager: Any = None  # SkillManager, initialized at startup if DB available
 buffer = MessageBuffer()
@@ -2349,12 +2350,15 @@ async def run_agent_task(
         await buffer.mark_done(session_id)
         duration_ms = (time.time() - start_time) * 1000
         agent_log.end_session(session_id, status="completed")
+        if _obs_store:
+            await _obs_store.record(
+                session_id=session_id, user_id=user_id,
+                event_type="session_complete",
+            )
         asyncio.ensure_future(_summarize_and_store_session(session_id, user_id))
         # Scan for agent-created skills and register any not yet in DB
         if _skill_manager is not None:
             asyncio.ensure_future(_skill_manager.migrate_from_filesystem())
-        # Fire-and-forget session analysis for skill evolution
-        asyncio.ensure_future(_analyze_completed_session(session_id))
 
     except TimeoutError:
         await buffer.add_message(
@@ -2377,6 +2381,12 @@ async def run_agent_task(
         )
         await buffer.mark_done(session_id)
         agent_log.end_session(session_id, status="timeout")
+        if _obs_store:
+            await _obs_store.record(
+                session_id=session_id, user_id=user_id,
+                event_type="session_error",
+                error_message="timeout",
+            )
     except asyncio.CancelledError:
         await buffer.add_message(
             session_id,
@@ -2399,6 +2409,11 @@ async def run_agent_task(
         )
         await buffer.mark_done(session_id)
         agent_log.end_session(session_id, status="cancelled")
+        if _obs_store:
+            await _obs_store.record(
+                session_id=session_id, user_id=user_id,
+                event_type="user_interrupt",
+            )
     except Exception as e:
         error_msg = str(e)
         # Detect SDK JSON buffer overflow and provide a clear message
@@ -2434,6 +2449,12 @@ async def run_agent_task(
         )
         await buffer.mark_done(session_id)
         agent_log.end_session(session_id, status="error")
+        if _obs_store:
+            await _obs_store.record(
+                session_id=session_id, user_id=user_id,
+                event_type="session_error",
+                error_message=str(e)[:500],
+            )
     # Note: do NOT disconnect — client is kept alive for follow-ups
 
 
@@ -2545,12 +2566,15 @@ async def run_agent_task_container(
         )
         await buffer.mark_done(session_id)
         agent_log.end_session(session_id, status="completed")
+        if _obs_store:
+            await _obs_store.record(
+                session_id=session_id, user_id=user_id,
+                event_type="session_complete",
+            )
         asyncio.ensure_future(_summarize_and_store_session(session_id, user_id))
         # Scan for agent-created skills and register any not yet in DB
         if _skill_manager is not None:
             asyncio.ensure_future(_skill_manager.migrate_from_filesystem())
-        # Fire-and-forget session analysis for skill evolution
-        asyncio.ensure_future(_analyze_completed_session(session_id))
 
     except TimeoutError:
         logger.error("Container task %s: timeout", session_id)
@@ -2574,6 +2598,12 @@ async def run_agent_task_container(
         )
         await buffer.mark_done(session_id)
         agent_log.end_session(session_id, status="error")
+        if _obs_store:
+            await _obs_store.record(
+                session_id=session_id, user_id=user_id,
+                event_type="session_error",
+                error_message="timeout",
+            )
 
     except asyncio.CancelledError:
         logger.info("Container task %s: cancelled", session_id)
@@ -2601,6 +2631,11 @@ async def run_agent_task_container(
         )
         await buffer.mark_done(session_id)
         agent_log.end_session(session_id, status="cancelled")
+        if _obs_store:
+            await _obs_store.record(
+                session_id=session_id, user_id=user_id,
+                event_type="user_interrupt",
+            )
 
     except Exception as exc:
         logger.exception(
@@ -2628,6 +2663,12 @@ async def run_agent_task_container(
         )
         await buffer.mark_done(session_id)
         agent_log.end_session(session_id, status="error")
+        if _obs_store:
+            await _obs_store.record(
+                session_id=session_id, user_id=user_id,
+                event_type="session_error",
+                error_message=str(exc)[:500],
+            )
 
 
 # ── WebSocket endpoint ───────────────────────────────────────────
@@ -3146,6 +3187,13 @@ async def handle_ws(websocket: WebSocket) -> None:
                         session_id,
                         is_continuation,
                     )
+
+                    # Record user correction when continuing an existing session
+                    if _obs_store and is_continuation:
+                        await _obs_store.record(
+                            session_id=session_id, user_id=_locked_user_id,
+                            event_type="user_correct",
+                        )
                 else:
                     logger.debug("WS: reusing existing task for session %s", session_id)
 
@@ -6530,7 +6578,7 @@ async def health() -> dict[str, str]:
 async def startup() -> None:
     """Start background cleanup tasks and initialize DB if configured."""
     # Initialize SQLite + SessionStore if DATA_DB_PATH is set
-    global _db, _mcp_store, buffer, session_store, _skill_manager
+    global _db, _mcp_store, buffer, session_store, _skill_manager, _obs_store
     db_path_env = os.getenv("DATA_DB_PATH", "")
     if db_path_env:
         db_path = Path(db_path_env)
@@ -6546,6 +6594,10 @@ async def startup() -> None:
         await _db.init()
         await _db.migrate_v2()
         buffer.db = _db  # Wire DB into message buffer
+
+        from src.observation import ObservationStore
+
+        _obs_store = ObservationStore(_db)
         # async drain loop removed — add_message writes directly  # Start async write drain loop
         session_store = SessionStore(db=_db)
 
