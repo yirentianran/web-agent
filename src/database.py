@@ -392,6 +392,12 @@ class Database:
         except Exception:
             pass
 
+        # Add observations and instincts tables for instinct evolution
+        try:
+            await self.migrate_v6()
+        except Exception:
+            pass
+
     async def _checkpoint_loop(self) -> None:
         """Periodically run a PASSIVE WAL checkpoint.
 
@@ -751,6 +757,60 @@ class Database:
                 CREATE INDEX IF NOT EXISTS idx_evolution_log_status ON evolution_log(status);
                 CREATE INDEX IF NOT EXISTS idx_evolution_log_skill ON evolution_log(skill_name);
                 CREATE INDEX IF NOT EXISTS idx_eval_snap_log ON skill_eval_snapshots(evolution_log_id);
+            """)
+            await conn.commit()
+
+    async def migrate_v6(self) -> None:
+        """Add observations and instincts tables for instinct-based evolution."""
+        async with self.connection() as conn:
+            await conn.executescript("""
+                CREATE TABLE IF NOT EXISTS observations (
+                    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_id      TEXT    NOT NULL,
+                    user_id         TEXT    NOT NULL,
+                    event_type      TEXT    NOT NULL,
+                    tool_name       TEXT,
+                    tool_input_summary  TEXT,
+                    tool_output_summary TEXT,
+                    success         INTEGER,
+                    error_message   TEXT,
+                    duration_ms     INTEGER,
+                    created_at      REAL    NOT NULL DEFAULT (strftime('%s', 'now'))
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_obs_session
+                ON observations(session_id);
+
+                CREATE INDEX IF NOT EXISTS idx_obs_event_type
+                ON observations(event_type);
+
+                CREATE INDEX IF NOT EXISTS idx_obs_created_at
+                ON observations(created_at);
+
+                CREATE TABLE IF NOT EXISTS instincts (
+                    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+                    domain              TEXT    NOT NULL,
+                    normalized_trigger  TEXT    NOT NULL,
+                    trigger             TEXT    NOT NULL,
+                    action              TEXT    NOT NULL,
+                    confidence          REAL    NOT NULL DEFAULT 0.3,
+                    source_count        INTEGER NOT NULL DEFAULT 1,
+                    unique_user_count   INTEGER NOT NULL DEFAULT 1,
+                    scope               TEXT    NOT NULL DEFAULT 'active',
+                    source_evolution_id INTEGER,
+                    evidence_json       TEXT,
+                    created_at          REAL    NOT NULL DEFAULT (strftime('%s', 'now')),
+                    updated_at          REAL    NOT NULL DEFAULT (strftime('%s', 'now'))
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_instincts_domain
+                ON instincts(domain);
+
+                CREATE INDEX IF NOT EXISTS idx_instincts_norm_trigger
+                ON instincts(normalized_trigger, domain);
+
+                CREATE INDEX IF NOT EXISTS idx_instincts_scope
+                ON instincts(scope);
             """)
             await conn.commit()
 
