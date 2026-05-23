@@ -5066,77 +5066,6 @@ async def get_skill_suggestions(
 # ── Skill Evolution & A/B Testing ────────────────────────────────
 
 
-def build_evolution_prompt(
-    *,
-    skill_name: str,
-    skill_path: Path,
-    version_dir: Path,
-    skill_content: str,
-    skill_files: list[str],
-    feedback: dict[str, list[dict[str, Any]]],
-) -> str:
-    """Build a system prompt for the evolution agent session.
-
-    The prompt gives the LLM full context about the current skill and
-    user feedback, but does NOT prescribe HOW to improve it. The LLM
-    decides autonomously which tools, skills, and files to use.
-    """
-    high_quality = feedback.get("high_quality", [])
-    low_rated = feedback.get("low_rated", [])
-    user_edits = feedback.get("user_edits", [])
-
-    feedback_context = ""
-    if high_quality:
-        feedback_context += "\n### What users liked (rating >= 4):\n"
-        for e in high_quality[:10]:
-            if e.get("comment"):
-                feedback_context += f"- {e['comment']}\n"
-    if low_rated:
-        feedback_context += "\n### What users found issues with (rating <= 2):\n"
-        for e in low_rated[:10]:
-            if e.get("comment"):
-                feedback_context += f"- {e['comment']}\n"
-    if user_edits:
-        feedback_context += "\n### What users manually changed:\n"
-        for e in user_edits[:10]:
-            if e.get("user_edits"):
-                feedback_context += f"- {e['user_edits']}\n"
-
-    files_listing = "\n".join(f"  - {f}" for f in skill_files) if skill_files else "  (none)"
-
-    return (
-        f"You are improving an existing skill based on user feedback.\n\n"
-        f"## Current Skill\n"
-        f"Name: {skill_name}\n"
-        f"Location: {skill_path}/\n"
-        f"Output directory (write all changes here): {version_dir}/\n\n"
-        f"## Current SKILL.md\n"
-        f"```markdown\n{skill_content}\n```\n\n"
-        f"## Current Skill Directory Structure\n"
-        f"{files_listing}\n\n"
-        f"## User Feedback\n"
-        f"{feedback_context}\n\n"
-        f"## Your Task\n"
-        f"Analyze the current skill and the feedback. Improve the skill to better\n"
-        f"address user needs.\n\n"
-        f"You have full autonomy in HOW you improve this skill. You may:\n"
-        f"- Rewrite SKILL.md entirely\n"
-        f"- Add, modify, or delete any files\n"
-        f"- Create new scripts/, references/, or assets/ directories\n"
-        f"- Delete files that are no longer needed\n"
-        f"- Use any available skills (including skill-creator) as reference\n"
-        f"- Run scripts or tools to help with your work\n\n"
-        f"IMPORTANT: The SKILL.md YAML frontmatter (between --- delimiters)\n"
-        f"must be preserved with the same name and description fields.\n\n"
-        f"The ONLY requirement is that the final result is a valid skill directory\n"
-        f"at the output path. When done, print: EVOLUTION_COMPLETE"
-    )
-
-
-class SkillEvolveAgentRequest(BaseModel):
-    model: str = "claude-sonnet-4-6"
-
-
 class SkillActivateRequest(BaseModel):
     version_number: int
 
@@ -5185,280 +5114,6 @@ async def rollback_skill(
         }
     return {"status": "info", "message": "No backup version found to restore"}
 
-
-# ── Agent-Driven Skill Evolution ─────────────────────────────────
-
-
-async def run_evolution_agent(
-    skill_name: str,
-    user_id: str,
-    version_dir: Path,
-    task_id: str,
-    *,
-    model: str = "claude-sonnet-4-6",
-) -> dict[str, Any]:
-    """Launch an Agent session to evolve a skill based on feedback.
-
-    Unlike the old preview_evolution (which calls `claude --print` for a
-    single text rewrite), this starts a full Agent session with access to
-    all tools (Read, Write, Edit, Bash, Glob, Grep, Agent, Skill)
-    and MCP fetch servers) and all available skills (including skill-creator).
-
-    The LLM autonomously decides HOW to improve the skill — whether to
-    rewrite SKILL.md, add scripts/references/assets, use skill-creator,
-    or any other approach.
-
-    Returns:
-        dict with task_id, status, and optionally files/summary on completion.
-    """
-    from src.skill_feedback import DBSkillFeedbackManager
-
-    mgr = DBSkillFeedbackManager(db=_db)
-
-    # Gather feedback data
-    feedback = await mgr.get_feedback_for_evolution(skill_name)
-
-    # Resolve skill directory
-    skill_dir = DATA_ROOT / "shared-skills" / skill_name
-    if _db is not None:
-        # DB-backed skills live in DATA_ROOT / "shared-skills"
-        skill_dir = DATA_ROOT / "shared-skills" / skill_name
-    skill_file = skill_dir / "SKILL.md"
-
-    if not skill_file.exists():
-        return {"task_id": "", "status": "failed", "reason": "SKILL.md not found"}
-
-    skill_content = skill_file.read_text()
-
-    # List existing skill files
-    skill_files = []
-    for f in skill_dir.rglob("*"):
-        if f.is_file() and f.name != "skill-meta.json":
-            skill_files.append(str(f.relative_to(skill_dir)))
-
-    # Create version output directory
-    version_dir.mkdir(parents=True, exist_ok=True)
-
-    # Build system prompt
-    system_prompt = build_evolution_prompt(
-        skill_name=skill_name,
-        skill_path=skill_dir,
-        version_dir=version_dir,
-        skill_content=skill_content,
-        skill_files=skill_files,
-        feedback=feedback,
-    )
-
-    # Build SDK options — reuse the normal session config but with
-    # cwd pointing to the version directory
-    options = await _build_evolution_sdk_options(
-        user_id=user_id,
-        version_dir=version_dir,
-        system_prompt=system_prompt,
-        model=model,
-    )
-
-    # Create and run the Agent session
-    client = ClaudeSDKClient(options)
-
-    try:
-        await client.connect()
-        await client.query(system_prompt)
-
-        # Collect agent output
-        async for msg in client.receive_response():
-            # Stream messages to the buffer for real-time monitoring
-            msg_dict = _message_to_dict_if_serializable(msg)
-            if msg_dict:
-                await buffer.add_message(task_id, msg_dict, user_id)
-
-        # Scan the version directory for generated files
-        generated_files = []
-        for f in version_dir.rglob("*"):
-            if f.is_file():
-                generated_files.append(
-                    {
-                        "path": str(f.relative_to(version_dir)),
-                        "size": f.stat().st_size,
-                    }
-                )
-
-        return {
-            "task_id": task_id,
-            "status": "complete",
-            "files": generated_files,
-            "summary": f"Generated {len(generated_files)} files in {version_dir}",
-        }
-    except Exception as e:
-        logger.error("run_evolution_agent failed for %s: %s", skill_name, e)
-        await buffer.add_message(
-            task_id,
-            {
-                "type": "error",
-                "message": str(e),
-            },
-            user_id,
-        )
-        return {"task_id": task_id, "status": "failed", "reason": str(e)}
-
-
-async def _build_evolution_sdk_options(
-    *,
-    user_id: str,
-    version_dir: Path,
-    system_prompt: str,
-    model: str,
-) -> ClaudeAgentOptions:
-    """Build ClaudeAgentOptions for an evolution agent session.
-
-    Similar to build_sdk_options but with:
-    - cwd pointing to the version output directory
-    - custom system prompt with evolution context
-    - all normal tools and skills available
-    """
-    skills = await load_skills(user_id)
-    max_turns = int(os.getenv("MAX_TURNS", "200"))
-
-    # Sync shared skills into the version directory so the agent can
-    # discover and use all available skills (including skill-creator).
-    version_skills = version_dir / ".claude" / "skills"
-    await _sync_shared_skills(version_skills)
-
-    # Copy personal skills (can't symlink across all setups; use mtime
-    # caching to skip unchanged skills).
-    user_workspace = user_workspace_dir(user_id)
-    user_skills = user_workspace / ".claude" / "skills"
-    if user_skills.exists():
-        for skill_dir in user_skills.iterdir():
-            if skill_dir.is_dir() and not skill_dir.is_symlink():
-                dest = version_skills / skill_dir.name
-                _sync_skill_copy(skill_dir, dest)
-
-    return ClaudeAgentOptions(
-        model=model,
-        cwd=str(version_dir),
-        system_prompt=system_prompt,
-        allowed_tools=build_allowed_tools(await load_mcp_config()),
-        disallowed_tools=list(DISABLED_TOOLS),
-        max_turns=max_turns,
-        permission_mode="acceptEdits",
-        max_buffer_size=int(os.getenv("MAX_BUFFER_SIZE", str(10 * 1024 * 1024))),
-    )
-
-
-def _message_to_dict_if_serializable(msg: Any) -> dict[str, Any] | None:
-    """Convert a Claude SDK message to a dict for broadcasting."""
-    try:
-        # Use the existing message_to_dicts generator
-        dicts = list(message_to_dicts(msg))
-        if dicts:
-            return dicts[0]  # Return first dict for simplicity
-        return None
-    except Exception:
-        return None
-
-
-@app.post("/api/skills/{skill_name}/evolve-agent")
-async def trigger_skill_evolution_agent(
-    skill_name: str,
-    req: SkillEvolveAgentRequest,
-    current_user: str = Depends(get_current_user),
-) -> dict[str, Any]:
-    """Launch an Agent session to evolve a skill.
-
-    Unlike /evolve (which does a single LLM text rewrite), this starts
-    a full Agent session with all tools and skills available. The LLM
-    autonomously decides HOW to improve the skill.
-    """
-    # Resolve skills directory
-    skills_dir = DATA_ROOT / "shared-skills"
-
-    if not (skills_dir / skill_name / "SKILL.md").exists():
-        return {"status": "failed", "reason": f"SKILL.md not found for {skill_name}"}
-
-    # Create version output directory
-    versions_dir = skills_dir / skill_name / "versions"
-    from src.skill_feedback import DBSkillFeedbackManager
-
-    version_num = DBSkillFeedbackManager.next_version_number(versions_dir)
-    version_dir = versions_dir / f"v{version_num}"
-
-    # Launch the agent session asynchronously
-    import threading
-
-    result_holder: dict[str, Any] = {}
-
-    def _run_in_thread() -> None:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        task_id = f"evolve-{skill_name}-v{version_num}"
-        try:
-            result_holder["result"] = loop.run_until_complete(
-                run_evolution_agent(
-                    skill_name=skill_name,
-                    user_id=current_user,
-                    version_dir=version_dir,
-                    task_id=task_id,
-                    model=req.model,
-                )
-            )
-        finally:
-            loop.close()
-
-    thread = threading.Thread(target=_run_in_thread, daemon=True)
-    thread.start()
-
-    return {
-        "status": "ok",
-        "task_id": f"evolve-{skill_name}-v{version_num}",
-        "version_number": version_num,
-        "version_path": str(version_dir),
-        "message": "Agent evolution started. Poll /evolve-status for progress.",
-    }
-
-
-@app.get("/api/skills/{skill_name}/evolve-status/{task_id}")
-async def get_evolution_status(
-    skill_name: str,
-    task_id: str,
-    current_user: str = Depends(get_current_user),
-) -> dict[str, Any]:
-    """Get the status of an evolution task."""
-
-    # Check if the task is in the active tasks map
-    if task_id in active_tasks:
-        return {"status": "running", "task_id": task_id}
-
-    # Check the message buffer for completion
-    history = await buffer.get_history(task_id, after_index=0)
-    is_error = any(m.get("type") == "error" for m in history)
-    is_done = any(m.get("type") == "result" or "EVOLUTION_COMPLETE" in str(m.get("content", "")) for m in history)
-
-    if is_error:
-        return {"status": "failed", "task_id": task_id, "messages": history[-5:]}
-    if is_done:
-        # Scan for generated files
-        skills_dir = DATA_ROOT / "shared-skills"
-        # Extract version from task_id (e.g., "evolve-pdf-editor-v3")
-        version_match = re.search(r"v(\d+)$", task_id)
-        if version_match:
-            version_num = int(version_match.group(1))
-            version_dir = skills_dir / skill_name / "versions" / f"v{version_num}"
-            if version_dir.exists():
-                files = []
-                for f in version_dir.rglob("*"):
-                    if f.is_file():
-                        files.append(
-                            {
-                                "path": str(f.relative_to(version_dir)),
-                                "size": f.stat().st_size,
-                            }
-                        )
-                return {"status": "complete", "task_id": task_id, "files": files}
-
-    return {"status": "running", "task_id": task_id}
-
-
 @app.get("/api/skills/{skill_name}/version-files/{version_number}")
 async def get_version_files(
     skill_name: str,
@@ -5505,32 +5160,6 @@ async def get_version_file_content(
         raise HTTPException(status_code=404, detail="File not found")
 
     return FileResponse(str(target))
-
-
-# ── Legacy: Evolution Candidates (still used by EvolutionPanel) ──
-@app.get("/api/admin/skills/evolution-candidates")
-async def list_evolution_candidates(
-    current_user: str = Depends(require_admin),
-) -> dict[str, list[dict[str, Any]]]:
-    """List skills that should evolve."""
-    from src.skill_feedback import DBSkillFeedbackManager
-
-    mgr = DBSkillFeedbackManager(db=_db)
-    candidates = await mgr.get_evolution_candidates()
-    result = []
-    for c in candidates:
-        analytics = await mgr.get_analytics(c["skill_name"])
-        dist = analytics.get("rating_distribution", {})
-        result.append({
-            "skill_name": c["skill_name"],
-            "count": analytics["total_feedbacks"],
-            "average_rating": analytics["average_rating"],
-            "high_quality_count": sum(
-                v for k, v in dist.items() if int(k) >= 4
-            ),
-        })
-    return {"candidates": result}
-
 
 # ── Promotion Queue Admin Endpoints ───────────────────────────────────
 
@@ -6362,7 +5991,19 @@ async def evolution_overview(
     from src.evolution_log import EvolutionLogStore
 
     store = EvolutionLogStore(_db)
-    return await store.list_logs(status=status, page=page, page_size=page_size)
+    result = await store.list_logs(status=status, page=page, page_size=page_size)
+
+    # Add instinct count to each item
+    for item in result["items"]:
+        async with _db.connection() as conn:
+            cursor = await conn.execute(
+                "SELECT COUNT(*) FROM instincts WHERE source_evolution_id = ?",
+                (item["id"],),
+            )
+            row = await cursor.fetchone()
+            item["instinct_count"] = row[0] if row else 0
+
+    return result
 
 
 @app.get("/api/admin/evolution/{evolution_id}")
@@ -6372,11 +6013,10 @@ async def evolution_detail(
 ):
     """Get evolution detail with snapshots and signal breakdown."""
     from src.evolution_log import EvolutionLogStore
-    from src.evolution_evaluator import (
-        DEFAULT_BASELINE_RATING,
-        DEFAULT_BASELINE_DAILY_USAGE,
-        DEFAULT_BASELINE_SUCCESS_RATE,
-    )
+
+    DEFAULT_BASELINE_RATING = 4.0
+    DEFAULT_BASELINE_DAILY_USAGE = 10
+    DEFAULT_BASELINE_SUCCESS_RATE = 0.80
 
     store = EvolutionLogStore(_db)
     log = await store.get_log(evolution_id)
@@ -6494,7 +6134,6 @@ async def evolution_review(
         raise HTTPException(422, "decision must be 'keep', 'rollback', or 'discard'")
 
     from src.evolution_log import EvolutionLogStore
-    from src.evolution_rollback import EvolutionRollback
 
     store = EvolutionLogStore(_db)
     log = await store.get_log(evolution_id)
@@ -6545,16 +6184,10 @@ async def evolution_review(
         )
         return {"status": "active", "message": "Evolution kept"}
     else:
-        rollback = EvolutionRollback(
-            _db,
-            DATA_ROOT,
-            skill_manager=_skill_manager,
-            on_skill_changed=_bump_shared_skills_gen,
-        )
-        success = await rollback.execute_rollback(
-            evolution_id, reason=f"Admin rollback by {current_user}"
-        )
-        if not success:
+        from src.skill_manager import SkillManager
+        skill_mgr = SkillManager(_db)
+        result = await skill_mgr.rollback_version(log["skill_name"])
+        if not result:
             raise HTTPException(500, "Rollback failed")
         await store.update_status(
             evolution_id,
@@ -6564,6 +6197,64 @@ async def evolution_review(
             review_decision="rolled_back",
         )
         return {"status": "rolled_back", "message": "Evolution rolled back"}
+
+
+# ---- Instinct Evolution Admin APIs ----
+
+@app.get("/api/admin/evolution/stats")
+async def evolution_stats(
+    current_user: str = Depends(require_admin),
+):
+    """Dashboard stats for the instinct evolution panel."""
+    store = EvolutionLogStore(_db)
+    return await store.get_overview_stats()
+
+
+@app.get("/api/admin/instincts")
+async def list_instincts(
+    domain: str = "",
+    scope: str = "",
+    page: int = 1,
+    page_size: int = 20,
+    current_user: str = Depends(require_admin),
+):
+    """List instincts with optional filters."""
+    from src.instinct_extractor import InstinctStore
+    store = InstinctStore(_db)
+    return await store.list_instincts(
+        domain=domain, scope=scope, page=page, page_size=page_size
+    )
+
+
+@app.get("/api/admin/instincts/{instinct_id}")
+async def get_instinct_detail(
+    instinct_id: int,
+    current_user: str = Depends(require_admin),
+):
+    """Get instinct detail."""
+    from src.instinct_extractor import InstinctStore
+    store = InstinctStore(_db)
+    instinct = await store.get_by_id(instinct_id)
+    if not instinct:
+        raise HTTPException(status_code=404, detail="Instinct not found")
+    return {"instinct": instinct}
+
+
+@app.get("/api/admin/observations")
+async def list_observations(
+    session_id: str = "",
+    event_type: str = "",
+    page: int = 1,
+    page_size: int = 50,
+    current_user: str = Depends(require_admin),
+):
+    """Browse observation events."""
+    from src.observation import ObservationStore
+    store = ObservationStore(_db)
+    return await store.list_events(
+        session_id=session_id, event_type=event_type,
+        page=page, page_size=page_size,
+    )
 
 
 # ── Health ───────────────────────────────────────────────────────
