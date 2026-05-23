@@ -1,73 +1,102 @@
-import { useState } from 'react'
-import { useNavigate } from 'react-router-dom'
-import { useTranslation } from 'react-i18next'
-import { useEvolutionApi, type EvolutionItem } from '../hooks/useEvolutionApi'
-import OverviewTable from './evolution/OverviewTable'
-import EvolutionDetail from './evolution/EvolutionDetail'
-import './evolution/evolution.css'
+import { useState, useEffect, useCallback } from 'react';
+import { StatsCards } from './evolution/StatsCards';
+import { PipelineFunnel } from './evolution/PipelineFunnel';
+import OverviewTable from './evolution/OverviewTable';
+import EvolutionDetail from './evolution/EvolutionDetail';
+import { InstinctList } from './evolution/InstinctList';
+import { ObservationBrowser } from './evolution/ObservationBrowser';
+import { useEvolutionApi } from '../hooks/useEvolutionApi';
+import './evolution/evolution.css';
 
-type View = 'overview' | { detail: number }
+type TabId = 'evolutions' | 'instincts' | 'observations';
 
 export default function EvolutionPage() {
-  const { t } = useTranslation()
-  const navigate = useNavigate()
-  const [statusFilter, setStatusFilter] = useState<string | undefined>()
-  const [view, setView] = useState<View>('overview')
-  const api = useEvolutionApi(statusFilter)
+  const api = useEvolutionApi();
+  const [activeTab, setActiveTab] = useState<TabId>('evolutions');
+  const [detailId, setDetailId] = useState<number | null>(null);
 
-  const handleRowClick = (item: EvolutionItem) => {
-    setView({ detail: item.id })
-  }
+  useEffect(() => {
+    api.fetchStats();
+    api.fetchInstincts({});
+    api.fetchObservations({});
+  }, []);
 
-  if (typeof view === 'object' && 'detail' in view) {
+  const handleInstinctFilter = useCallback(
+    (filters: { domain?: string; scope?: string }) => {
+      api.fetchInstincts(filters);
+    },
+    [api.fetchInstincts]
+  );
+
+  const handleObsFilter = useCallback(
+    (filters: { session_id?: string; event_type?: string }) => {
+      api.fetchObservations(filters);
+    },
+    [api.fetchObservations]
+  );
+
+  if (detailId !== null) {
     return (
       <div className="evolution-page">
-        <button
-          className="evolution-back"
-          onClick={() => setView('overview')}
-        >
-          ← {t('common.back')}
+        <button className="evolution-back" onClick={() => setDetailId(null)}>
+          ← Back to overview
         </button>
-        <EvolutionDetail evolutionId={view.detail} api={api} />
+        <EvolutionDetail evolutionId={detailId} api={api} />
       </div>
-    )
+    );
   }
+
+  const TABS: { id: TabId; label: string }[] = [
+    { id: 'evolutions', label: '进化列表' },
+    { id: 'instincts', label: '本能列表' },
+    { id: 'observations', label: '事件浏览' },
+  ];
 
   return (
     <div className="evolution-page">
-      <button className="evolution-back" onClick={() => navigate('/')}>
-        ← {t('common.back')}
-      </button>
-
       <div className="evolution-header">
-        <h2>CI Evolution Monitor</h2>
-        <div className="status-tabs">
-          {['All', 'Active', 'Proposed', 'Under Review', 'Rolled Back'].map(
-            (label) => {
-              const value =
-                label === 'All'
-                  ? undefined
-                  : label.toLowerCase().replace(' ', '_')
-              return (
-                <button
-                  key={label}
-                  className={`tab-btn ${statusFilter === value ? 'active' : ''}`}
-                  onClick={() => setStatusFilter(value)}
-                >
-                  {label}
-                </button>
-              )
-            },
-          )}
-        </div>
+        <h1>Evolution Monitor</h1>
       </div>
 
-      <OverviewTable
-        data={api.overview.data}
-        loading={api.overview.loading}
-        error={api.overview.error}
-        onRowClick={handleRowClick}
-      />
+      <StatsCards stats={api.stats.data ?? null} loading={api.stats.loading} />
+      <PipelineFunnel stats={api.stats.data ?? null} />
+
+      <div className="status-tabs">
+        {TABS.map(({ id, label }) => (
+          <button
+            key={id}
+            className={`tab-btn ${activeTab === id ? 'active' : ''}`}
+            onClick={() => setActiveTab(id)}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+
+      {activeTab === 'evolutions' && (
+        <OverviewTable
+          data={api.overview.data}
+          loading={api.overview.loading}
+          error={api.overview.error}
+          onRowClick={(item) => setDetailId(item.id)}
+        />
+      )}
+      {activeTab === 'instincts' && (
+        <InstinctList
+          data={api.instincts.data}
+          loading={api.instincts.loading}
+          error={api.instincts.error}
+          onFilterChange={handleInstinctFilter}
+        />
+      )}
+      {activeTab === 'observations' && (
+        <ObservationBrowser
+          data={api.observations.data}
+          loading={api.observations.loading}
+          error={api.observations.error}
+          onFilterChange={handleObsFilter}
+        />
+      )}
     </div>
-  )
+  );
 }

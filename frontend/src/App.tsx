@@ -17,7 +17,6 @@ import InputBar, { type InputBarHandle } from "./components/InputBar";
 import SkillsPage from "./components/SkillsPage";
 import SessionFilePanel from "./components/SessionFilePanel";
 import FeedbackPage from "./components/FeedbackPage";
-import EvolutionPanel from "./components/EvolutionPanel";
 import MCPPage from "./components/MCPPage";
 import DashboardPage from "./components/DashboardPage";
 import EvolutionPage from "./pages/EvolutionPage";
@@ -278,7 +277,7 @@ function MainLayout({
         authToken={authToken}
         onOpenSkills={() => navigate("/skills")}
         onOpenFeedback={() => navigate("/feedback")}
-        onOpenEvolution={() => navigate("/evolution")}
+        onOpenEvolution={() => navigate("/dashboard/evolution")}
         onOpenMCP={() => navigate("/mcp")}
         onOpenDashboard={() => navigate("/dashboard")}
         onLogout={handleLogout}
@@ -1573,16 +1572,6 @@ function MainApp() {
         path="/mcp"
         element={
           <MCPPage
-            userId={userId}
-            authToken={authToken}
-            onBack={() => navigate("/")}
-          />
-        }
-      />
-      <Route
-        path="/evolution"
-        element={
-          <EvolutionPanel
             userId={userId}
             authToken={authToken}
             onBack={() => navigate("/")}

@@ -79,6 +79,23 @@ export default function EvolutionDetailPanel({ evolutionId, api }: Props) {
         <p className="evo-reason">{data.evolve_reason}</p>
       )}
 
+      {data.instincts && data.instincts.length > 0 && (
+        <div className="evo-instincts">
+          <h3>Source Instincts ({data.instincts.length})</h3>
+          <div className="instinct-list">
+            {data.instincts.map((inst) => (
+              <div key={inst.id} className="instinct-item">
+                <span className="evo-badge">{inst.normalized_trigger}</span>
+                <span className="instinct-confidence">
+                  {(inst.confidence * 100).toFixed(0)}%
+                </span>
+                <p className="instinct-desc">{inst.trigger} → {inst.action}</p>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       {data.status === 'proposed' && data.proposed_content && (
         <div className="evo-proposed">
           <h4>Proposed SKILL.md Content</h4>

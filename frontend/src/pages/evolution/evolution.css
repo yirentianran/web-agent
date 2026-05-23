@@ -404,3 +404,14 @@
   font-size: 0.8rem;
   color: var(--color-muted);
 }
+
+/* Instinct display in EvolutionDetail */
+.evo-instincts { margin-bottom: 1.5rem; }
+.evo-instincts h3 { font-size: 0.95rem; margin-bottom: 0.5rem; }
+.instinct-list { display: flex; flex-direction: column; gap: 0.5rem; }
+.instinct-item {
+  display: flex; align-items: flex-start; gap: 0.5rem;
+  padding: 0.5rem; background: var(--color-surface); border-radius: 4px;
+}
+.instinct-confidence { font-size: 0.8rem; color: var(--color-accent); font-weight: 600; white-space: nowrap; }
+.instinct-desc { font-size: 0.85rem; margin: 0; }
