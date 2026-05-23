@@ -333,3 +333,43 @@
     flex-wrap: wrap;
   }
 }
+
+/* Stats Cards */
+.stats-cards {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 1rem;
+  margin-bottom: 1.5rem;
+}
+.stats-card {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 1rem 1.25rem;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+}
+.stats-card-icon { font-size: 1.5rem; }
+.stats-card-body { flex: 1; }
+.stats-card-value { font-size: 1.5rem; font-weight: 700; display: block; }
+.stats-card-label { font-size: 0.8rem; color: var(--color-muted); }
+
+/* Pipeline Funnel */
+.pipeline-funnel {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  padding: 1rem 1.25rem;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  margin-bottom: 1.5rem;
+  flex-wrap: wrap;
+}
+.funnel-stage { flex: 1; min-width: 80px; }
+.funnel-label { font-size: 0.75rem; color: var(--color-muted); display: block; }
+.funnel-value { font-size: 1.25rem; font-weight: 700; display: block; margin: 0.25rem 0; }
+.funnel-bar { height: 4px; background: var(--color-border); border-radius: 2px; overflow: hidden; }
+.funnel-bar-fill { height: 100%; background: var(--color-accent); border-radius: 2px; transition: width 0.3s; }
+.funnel-arrow { color: var(--color-muted); font-size: 1.25rem; align-self: center; }
