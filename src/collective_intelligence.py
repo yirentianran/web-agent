@@ -7,7 +7,6 @@ import logging
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from src.auto_evolve import AutoEvolvePolicy
 from src.evolution_evaluator import EvolutionEvaluator
 from src.evolution_rollback import EvolutionRollback
 from src.pattern_learner import PatternLearner
@@ -31,7 +30,6 @@ class CollectiveIntelligenceEngine:
         self.semantic_search = SemanticSearch(db)
         self.pattern_learner = PatternLearner(db)
         self.skill_manager = SkillManager(db)
-        self.auto_evolve = AutoEvolvePolicy(db)
 
     async def start_background_jobs(self) -> None:
         """Launch all background intelligence loops."""
@@ -102,12 +100,3 @@ class CollectiveIntelligenceEngine:
             except Exception:
                 logger.exception("Eval snapshot loop failed")
                 await asyncio.sleep(3600)  # retry after 1h on error
-
-    async def _auto_evolve_loop(self) -> None:
-        """Deprecated: evolution is now driven by session_learner at session end.
-
-        Kept as a no-op to avoid breaking imports from auto_evolve module.
-        """
-        logger.debug("_auto_evolve_loop is deprecated — evolution now via session_learner")
-        while True:
-            await asyncio.sleep(86400)

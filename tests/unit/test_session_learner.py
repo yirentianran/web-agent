@@ -85,10 +85,10 @@ async def test_create_learned_skill(db, tmp_path):
 async def test_extract_version_from_frontmatter():
     from src.session_learner import SessionLearner
     content = "---\nname: foo\nversion: 2.3\n---\n\n# Body"
-    assert SessionLearner._extract_version(content) == "2.3"
+    assert SessionLearner.extract_version(content) == "2.3"
 
 
 @pytest.mark.asyncio
 async def test_extract_version_default():
     from src.session_learner import SessionLearner
-    assert SessionLearner._extract_version("# No frontmatter") == "1.0"
+    assert SessionLearner.extract_version("# No frontmatter") == "1.0"

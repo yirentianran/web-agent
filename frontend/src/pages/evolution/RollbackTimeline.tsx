@@ -1,5 +1,4 @@
 import { useState, useEffect } from 'react'
-import type { EvolutionApi } from '../../hooks/useEvolutionApi'
 
 interface TimelineEvent {
   date: string
@@ -8,7 +7,6 @@ interface TimelineEvent {
 
 interface Props {
   evolutionId: number
-  api: EvolutionApi
 }
 
 export default function RollbackTimeline({ evolutionId }: Props) {
@@ -16,6 +14,7 @@ export default function RollbackTimeline({ evolutionId }: Props) {
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
+    let cancelled = false
     setLoading(true)
     fetch(`/api/admin/skills/evolution-timeline/${evolutionId}`, {
       headers: {
@@ -26,9 +25,18 @@ export default function RollbackTimeline({ evolutionId }: Props) {
         if (!r.ok) throw new Error('Not found')
         return r.json()
       })
-      .then((data) => setEvents(data.events || []))
-      .catch(() => setEvents([]))
-      .finally(() => setLoading(false))
+      .then((data) => {
+        if (!cancelled) setEvents(data.events || [])
+      })
+      .catch(() => {
+        if (!cancelled) setEvents([])
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false)
+      })
+    return () => {
+      cancelled = true
+    }
   }, [evolutionId])
 
   if (loading) return <div className="evo-loading">Loading timeline...</div>
@@ -43,7 +51,7 @@ export default function RollbackTimeline({ evolutionId }: Props) {
       ) : (
         <div className="timeline-list">
           {events.map((ev, i) => (
-            <div key={i} className="timeline-item">
+            <div key={`${ev.date}-${i}`} className="timeline-item">
               <span className="timeline-date">{ev.date}</span>
               <span className="timeline-event">{ev.event}</span>
             </div>

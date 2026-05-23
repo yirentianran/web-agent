@@ -6,6 +6,7 @@ skills based on confidence scores.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -16,6 +17,9 @@ from typing import Any, Callable
 if __name__ != "__main__":
     from src.database import Database
     from src.evolution_log import EvolutionLogStore
+    from src.evolution_evaluator import W_RATING, W_USAGE, W_SUCCESS
+
+from src.text_utils import strip_markdown_fences
 
 logger = logging.getLogger(__name__)
 
@@ -70,15 +74,17 @@ class SessionLearner:
 
     async def analyze_session(self, session_id: str) -> dict:
         """Analyze a completed session. Called as fire-and-forget at session end."""
-        # 1. Check minimum message count
-        msg_count = await self._count_messages(session_id)
-        if msg_count < MIN_SESSION_MESSAGES:
-            logger.debug("Session %s too short (%d messages), skipping", session_id, msg_count)
+        # Fetch messages and skills in parallel (independent queries)
+        messages, skills_used = await asyncio.gather(
+            self._get_session_messages(session_id),
+            self._get_session_skills(session_id),
+        )
+
+        # Check minimum message count from fetched data (no extra DB round trip)
+        if len(messages) < MIN_SESSION_MESSAGES:
+            logger.debug("Session %s too short (%d messages), skipping", session_id, len(messages))
             return {"skipped": True, "reason": "too_short"}
 
-        # 2. Query data
-        messages = await self._get_session_messages(session_id)
-        skills_used = await self._get_session_skills(session_id)
         if not skills_used:
             return {"skipped": True, "reason": "no_skills"}
 
@@ -117,23 +123,17 @@ class SessionLearner:
 
     # ── Data fetching ────────────────────────────────────────────
 
-    async def _count_messages(self, session_id: str) -> int:
-        async with self.db.connection() as conn:
-            cursor = await conn.execute(
-                "SELECT COUNT(*) FROM messages WHERE session_id = ?", (session_id,)
-            )
-            row = await cursor.fetchone()
-            return row[0] if row else 0
-
     async def _get_session_messages(self, session_id: str) -> list[dict]:
         async with self.db.connection() as conn:
             cursor = await conn.execute(
                 """SELECT seq, type, name, content
                    FROM messages WHERE session_id = ?
-                   ORDER BY seq""",
+                   ORDER BY seq DESC LIMIT 200""",
                 (session_id,),
             )
-            return [dict(r) for r in await cursor.fetchall()]
+            rows = await cursor.fetchall()
+            rows.reverse()
+            return [dict(r) for r in rows]
 
     async def _get_session_skills(self, session_id: str) -> list[str]:
         async with self.db.connection() as conn:
@@ -170,9 +170,9 @@ class SessionLearner:
         feedback: dict,
     ) -> str:
         # Format messages: [{seq}] {type}/{name}: {content[:2000]}
-        # Cap at last 200 messages
+        # Already limited to 200 by _get_session_messages query
         lines = []
-        for m in messages[-200:]:
+        for m in messages:
             content = (m.get("content") or "")[:2000]
             if not content.strip():
                 continue
@@ -228,16 +228,7 @@ class SessionLearner:
                 resp.raise_for_status()
                 data = resp.json()
                 text = data["content"][0]["text"]
-
-                # Strip markdown code fences if present
-                if text.startswith("```"):
-                    lines = text.split("\n")
-                    if lines[0].startswith("```"):
-                        lines = lines[1:]
-                    if lines and lines[-1].strip() == "```":
-                        lines = lines[:-1]
-                    text = "\n".join(lines)
-
+                text = strip_markdown_fences(text)
                 return json.loads(text)
         except Exception as e:
             logger.error("SessionLearner Haiku call failed: %s", e)
@@ -260,7 +251,7 @@ class SessionLearner:
             return
 
         old_content = skill_file.read_text()
-        from_version = self._extract_version(old_content)
+        from_version = self.extract_version(old_content)
 
         # Try to create a DB-tracked version; fall back to direct write
         to_version = "unknown"
@@ -393,7 +384,6 @@ class SessionLearner:
 
         session_success_rate = 0.8
 
-        from src.evolution_evaluator import W_RATING, W_USAGE, W_SUCCESS
         usage_trend_ratio = 1.0
         return round(
             W_RATING * (avg_rating / 5.0)
@@ -403,7 +393,7 @@ class SessionLearner:
         )
 
     @staticmethod
-    def _extract_version(content: str) -> str:
+    def extract_version(content: str) -> str:
         """Extract version from SKILL.md frontmatter."""
         for line in content.split("\n"):
             if line.startswith("version:"):

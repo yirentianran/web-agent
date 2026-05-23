@@ -16,6 +16,12 @@ W_RATING = 0.4
 W_USAGE = 0.3
 W_SUCCESS = 0.3
 
+# Baseline defaults used by evaluator, API, and session_learner
+DEFAULT_BASELINE_COMPOSITE = 0.6
+DEFAULT_BASELINE_DAILY_USAGE = 5
+DEFAULT_BASELINE_RATING = 3.0
+DEFAULT_BASELINE_SUCCESS_RATE = 0.8
+
 
 class EvolutionEvaluator:
     """Generates daily snapshots and detects degradation."""
@@ -44,7 +50,7 @@ class EvolutionEvaluator:
             # Use baseline_composite stored at evolution creation time
             baseline = log.get("baseline_composite")
             if baseline is None:
-                baseline = 0.6
+                baseline = DEFAULT_BASELINE_COMPOSITE
             if all(s["composite_score"] < baseline for s in last_7):
                 rollback_at = int(time.time()) + 48 * 3600
                 await self.store.update_status(
@@ -66,26 +72,17 @@ class EvolutionEvaluator:
         date_end = f"{date_str}T23:59:59"
 
         async with self.db.connection() as conn:
-            # Usage count for the snapshot date
+            # Combined usage count + distinct users (same WHERE clause)
             cursor = await conn.execute(
-                """SELECT COUNT(*) FROM skill_usage
+                """SELECT COUNT(*) as cnt, COUNT(DISTINCT user_id) as uniq
+                   FROM skill_usage
                    WHERE skill_name = ? AND created_at >= strftime('%s', ?)
                    AND created_at <= strftime('%s', ?)""",
                 (skill_name, date_start, date_end),
             )
             row = await cursor.fetchone()
             usage_count = row[0] if row else 0
-
-            # Daily unique users
-            cursor = await conn.execute(
-                """SELECT COUNT(DISTINCT user_id) FROM skill_usage
-                   WHERE skill_name = ?
-                   AND created_at >= strftime('%s', ?)
-                   AND created_at <= strftime('%s', ?)""",
-                (skill_name, date_start, date_end),
-            )
-            row = await cursor.fetchone()
-            unique_users = row[0] if row else 0
+            unique_users = row[1] if row else 0
 
             # Avg rating
             cursor = await conn.execute(
@@ -111,7 +108,7 @@ class EvolutionEvaluator:
         # Baseline daily usage from 7 days before evolution
         evolved_at = log["created_at"]
         baseline_period_start = evolved_at - 7 * 86400
-        baseline_daily = 5  # default
+        baseline_daily = DEFAULT_BASELINE_DAILY_USAGE  # default
         try:
             async with self.db.connection() as conn:
                 cursor = await conn.execute(

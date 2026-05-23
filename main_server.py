@@ -6324,6 +6324,11 @@ async def evolution_detail(
 ):
     """Get evolution detail with snapshots and signal breakdown."""
     from src.evolution_log import EvolutionLogStore
+    from src.evolution_evaluator import (
+        DEFAULT_BASELINE_RATING,
+        DEFAULT_BASELINE_DAILY_USAGE,
+        DEFAULT_BASELINE_SUCCESS_RATE,
+    )
 
     store = EvolutionLogStore(_db)
     log = await store.get_log(evolution_id)
@@ -6338,22 +6343,28 @@ async def evolution_detail(
         signal_breakdown = {
             "rating": {
                 "current": current_snap["avg_rating"],
-                "baseline": 3.0,
-                "delta_pct": round((current_snap["avg_rating"] - 3.0) / 3.0 * 100, 1)
+                "baseline": DEFAULT_BASELINE_RATING,
+                "delta_pct": round(
+                    (current_snap["avg_rating"] - DEFAULT_BASELINE_RATING) / DEFAULT_BASELINE_RATING * 100, 1
+                )
                 if current_snap["avg_rating"]
                 else 0,
             },
             "usage": {
                 "current": current_snap["usage_count"],
-                "baseline": 5,
-                "delta_pct": round((current_snap["usage_count"] - 5) / 5 * 100, 1)
+                "baseline": DEFAULT_BASELINE_DAILY_USAGE,
+                "delta_pct": round(
+                    (current_snap["usage_count"] - DEFAULT_BASELINE_DAILY_USAGE) / DEFAULT_BASELINE_DAILY_USAGE * 100, 1
+                )
                 if current_snap["usage_count"]
                 else 0,
             },
             "session_success": {
                 "current": current_snap["session_success_rate"],
-                "baseline": 0.8,
-                "delta_pct": round((current_snap["session_success_rate"] - 0.8) / 0.8 * 100, 1)
+                "baseline": DEFAULT_BASELINE_SUCCESS_RATE,
+                "delta_pct": round(
+                    (current_snap["session_success_rate"] - DEFAULT_BASELINE_SUCCESS_RATE) / DEFAULT_BASELINE_SUCCESS_RATE * 100, 1
+                )
                 if current_snap["session_success_rate"]
                 else 0,
             },
@@ -6455,7 +6466,7 @@ async def evolution_review(
                     old_content = skill_file.read_text()
                     from src.session_learner import SessionLearner
 
-                    from_ver = SessionLearner._extract_version(old_content)
+                    from_ver = SessionLearner.extract_version(old_content)
                     backup_path = skill_dir / f"SKILL_backup_v{from_ver}.md"
                     if not backup_path.exists():
                         skill_file.rename(backup_path)

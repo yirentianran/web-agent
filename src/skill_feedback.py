@@ -692,16 +692,9 @@ class DBSkillFeedbackManager:
             )
             resp.raise_for_status()
             data = resp.json()
+            from src.text_utils import strip_markdown_fences
             fixed_content = data["content"][0]["text"]
-
-            # Strip markdown code fences if present
-            if fixed_content.startswith("```"):
-                lines = fixed_content.split("\n")
-                if lines[0].startswith("```"):
-                    lines = lines[1:]
-                if lines and lines[-1].strip() == "```":
-                    lines = lines[:-1]
-                fixed_content = "\n".join(lines)
+            fixed_content = strip_markdown_fences(fixed_content)
 
             # Apply the fix
             return await self.apply_user_edits(skill_name, fixed_content)

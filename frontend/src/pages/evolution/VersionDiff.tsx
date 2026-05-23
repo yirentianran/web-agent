@@ -12,12 +12,22 @@ export default function VersionDiff({ evolutionId, api }: Props) {
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
+    let cancelled = false
     setLoading(true)
     api
       .fetchDiff(evolutionId)
-      .then(setData)
-      .catch(() => setData(null))
-      .finally(() => setLoading(false))
+      .then((data) => {
+        if (!cancelled) setData(data)
+      })
+      .catch(() => {
+        if (!cancelled) setData(null)
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false)
+      })
+    return () => {
+      cancelled = true
+    }
   }, [evolutionId, api])
 
   if (loading) return <div className="evo-loading">Loading diff...</div>

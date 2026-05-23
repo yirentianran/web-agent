@@ -30,7 +30,23 @@ export default function EvolutionDetailPanel({ evolutionId, api }: Props) {
   }
 
   useEffect(() => {
-    load()
+    let cancelled = false
+    setLoading(true)
+    setError(null)
+    api
+      .fetchDetail(evolutionId)
+      .then((data) => {
+        if (!cancelled) setData(data)
+      })
+      .catch((e) => {
+        if (!cancelled) setError(e instanceof Error ? e.message : 'Unknown error')
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false)
+      })
+    return () => {
+      cancelled = true
+    }
   }, [evolutionId])
 
   const handleReview = async (decision: 'keep' | 'rollback' | 'discard') => {
@@ -124,7 +140,7 @@ export default function EvolutionDetailPanel({ evolutionId, api }: Props) {
         </div>
       )}
 
-      <RollbackTimeline evolutionId={evolutionId} api={api} />
+      <RollbackTimeline evolutionId={evolutionId} />
     </div>
   )
 }
