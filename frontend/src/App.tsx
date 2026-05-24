@@ -20,6 +20,7 @@ import SessionFilePanel from "./components/SessionFilePanel";
 import MCPPage from "./components/MCPPage";
 import DashboardPage from "./components/DashboardPage";
 import EvolutionPage from "./pages/EvolutionPage";
+import UsersPage from "./pages/UsersPage";
 import DesignPreviewPage from "./DesignPreviewPage";
 import SettingsPreviewPage from "./SettingsPreviewPage";
 import TechPreviewPage from "./TechPreviewPage";
@@ -280,6 +281,7 @@ function MainLayout({
         onOpenEvolution={() => navigate("/evolution")}
         onOpenMCP={() => navigate("/mcp")}
         onOpenDashboard={() => navigate("/dashboard")}
+        onOpenUsers={() => navigate("/users")}
         onLogout={handleLogout}
         userRole={userRole}
       />
@@ -1583,6 +1585,16 @@ function MainApp() {
         element={
           userRole === "admin" ? (
             <EvolutionPage />
+          ) : (
+            <Navigate to="/" replace />
+          )
+        }
+      />
+      <Route
+        path="/users"
+        element={
+          userRole === "admin" ? (
+            <UsersPage />
           ) : (
             <Navigate to="/" replace />
           )
