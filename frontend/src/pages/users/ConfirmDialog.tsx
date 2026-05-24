@@ -2,9 +2,14 @@ import { useTranslation } from 'react-i18next'
 
 interface ConfirmDialogProps {
   title: string
-  body: string
+  userName: string
   confirmLabel: string
   confirmClass: 'danger' | 'primary'
+  messageKey:
+    | 'users.confirmDisableBody'
+    | 'users.confirmEnableBody'
+    | 'users.confirmPromoteBody'
+    | 'users.confirmDemoteBody'
   loading: boolean
   onConfirm: () => void
   onCancel: () => void
@@ -12,14 +17,18 @@ interface ConfirmDialogProps {
 
 export default function ConfirmDialog({
   title,
-  body,
+  userName,
   confirmLabel,
   confirmClass,
+  messageKey,
   loading,
   onConfirm,
   onCancel,
 }: ConfirmDialogProps) {
   const { t } = useTranslation()
+
+  const message = t(messageKey)
+  const parts = message.split('{{user}}')
 
   return (
     <div
@@ -54,8 +63,17 @@ export default function ConfirmDialog({
       >
         <p
           style={{ fontSize: '13px', color: 'var(--color-text-muted, #718096)', marginBottom: '12px' }}
-          dangerouslySetInnerHTML={{ __html: body }}
-        />
+        >
+          {parts.length === 2 ? (
+            <>
+              {parts[0]}
+              <strong>{userName}</strong>
+              {parts[1]}
+            </>
+          ) : (
+            message.replace('{{user}}', userName)
+          )}
+        </p>
         <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end' }}>
           <button
             onClick={onCancel}

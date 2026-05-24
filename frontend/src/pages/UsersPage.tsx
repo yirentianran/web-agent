@@ -76,16 +76,14 @@ export default function UsersPage() {
             ? t('users.confirmDemoteTitle')
             : ''
 
-  const dialogBody =
+  const dialogMessageKey =
     pending?.type === 'disable'
-      ? t('users.confirmDisableBody', { user: pending.userId })
+      ? 'users.confirmDisableBody' as const
       : pending?.type === 'enable'
-        ? t('users.confirmEnableBody', { user: pending.userId })
+        ? 'users.confirmEnableBody' as const
         : pending?.type === 'promote'
-          ? t('users.confirmPromoteBody', { user: pending.userId })
-          : pending?.type === 'demote'
-            ? t('users.confirmDemoteBody', { user: pending.userId })
-            : ''
+          ? 'users.confirmPromoteBody' as const
+          : 'users.confirmDemoteBody' as const
 
   const dialogConfirmLabel =
     pending?.type === 'disable'
@@ -218,9 +216,10 @@ export default function UsersPage() {
           >
             ‹
           </button>
-          {Array.from({ length: Math.min(totalPages, 5) }, (_, i) => {
-            const pageNum = i + 1
-            return (
+          {(() => {
+            const maxVisible = Math.min(totalPages, 5)
+            const startPage = Math.max(1, Math.min(page - 2, totalPages - maxVisible + 1))
+            return Array.from({ length: maxVisible }, (_, i) => startPage + i).map((pageNum) => (
               <button
                 key={pageNum}
                 onClick={() => setPage(pageNum)}
@@ -237,8 +236,8 @@ export default function UsersPage() {
               >
                 {pageNum}
               </button>
-            )
-          })}
+            ))
+          })()}
           <button
             disabled={page >= totalPages}
             onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
@@ -261,7 +260,8 @@ export default function UsersPage() {
       {pending && (
         <ConfirmDialog
           title={dialogTitle}
-          body={dialogBody}
+          userName={pending.userId}
+          messageKey={dialogMessageKey}
           confirmLabel={dialogConfirmLabel}
           confirmClass={dialogConfirmClass}
           loading={actionLoading}

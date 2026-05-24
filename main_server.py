@@ -6374,43 +6374,49 @@ async def admin_list_users(
     if order not in ("asc", "desc"):
         raise HTTPException(400, "order must be 'asc' or 'desc'")
 
+    if page < 1:
+        raise HTTPException(400, "page must be >= 1")
+    if page_size < 1 or page_size > 100:
+        raise HTTPException(400, "page_size must be between 1 and 100")
+
     conditions: list[str] = []
-    params: list[str | int] = []
+    filter_params: list[str | int] = []
 
     if q:
         conditions.append("u.user_id LIKE ?")
-        params.append(f"%{q}%")
+        filter_params.append(f"%{q}%")
     if role:
         conditions.append("u.role = ?")
-        params.append(role)
+        filter_params.append(role)
     if status:
         conditions.append("u.status = ?")
-        params.append(status)
+        filter_params.append(status)
 
     where_clause = ("WHERE " + " AND ".join(conditions)) if conditions else ""
-    params.extend([page_size, (page - 1) * page_size])
 
     async with _db.connection() as conn:
         cursor = await conn.execute(
             f"SELECT COUNT(*) FROM users u {where_clause}",
-            params[:-2] if conditions else [],
+            filter_params,
         )
         count_row = await cursor.fetchone()
         total = count_row[0] if count_row else 0
 
+        data_params = filter_params + [page_size, (page - 1) * page_size]
         cursor = await conn.execute(
             f"""
             SELECT u.user_id, u.role, u.status, u.created_at, u.last_active_at,
                    u.disabled_at, u.disabled_by,
                    COALESCE((SELECT COUNT(*) FROM sessions WHERE user_id = u.user_id), 0) AS session_count,
-                   COALESCE((SELECT SUM(input_tokens + output_tokens + cache_read_tokens + cache_write_tokens)
-                    FROM messages WHERE user_id = u.user_id), 0) AS total_tokens
+                   COALESCE((SELECT SUM(m.input_tokens + m.output_tokens + m.cache_read_tokens + m.cache_write_tokens)
+                    FROM messages m JOIN sessions s ON m.session_id = s.session_id
+                    WHERE s.user_id = u.user_id), 0) AS total_tokens
             FROM users u
             {where_clause}
             ORDER BY u.{sort} {order}
             LIMIT ? OFFSET ?
             """,
-            params,
+            data_params,
         )
         rows = await cursor.fetchall()
 
