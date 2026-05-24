@@ -73,6 +73,8 @@ interface LoginScreenProps {
   onLogin: (userId: string) => void;
 }
 
+const ACCOUNT_DISABLED = 'ACCOUNT_DISABLED';
+
 function LoginScreen({ onLogin }: LoginScreenProps) {
   const { t } = useTranslation();
   const [userId, setUserId] = useState("");
@@ -111,7 +113,11 @@ function LoginScreen({ onLogin }: LoginScreenProps) {
 
       if (!resp.ok) {
         const detail = await resp.json().catch(() => ({}));
-        throw new Error(detail.detail || `HTTP ${resp.status}`);
+        const serverDetail = detail.detail || '';
+        if (resp.status === 403 && serverDetail === ACCOUNT_DISABLED) {
+          throw new Error(ACCOUNT_DISABLED);
+        }
+        throw new Error(serverDetail || `HTTP ${resp.status}`);
       }
 
       const data = await resp.json();
@@ -119,7 +125,12 @@ function LoginScreen({ onLogin }: LoginScreenProps) {
       localStorage.setItem("userId", data.user_id);
       onLogin(trimmed);
     } catch (err) {
-      setError(err instanceof Error ? err.message : t('login.error'));
+      const msg = err instanceof Error ? err.message : '';
+      if (msg === ACCOUNT_DISABLED) {
+        setError(t('login.accountDisabled'));
+      } else {
+        setError(msg || t('login.error'));
+      }
     } finally {
       setLoading(false);
     }

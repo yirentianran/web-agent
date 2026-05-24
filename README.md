@@ -2,7 +2,7 @@
 
 Multi-user web agent platform powered by Claude Agent SDK — isolated sessions, real-time WebSocket streaming, persistent memory, and private workspaces.
 
-**Tech stack**: FastAPI + React + SQLite + Claude Agent SDK
+**Tech stack**: FastAPI + React + SQLite + AI Agent SDK (Anthropic-compatible API)
 
 ## Features
 
@@ -25,11 +25,10 @@ Multi-user web agent platform powered by Claude Agent SDK — isolated sessions,
 - **Skill sharing** — upload skills (ZIP), browse and install from the skill library
 - **Rating & feedback** — collect user ratings and comments per skill
 ### Evolution System
+- **Instinct extraction** — automatic pattern discovery from tool-call observations
 - **Wiki knowledge base** — LLM-generated pages from skill feedback
-- **Pattern learning** — tool co-occurrence and success rate analysis
-- **Semantic search** — FTS5 full-text search over past session summaries
-- **Skill auto-evolution** — automatic bug fixes and version management
-- **Evolution pipeline** — aggregate feedback over time with improvement suggestions
+- **Semantic search** — FTS5 full-text search over sessions and wiki pages
+- **Observation pipeline** — tool-call event recording with success/failure tracking
 
 ### MCP Registry
 - **Admin-managed MCP servers** — register and configure MCP tool servers per user
@@ -79,9 +78,10 @@ Backend at `http://127.0.0.1:8000`, frontend dev server at `http://127.0.0.1:300
 
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
-| `ANTHROPIC_AUTH_TOKEN` | Yes | — | Anthropic API key. Also checks `ANTHROPIC_API_KEY` as fallback. Per-user override: `ANTHROPIC_AUTH_TOKEN_<USERID>` |
-| `ANTHROPIC_BASE_URL` | No | Anthropic default | Custom API endpoint (e.g., Bailian: `https://coding.dashscope.aliyuncs.com/apps/anthropic`) |
-| `MODEL` | No | `claude-sonnet-4-6` | Model name (e.g., `qwen3.6-plus` for Bailian) |
+| `ANTHROPIC_AUTH_TOKEN` | Yes | — | API key. Falls back to `ANTHROPIC_API_KEY`. Per-user override: `ANTHROPIC_AUTH_TOKEN_<USERID>` |
+| `ANTHROPIC_BASE_URL` | No | Anthropic default | Custom API endpoint (DeepSeek, Bailian, etc.) |
+| `MODEL` | Yes | — | Main agent model. No default — must be set (e.g., `deepseek-v4-pro`, `claude-sonnet-4-6`) |
+| `FLASH_MODEL` | No | `MODEL` | Lightweight tasks: title generation, instinct extraction, skill feedback |
 | `DATA_ROOT` | No | `./data` | Runtime data directory |
 | `DATA_DB_PATH` | No | `./data/web-agent.db` | SQLite database path |
 | `AGENT_TASK_TIMEOUT` | No | `300` | Max agent task duration (seconds) |
@@ -98,6 +98,8 @@ Backend at `http://127.0.0.1:8000`, frontend dev server at `http://127.0.0.1:300
 | `RESOURCE_MAX_CPU_PERCENT` | No | `100` | Per-container CPU limit |
 | `RESOURCE_MAX_MEMORY_MB` | No | `4096` | Per-container memory limit (MB) |
 | `RESOURCE_MAX_DISK_MB` | No | `1024` | Per-container disk limit (MB) |
+
+> See `.env.example` for additional environment variables: log directories, sandbox mode, prompt length limits, and more.
 
 ## Architecture
 
@@ -131,19 +133,26 @@ web-agent/
 ├── agent_server.py             # Agent endpoint (runs inside user containers)
 ├── src/                        # Backend modules
 │   ├── auth.py                 # JWT + bcrypt password auth
+│   ├── cost.py                 # Model name resolution (MODEL / FLASH_MODEL)
 │   ├── database.py             # SQLite with aiosqlite, WAL mode
-│   ├── session_store.py        # Session CRUD
-│   ├── message_buffer.py       # Message persistence and streaming
+│   ├── session_store.py        # Session CRUD and message persistence
+│   ├── message_buffer.py       # In-memory message buffer with JSONL disk persistence
+│   ├── container_bridge.py     # WebSocket bridge to user containers
+│   ├── observation.py          # ToolObserver — tool-call event recording
+│   ├── instinct_extractor.py   # Automatic pattern discovery from observations
+│   ├── evolution_signals.py    # Evolution signal detection
+│   ├── evolution_log.py        # Evolution history tracking
+│   ├── agent_logger.py         # L3 agent execution logging
 │   ├── semantic_search.py      # FTS5 search over sessions and wiki
-│   ├── mcp_store.py            # MCP server registry
+│   ├── collective_intelligence.py  # Wiki generation and pattern learning
 │   ├── skill_feedback.py       # Skill rating and aggregation
-│   ├── skill_evolution.py      # Feedback-driven improvement pipeline
+│   ├── skill_manager.py        # Skill upload, download, promote
+│   ├── mcp_store.py            # MCP server registry
 │   ├── sub_agent.py            # Sub-agent task lifecycle
 │   ├── container_manager.py    # Per-user Docker container management
-│   ├── container_bridge.py      # WebSocket bridge to user containers
-│   ├── block_processor.py       # Unified content-block processing (SDK + container)
-│   ├── sandbox.py              # Code execution isolation adapter
 │   ├── resource_manager.py     # Container resource monitoring
+│   ├── security_filter.py      # Bash command and file access filtering
+│   ├── workspace_enforcement.py # Path sandboxing and write isolation
 │   └── hooks/                  # PreToolUse, PostToolUse, Stop hooks
 ├── frontend/src/               # React SPA (Vite)
 │   ├── components/             # ChatArea, MessageBubble, InputBar, Sidebar, etc.
@@ -213,7 +222,7 @@ docker compose up -d --build
 | `DELETE` | `/api/users/{uid}/sessions/{id}` | Delete session |
 | `GET` | `/api/users/{uid}/sessions/{id}/history` | Get message history |
 | `GET` | `/api/users/{uid}/sessions/{id}/status` | Get live session state |
-| `PATCH` | `/api/users/{uid}/sessions/{id}/title` | Auto-generate title |
+| `PATCH` | `/api/users/{uid}/sessions/{id}/title` | Set session title |
 | `POST` | `/api/users/{uid}/sessions/{id}/cancel` | Cancel running session |
 | `POST` | `/api/users/{uid}/sessions/{id}/fork` | Fork session |
 

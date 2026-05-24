@@ -3,8 +3,10 @@
 ## Development Setup
 
 1. Run `./setup.sh` to install dependencies
-2. Copy `.env.example` to `.env` and configure your API key
+2. Copy `.env.example` to `.env` and configure `ANTHROPIC_AUTH_TOKEN` and `MODEL`
 3. Start dev servers with `./start-dev.sh`
+
+> See [CLAUDE.md](CLAUDE.md) for detailed commands (lint, type check, test).
 
 ## Code Standards
 

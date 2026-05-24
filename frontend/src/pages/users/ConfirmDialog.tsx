@@ -104,7 +104,7 @@ export default function ConfirmDialog({
               opacity: loading ? 0.7 : 1,
             }}
           >
-            {loading ? '...' : confirmLabel}
+            {loading ? '…' : confirmLabel}
           </button>
         </div>
       </div>

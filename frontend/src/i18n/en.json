@@ -35,7 +35,8 @@
     "registerButton": "Register",
     "switchToRegister": "Create a new account",
     "switchToLogin": "Already have an account? Login",
-    "error": "Login failed"
+    "error": "Login failed",
+    "accountDisabled": "Account disabled. Please contact your administrator."
   },
   "connection": {
     "connected": "Connected",

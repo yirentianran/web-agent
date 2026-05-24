@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react'
+import { useState, useCallback, useRef, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 import { useUsersApi, type UsersFilters } from '../hooks/useUsersApi'
@@ -17,6 +17,9 @@ export default function UsersPage() {
   const { t } = useTranslation()
   const navigate = useNavigate()
 
+  const [rawQ, setRawQ] = useState('')
+  const debounceRef = useRef<ReturnType<typeof setTimeout>>(undefined)
+
   const [filters, setFilters] = useState<UsersFilters>({
     q: '',
     role: '',
@@ -24,6 +27,19 @@ export default function UsersPage() {
     sort: 'created_at',
     order: 'desc',
   })
+
+  useEffect(() => {
+    clearTimeout(debounceRef.current)
+    debounceRef.current = setTimeout(() => {
+      setFilters((f) => {
+        if (f.q === rawQ) return f
+        return { ...f, q: rawQ }
+      })
+      setPage(1)
+    }, 300)
+    return () => clearTimeout(debounceRef.current)
+  }, [rawQ])
+
   const [page, setPage] = useState(1)
   const [pending, setPending] = useState<PendingAction | null>(null)
   const [actionLoading, setActionLoading] = useState(false)
@@ -63,6 +79,16 @@ export default function UsersPage() {
   const triggerAction = useCallback((type: DialogType, userId: string) => {
     setPending({ type, userId })
     setActionError(null)
+  }, [])
+
+  const handleRoleChange = useCallback((role: string) => {
+    setFilters((f) => ({ ...f, role }))
+    setPage(1)
+  }, [])
+
+  const handleStatusChange = useCallback((status: string) => {
+    setFilters((f) => ({ ...f, status }))
+    setPage(1)
   }, [])
 
   const dialogTitle =
@@ -146,23 +172,13 @@ export default function UsersPage() {
       )}
 
       <UsersFilter
-        q={filters.q}
+        q={rawQ}
         role={filters.role}
         status={filters.status}
         totalCount={api.list.data?.total ?? 0}
-        onQChange={(q) => setFilters((f) => ({ ...f, q }))}
-        onRoleChange={(role) => {
-          setFilters((f) => ({ ...f, role }))
-          setPage(1)
-        }}
-        onStatusChange={(status) => {
-          setFilters((f) => ({ ...f, status }))
-          setPage(1)
-        }}
-        onSearch={() => {
-          setPage(1)
-          api.refetch()
-        }}
+        onQChange={setRawQ}
+        onRoleChange={handleRoleChange}
+        onStatusChange={handleStatusChange}
       />
 
       {api.list.loading && (

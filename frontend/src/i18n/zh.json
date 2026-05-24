@@ -35,7 +35,8 @@
     "registerButton": "注册",
     "switchToRegister": "创建新账户",
     "switchToLogin": "已有账户？去登录",
-    "error": "登录失败"
+    "error": "登录失败",
+    "accountDisabled": "账户已被禁用，请联系管理员"
   },
   "connection": {
     "connected": "已连接",

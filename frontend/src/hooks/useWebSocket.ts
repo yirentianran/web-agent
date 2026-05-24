@@ -244,12 +244,7 @@ export function useWebSocket({
 
     const cleanup = () => {
       intentionalClose = true;
-      // Only close if WebSocket is not already CLOSED.
-      // During StrictMode double-invoke, cleanup runs before onopen fires,
-      // so ws may still be CONNECTING. Calling close() on CONNECTING WS
-      // triggers browser warning "WebSocket is closed before established".
-      // We suppress this by checking readyState first.
-      if (ws.readyState !== WebSocket.CLOSED) {
+      if (ws.readyState === WebSocket.OPEN) {
         ws.close(1000, "cleanup");
       }
       // Only clear wsRef if this WebSocket is the current one.

@@ -8,7 +8,6 @@ interface UsersFilterProps {
   onQChange: (q: string) => void
   onRoleChange: (role: string) => void
   onStatusChange: (status: string) => void
-  onSearch: () => void
 }
 
 export default function UsersFilter({
@@ -19,7 +18,6 @@ export default function UsersFilter({
   onQChange,
   onRoleChange,
   onStatusChange,
-  onSearch,
 }: UsersFilterProps) {
   const { t } = useTranslation()
 
@@ -38,7 +36,6 @@ export default function UsersFilter({
           placeholder={t('users.searchPlaceholder')}
           value={q}
           onChange={(e) => onQChange(e.target.value)}
-          onKeyDown={(e) => e.key === 'Enter' && onSearch()}
           style={{
             padding: '7px 12px',
             border: '1px solid var(--color-border, #e2e8f0)',
@@ -81,21 +78,6 @@ export default function UsersFilter({
           <option value="active">{t('users.statusActive')}</option>
           <option value="disabled">{t('users.statusDisabled')}</option>
         </select>
-        <button
-          onClick={onSearch}
-          style={{
-            padding: '7px 18px',
-            border: '1px solid #3b82f6',
-            borderRadius: '6px',
-            background: '#eff6ff',
-            color: '#3b82f6',
-            fontSize: '13px',
-            cursor: 'pointer',
-            fontWeight: 500,
-          }}
-        >
-          {t('users.search')}
-        </button>
         <span
           style={{
             marginLeft: 'auto',

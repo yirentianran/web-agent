@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-Multi-user web agent built with FastAPI (backend) and React (frontend). Each user gets isolated sessions, workspace, and memory. The backend communicates with Claude Agent SDK via WebSocket streaming.
+Multi-user web agent built with FastAPI (backend) and React (frontend). Each user gets isolated sessions, workspace, and memory. The backend communicates with an AI agent SDK via WebSocket streaming (Anthropic-compatible API — works with DeepSeek, Bailian, etc.).
 
 ## Architecture
 
@@ -15,12 +15,25 @@ Multi-user web agent built with FastAPI (backend) and React (frontend). Each use
 | File | Purpose |
 |------|---------|
 | `main_server.py` | Main FastAPI app: REST endpoints, WebSocket bridge, session management |
-| `agent_server.py` | Agent subprocess FastAPI endpoint |
-| `src/message_buffer.py` | Session message persistence and retrieval |
+| `agent_server.py` | Agent subprocess endpoint (container mode) |
+| `src/message_buffer.py` | In-memory message buffer with JSONL disk persistence |
+| `src/session_store.py` | DB-backed session CRUD and message storage |
+| `src/database.py` | SQLite via aiosqlite, WAL mode |
+| `src/auth.py` | JWT + bcrypt password authentication |
+| `src/cost.py` | Model name resolution (`MODEL` / `FLASH_MODEL` env vars) |
+| `src/observation.py` | ToolObserver — tool-call event recording |
+| `src/instinct_extractor.py` | Automatic pattern discovery from observations |
+| `src/container_bridge.py` | WebSocket bridge to per-user Docker containers |
+| `src/agent_logger.py` | L3 agent execution logging |
 | `src/semantic_search.py` | FTS5 search over sessions and wiki pages |
-| `src/auth.py` | JWT authentication |
 | `frontend/src/App.tsx` | Main React app with session state management |
 | `frontend/src/hooks/useWebSocket.ts` | WebSocket hook for real-time communication |
+
+## Environment
+
+- `MODEL` (required) — main agent model, no default
+- `FLASH_MODEL` (optional) — lightweight tasks, falls back to `MODEL`
+- Copy `.env.example` to `.env` and configure before running
 
 ## Common Commands
 
@@ -63,8 +76,8 @@ npx tsc --noEmit
 
 ## Testing
 
-- Backend tests: `tests/unit/test_main_server.py` (uses FastAPI TestClient with mocked SDK)
-- Frontend tests: `frontend/src/components/*.test.tsx` (Vitest + JSDOM + Testing Library)
+- Backend tests: `tests/unit/` — pytest with mocked SDK
+- Frontend tests: `frontend/src/**/*.test.tsx` — Vitest + JSDOM + Testing Library
 - TDD workflow: Write tests first, implement, verify coverage 80%+
 
 ## Data Directory

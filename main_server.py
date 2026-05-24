@@ -5775,7 +5775,7 @@ async def get_auth_token(req: TokenRequest) -> dict[str, str]:
         if row is None:
             raise HTTPException(status_code=401, detail="Invalid credentials")
         if row[3] == "disabled":
-            raise HTTPException(status_code=403, detail="Account disabled")
+            raise HTTPException(status_code=403, detail="ACCOUNT_DISABLED")
 
         if not verify_password(req.password, row[1]):
             raise HTTPException(status_code=401, detail="Invalid credentials")
