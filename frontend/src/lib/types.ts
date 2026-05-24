@@ -7,8 +7,6 @@ export interface Message {
   index: number
   replay?: boolean
   is_error?: boolean  // for tool_result error flag
-  cost_usd?: number
-  total_cost_usd?: number
   duration_ms?: number
   usage?: Record<string, number>
   id?: string       // for tool_use blocks
@@ -46,7 +44,6 @@ export interface SessionItem {
   title: string
   last_message?: string
   status: SessionStatus
-  cost_usd?: number
   created_at?: string
   size_mb?: number
   last_active_at?: string

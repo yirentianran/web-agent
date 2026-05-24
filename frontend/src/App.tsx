@@ -277,7 +277,7 @@ function MainLayout({
         authToken={authToken}
         onOpenSkills={() => navigate("/skills")}
 
-        onOpenEvolution={() => navigate("/dashboard/evolution")}
+        onOpenEvolution={() => navigate("/evolution")}
         onOpenMCP={() => navigate("/mcp")}
         onOpenDashboard={() => navigate("/dashboard")}
         onLogout={handleLogout}
@@ -1579,7 +1579,7 @@ function MainApp() {
         }
       />
       <Route
-        path="/dashboard/evolution"
+        path="/evolution"
         element={
           userRole === "admin" ? (
             <EvolutionPage />

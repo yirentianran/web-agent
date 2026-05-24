@@ -13,9 +13,12 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import time
 from datetime import UTC
 from typing import Any
+
+from src.cost import get_flash_model
 
 logger = logging.getLogger(__name__)
 
@@ -684,7 +687,7 @@ class DBSkillFeedbackManager:
                     "content-type": "application/json",
                 },
                 json={
-                    "model": "claude-haiku-4-5-20251001",
+                    "model": get_flash_model(),
                     "max_tokens": 4000,
                     "messages": [{"role": "user", "content": prompt}],
                 },

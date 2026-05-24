@@ -10,7 +10,7 @@ Usage:
     log.start_session("session_abc123")
     log.tool_call("Read", {"file_path": "report.md"}, session_id="session_abc123")
     log.tool_result("Read", "Content here...", duration_ms=45, session_id="session_abc123")
-    log.end_session(session_id="session_abc123", total_cost_usd=0.15)
+    log.end_session(session_id="session_abc123")
 """
 
 from __future__ import annotations
@@ -106,7 +106,6 @@ class AgentLogger:
     def end_session(
         self,
         session_id: str,
-        total_cost_usd: float | None = None,
         status: str = "completed",
     ) -> None:
         """Log session end."""
@@ -116,8 +115,6 @@ class AgentLogger:
             "session_id": session_id,
             "status": status,
         }
-        if total_cost_usd is not None:
-            entry["total_cost_usd"] = round(total_cost_usd, 6)
         self._append(session_id, entry)
 
     def query_session(self, session_id: str) -> list[dict[str, Any]]:

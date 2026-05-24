@@ -87,25 +87,6 @@ class TestSessionState:
 # ── Cost accumulation ─────────────────────────────────────────────
 
 
-class TestCostAccumulation:
-    @pytest.mark.asyncio
-    async def test_cost_accumulated_from_usage(self, buffer: MessageBuffer) -> None:
-        await buffer.add_message("s1", {
-            "type": "result",
-            "usage": {"input_tokens": 1000, "output_tokens": 500},
-        })
-        state = await buffer.get_session_state("s1")
-        # claude-sonnet-4-6: input=$3/M, output=$15/M
-        # cost = 1000*3/1e6 + 500*15/1e6 = 0.003 + 0.0075 = 0.0105
-        assert state["cost_usd"] == pytest.approx(0.0105, rel=1e-4)
-
-    @pytest.mark.asyncio
-    async def test_no_usage_no_cost(self, buffer: MessageBuffer) -> None:
-        await buffer.add_message("s1", {"type": "user", "content": "hello"})
-        state = await buffer.get_session_state("s1")
-        assert state["cost_usd"] == 0.0
-
-
 # ── mark_done / is_done ───────────────────────────────────────────
 
 

@@ -82,8 +82,8 @@ class SessionStore:
             # Create session (REPLACE handles idempotent re-creation)
             await conn.execute(
                 """INSERT OR REPLACE INTO sessions
-                   (session_id, user_id, title, status, cost_usd, message_count, created_at, last_active_at)
-                   VALUES (?, ?, '', 'idle', 0, 0, ?, ?)""",
+                   (session_id, user_id, title, status, message_count, created_at, last_active_at)
+                   VALUES (?, ?, '', 'idle', 0, ?, ?)""",
                 (session_id, user_id, now, now),
             )
             await conn.commit()
@@ -94,7 +94,7 @@ class SessionStore:
         """List all active sessions for a user, sorted by created_at DESC."""
         async with self.db.connection() as conn:
             cursor = await conn.execute(
-                """SELECT session_id, title, status, cost_usd, message_count, created_at, last_active_at
+                """SELECT session_id, title, status, message_count, created_at, last_active_at
                    FROM sessions WHERE user_id = ? AND deleted_at IS NULL
                    ORDER BY created_at DESC""",
                 (user_id,),
@@ -106,10 +106,9 @@ class SessionStore:
                 "session_id": row[0],
                 "title": row[1],
                 "status": row[2],
-                "cost_usd": row[3],
-                "message_count": row[4],
-                "created_at": row[5],
-                "last_active_at": row[6],
+                "message_count": row[3],
+                "created_at": row[4],
+                "last_active_at": row[5],
             }
             for row in rows
         ]
@@ -227,31 +226,16 @@ class SessionStore:
 
         await self._retry_on_lock(_do)
 
-    async def update_session_cost(
-        self, user_id: str, session_id: str, cost_usd: float
-    ) -> None:
-        """Update the cost of a session."""
-        async def _do():
-            async with self.db.connection() as conn:
-                await conn.execute(
-                    "UPDATE sessions SET cost_usd = ?, last_active_at = ? "
-                    "WHERE session_id = ? AND user_id = ? AND deleted_at IS NULL",
-                    (cost_usd, time.time(), session_id, user_id),
-                )
-                await conn.commit()
-
-        await self._retry_on_lock(_do)
-
     async def update_session_stats(
-        self, user_id: str, session_id: str, message_count: int, cost_usd: float
+        self, user_id: str, session_id: str, message_count: int
     ) -> None:
-        """Update message count and cost for a session."""
+        """Update message count for a session."""
         async def _do():
             async with self.db.connection() as conn:
                 await conn.execute(
-                    "UPDATE sessions SET message_count = ?, cost_usd = ?, "
+                    "UPDATE sessions SET message_count = ?, "
                     "last_active_at = ? WHERE session_id = ? AND user_id = ? AND deleted_at IS NULL",
-                    (message_count, cost_usd, time.time(), session_id, user_id),
+                    (message_count, time.time(), session_id, user_id),
                 )
                 await conn.commit()
 

@@ -148,3 +148,46 @@ class ObservationStore:
             "today_events": today_total[0][0] if today_total else 0,
             "week_completions": week_auto[0][0] if week_auto else 0,
         }
+
+
+class ToolObserver:
+    """Records tool_call_start / tool_call_end observations from SDK events.
+
+    Shared by non-container (main_server.py) and container (ContainerBridge)
+    code paths so tool event recording stays consistent.
+    """
+
+    def __init__(self, store: ObservationStore | None, session_id: str, user_id: str) -> None:
+        self._store = store
+        self._session_id = session_id
+        self._user_id = user_id
+        self._starts: dict[str, tuple[str, float]] = {}
+
+    async def on_tool_use(self, tool_use_id: str, tool_name: str, tool_input: dict) -> None:
+        if not self._store:
+            return
+        self._starts[tool_use_id] = (tool_name, time.time())
+        await self._store.record(
+            session_id=self._session_id,
+            user_id=self._user_id,
+            event_type="tool_call_start",
+            tool_name=tool_name,
+            tool_input_summary=str(tool_input),
+        )
+
+    async def on_tool_result(self, tool_use_id: str, is_error: bool = False) -> None:
+        if not self._store:
+            return
+        start_info = self._starts.pop(tool_use_id, None)
+        if start_info is None:
+            return
+        tool_name, start_time = start_info
+        duration_ms = int((time.time() - start_time) * 1000)
+        await self._store.record(
+            session_id=self._session_id,
+            user_id=self._user_id,
+            event_type="tool_call_end",
+            tool_name=tool_name,
+            success=not is_error,
+            duration_ms=duration_ms,
+        )

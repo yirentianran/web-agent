@@ -49,6 +49,7 @@ class ContainerBridge:
         buffer,  # MessageBuffer (avoid circular import)
         session_store=None,
         skill_manager=None,
+        obs_store=None,  # ObservationStore for tool event recording
     ):
         self.container_url = container_url
         self.session_id = session_id
@@ -62,6 +63,12 @@ class ContainerBridge:
         self._receive_queue: asyncio.Queue = asyncio.Queue()
         self._cancel_event: asyncio.Event = asyncio.Event()
         self._error: str | None = None
+
+        if obs_store is not None:
+            from src.observation import ToolObserver
+            self._tool_observer: ToolObserver | None = ToolObserver(obs_store, session_id, user_id)
+        else:
+            self._tool_observer = None
 
     async def connect(self, retries: int = 3, backoff: float = 1.0) -> None:
         """Open WebSocket to container's /ws endpoint with retry and health check."""
@@ -198,6 +205,20 @@ class ContainerBridge:
                         delta = event.get("delta", {})
                         if isinstance(delta, dict) and delta.get("type") == "text_delta":
                             accumulated_text += delta.get("text", "")
+                    # Record tool observations from stream events
+                    if self._tool_observer is not None and isinstance(event, dict):
+                        event_type = event.get("type", "")
+                        if event_type == "tool_use":
+                            await self._tool_observer.on_tool_use(
+                                event.get("id", ""),
+                                event.get("name", ""),
+                                event.get("input", {}),
+                            )
+                        elif event_type == "tool_result":
+                            await self._tool_observer.on_tool_result(
+                                event.get("tool_use_id", ""),
+                                is_error=event.get("is_error", False),
+                            )
                 elif msg_type == "assistant":
                     # Transform container assistant message to frontend-compatible format.
                     # Container now sends {"type": "assistant", "message": {role, content: [blocks]}}.

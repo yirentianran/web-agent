@@ -30,8 +30,6 @@ import threading
 import uuid as uuid_mod
 from contextlib import suppress
 from pathlib import Path
-from typing import Any
-
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
 
@@ -207,7 +205,6 @@ class _CliRunner:
         session_id: str,
         container_paths: ContainerPaths,
         sp_file: str | None = None,
-        obs_store: Any | None = None,
     ):
         self._cmd = cmd
         self._env = env
@@ -216,8 +213,6 @@ class _CliRunner:
         self._session_id = session_id
         self._container_paths = container_paths
         self._sp_file = sp_file
-        self._obs_store = obs_store
-        self._tool_start_time: float = 0.0
         self._event_queue: _threading_queue.Queue = _threading_queue.Queue()
         self._cancel_event = threading.Event()
         self._thread: threading.Thread | None = None
@@ -405,18 +400,6 @@ class _CliRunner:
                         tool_name = hook_callbacks.get(cid, "")
                         tool_input = req.get("tool_input", {})
 
-                        # Record tool_call_start
-                        if self._obs_store:
-                            import time as _time
-                            self._tool_start_time = _time.time()
-                            await self._obs_store.record(
-                                session_id=self._session_id,
-                                user_id=self._session_id,
-                                event_type="tool_call_start",
-                                tool_name=tool_name,
-                                tool_input_summary=str(tool_input)[:500],
-                            )
-
                         if tool_name == "Write":
                             new_input = _apply_write_path_hook(
                                 tool_input, self._container_paths, self._session_id
@@ -442,14 +425,6 @@ class _CliRunner:
                                 resp_line = json.dumps(resp, ensure_ascii=False) + "\n"
                                 process.stdin.write(resp_line.encode())
                                 await process.stdin.drain()
-                                # Record tool_call_end for denied bash
-                                if self._obs_store:
-                                    await self._obs_store.record(
-                                        session_id=self._session_id,
-                                        user_id=self._session_id,
-                                        event_type="tool_call_end",
-                                        tool_name=tool_name,
-                                    )
                                 continue
                             new_input = _apply_bash_path_hook(
                                 tool_input, self._container_paths
@@ -475,14 +450,6 @@ class _CliRunner:
                                 resp_line = json.dumps(resp, ensure_ascii=False) + "\n"
                                 process.stdin.write(resp_line.encode())
                                 await process.stdin.drain()
-                                # Record tool_call_end for denied read
-                                if self._obs_store:
-                                    await self._obs_store.record(
-                                        session_id=self._session_id,
-                                        user_id=self._session_id,
-                                        event_type="tool_call_end",
-                                        tool_name=tool_name,
-                                    )
                                 continue
                             new_input = tool_input
                         else:
@@ -518,17 +485,6 @@ class _CliRunner:
                     resp_line = json.dumps(resp, ensure_ascii=False) + "\n"
                     process.stdin.write(resp_line.encode())
                     await process.stdin.drain()
-
-                    # Record tool_call_end for allowed tools (only for hook callbacks)
-                    if req.get("subtype") == "hook_callback" and self._obs_store:
-                        duration_ms = int((_time.time() - self._tool_start_time) * 1000) if self._tool_start_time else 0
-                        await self._obs_store.record(
-                            session_id=self._session_id,
-                            user_id=self._session_id,
-                            event_type="tool_call_end",
-                            tool_name=tool_name,
-                            duration_ms=duration_ms,
-                        )
 
                 elif msg_type == "system":
                     subtype = data.get("subtype", "")
@@ -615,19 +571,6 @@ async def agent_ws(websocket: WebSocket) -> None:
                 logger.info("Wrote system prompt to temp file (%d chars)", len(sp_text))
 
             # Start CLI in a dedicated thread
-            # Try to initialize ObservationStore from mounted DB
-            obs_store = None
-            obs_db_path = os.getenv("DATA_DB_PATH", "")
-            if obs_db_path and Path(obs_db_path).exists():
-                try:
-                    from src.database import Database
-                    from src.observation import ObservationStore
-                    obs_db = Database(db_path=Path(obs_db_path))
-                    await obs_db.init()
-                    obs_store = ObservationStore(obs_db)
-                except Exception:
-                    pass
-
             runner = _CliRunner(
                 cmd=_build_cli_command(options_dict, sp_file=sp_file),
                 env=_build_cli_env(options_dict),
@@ -636,7 +579,6 @@ async def agent_ws(websocket: WebSocket) -> None:
                 session_id=session_id,
                 container_paths=container_paths,
                 sp_file=sp_file,
-                obs_store=obs_store,
             )
             runner.start()
 

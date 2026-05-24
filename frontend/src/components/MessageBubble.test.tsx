@@ -453,7 +453,6 @@ describe('MessageBubble - result message (Session completed)', () => {
       index: 10,
       session_id: 'session-1',
       duration_ms: 64500,
-      total_cost_usd: 0.3835,
       subtype: 'complete',
     }
 

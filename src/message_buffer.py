@@ -56,14 +56,14 @@ class MessageBuffer:
 
     async def _read_db_state(
         self, session_id: str, user_id: str | None = None
-    ) -> tuple[str, bool, float]:
+    ) -> tuple[str, bool]:
         """Read the last session_state_changed or result message from SQLite
         to reconstruct the buffer state after a cold start.
 
-        Returns (state, done, cost_usd).
+        Returns (state, done).
         """
         if self.db is None:
-            return ("idle", False, 0.0)
+            return ("idle", False)
         try:
             async with self.db.connection() as conn:
                 if user_id is not None:
@@ -89,18 +89,18 @@ class MessageBuffer:
                 row = await cursor.fetchone()
 
                 if row is None or row[0] is None:
-                    return ("idle", False, 0.0)
+                    return ("idle", False)
 
                 payload = json.loads(row[0])
                 msg_type = payload.get("type", "")
                 if msg_type == "result":
-                    return ("completed", True, 0.0)
+                    return ("completed", True)
                 state = payload.get("state", "idle")
                 done = state in ("completed", "error", "cancelled")
-                return (state, done, 0.0)
+                return (state, done)
         except Exception:
             logger.warning("_read_db_state: error for session=%s", session_id, exc_info=True)
-            return ("idle", False, 0.0)
+            return ("idle", False)
 
     async def _get_db_owner(self, session_id: str) -> str | None:
         """Get the owning user_id of a session from the database."""
@@ -252,7 +252,7 @@ class MessageBuffer:
         On subsequent accesses, verifies user_id matches the stored owner.
         """
         if session_id not in self.sessions:
-            db_state, db_done, db_cost = await self._read_db_state(session_id, user_id)
+            db_state, db_done = await self._read_db_state(session_id, user_id)
             buf: dict[str, Any] = {
                 "messages": [],
                 "base_index": 0,
@@ -260,7 +260,6 @@ class MessageBuffer:
                 "done": db_done,
                 "state": db_state,
                 "last_active": time.time(),
-                "cost_usd": db_cost,
                 "user_id": user_id,
             }
             self.sessions[session_id] = buf
@@ -335,17 +334,6 @@ class MessageBuffer:
         elif msg_type == "result":
             buf["state"] = "completed"
             buf["done"] = True
-
-        # Accumulate cost if usage info is present
-        usage = message.get("usage")
-        if usage:
-            from src.cost import estimate_cost
-
-            cost = estimate_cost(
-                usage.get("input_tokens", 0),
-                usage.get("output_tokens", 0),
-            )
-            buf["cost_usd"] += cost
 
         # Wake up all waiting consumers
         for event in list(buf["consumers"]):
@@ -422,7 +410,6 @@ class MessageBuffer:
         is_stale = elapsed > STALE_THRESHOLD
         return {
             "state": buf.get("state", "idle"),
-            "cost_usd": round(buf.get("cost_usd", 0), 4),
             "last_active": last_active,
             "buffer_age": round(elapsed, 1),
             "is_stale": is_stale,

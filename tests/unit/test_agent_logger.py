@@ -39,12 +39,11 @@ class TestAgentLogger:
 
     def test_end_session(self, tmp_agent_dir: Path) -> None:
         log = AgentLogger(user_id="alice", base_dir=tmp_agent_dir)
-        log.end_session("sess_1", total_cost_usd=0.05, status="completed")
+        log.end_session("sess_1", status="completed")
 
         entries = log.query_session("sess_1")
         assert len(entries) == 1
         assert entries[0]["event"] == "session_end"
-        assert entries[0]["total_cost_usd"] == 0.05
 
     def test_tool_result_error(self, tmp_agent_dir: Path) -> None:
         log = AgentLogger(user_id="bob", base_dir=tmp_agent_dir)
@@ -80,7 +79,7 @@ class TestAgentLogger:
         log.start_session("sess_5", "Analyze report")
         log.tool_call("Read", {"file_path": "report.md"}, session_id="sess_5", turn=1)
         log.tool_result("Read", "report content", session_id="sess_5", duration_ms=50, turn=1)
-        log.end_session("sess_5", total_cost_usd=0.12)
+        log.end_session("sess_5")
 
         entries = log.query_session("sess_5")
         assert len(entries) == 4

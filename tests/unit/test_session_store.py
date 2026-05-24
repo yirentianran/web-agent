@@ -115,7 +115,6 @@ class TestListSessions:
         assert "session_id" in s
         assert "title" in s
         assert "status" in s
-        assert "cost_usd" in s
         assert "message_count" in s
         assert "created_at" in s
 
@@ -136,17 +135,9 @@ class TestListSessions:
         assert sessions[0]["status"] == "running"
 
     @pytest.mark.asyncio
-    async def test_reflects_updated_cost(self, store: SessionStore) -> None:
-        await store.create_session(user_id="u1", session_id="s1")
-        await store.update_session_cost(user_id="u1", session_id="s1", cost_usd=0.042)
-
-        sessions = await store.list_sessions(user_id="u1")
-        assert sessions[0]["cost_usd"] == pytest.approx(0.042, rel=1e-4)
-
-    @pytest.mark.asyncio
     async def test_reflects_updated_message_count(self, store: SessionStore) -> None:
         await store.create_session(user_id="u1", session_id="s1")
-        await store.update_session_stats(user_id="u1", session_id="s1", message_count=42, cost_usd=0.01)
+        await store.update_session_stats(user_id="u1", session_id="s1", message_count=42)
 
         sessions = await store.list_sessions(user_id="u1")
         assert sessions[0]["message_count"] == 42

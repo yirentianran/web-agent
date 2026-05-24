@@ -18,10 +18,6 @@ export const InstinctList: React.FC<Props> = ({ data, loading, error, onFilterCh
     { domain: domain || undefined, scope: scope || undefined }
   );
 
-  if (loading) return <div className="evo-loading">{t('evolutionMonitor.loadingInstincts')}</div>;
-  if (error) return <div className="evo-error">{error}</div>;
-  if (!data || data.items.length === 0) return <div className="evo-empty">{t('evolutionMonitor.noInstincts')}</div>;
-
   return (
     <div>
       <div className="filter-bar">
@@ -37,31 +33,40 @@ export const InstinctList: React.FC<Props> = ({ data, loading, error, onFilterCh
         </select>
         <button onClick={handleFilter} className="btn-filter">{t('evolutionMonitor.filter')}</button>
       </div>
-      <table className="evo-table">
-        <thead>
-          <tr>
-            <th>{t('evolutionMonitor.label')}</th>
-            <th>{t('evolutionMonitor.trigger')}</th>
-            <th>{t('evolutionMonitor.action')}</th>
-            <th>{t('evolutionMonitor.confidence')}</th>
-            <th>{t('evolutionMonitor.sources')}</th>
-            <th>{t('evolutionMonitor.users')}</th>
-          </tr>
-        </thead>
-        <tbody>
-          {data.items.map((inst) => (
-            <tr key={inst.id} className="evo-row">
-              <td><span className="evo-badge">{inst.normalized_trigger}</span></td>
-              <td>{inst.trigger}</td>
-              <td>{inst.action}</td>
-              <td>{(inst.confidence * 100).toFixed(0)}%</td>
-              <td>{inst.source_count}</td>
-              <td>{inst.unique_user_count}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-      <div className="evo-pagination">Total: {data.total}</div>
+      {loading && <div className="evo-loading">{t('evolutionMonitor.loadingInstincts')}</div>}
+      {error && <div className="evo-error">{error}</div>}
+      {!loading && !error && (!data || data.items.length === 0) && (
+        <div className="evo-empty">{t('evolutionMonitor.noInstincts')}</div>
+      )}
+      {!loading && !error && data && data.items.length > 0 && (
+        <>
+          <table className="evo-table">
+            <thead>
+              <tr>
+                <th>{t('evolutionMonitor.label')}</th>
+                <th>{t('evolutionMonitor.trigger')}</th>
+                <th>{t('evolutionMonitor.action')}</th>
+                <th>{t('evolutionMonitor.confidence')}</th>
+                <th>{t('evolutionMonitor.sources')}</th>
+                <th>{t('evolutionMonitor.users')}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {data.items.map((inst) => (
+                <tr key={inst.id} className="evo-row">
+                  <td><span className="evo-badge">{inst.normalized_trigger}</span></td>
+                  <td>{inst.trigger}</td>
+                  <td>{inst.action}</td>
+                  <td>{(inst.confidence * 100).toFixed(0)}%</td>
+                  <td>{inst.source_count}</td>
+                  <td>{inst.unique_user_count}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <div className="evo-pagination">Total: {data.total}</div>
+        </>
+      )}
     </div>
   );
 };

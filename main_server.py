@@ -53,7 +53,9 @@ from src.workspace_enforcement import (
     _rewrite_bash_command as _ws_rewrite_bash_cmd,
 )
 from src.constants import BUILTIN_TOOLS, DISABLED_TOOLS, CONTAINER_MODE
+from src.cost import get_flash_model
 from src.message_buffer import HEARTBEAT_INTERVAL, MessageBuffer, make_heartbeat
+from src.observation import ToolObserver
 from src.models import (
     McpServerConfig,
     SessionStatusResponse,
@@ -1343,7 +1345,7 @@ async def _build_sdk_config(
     if base_url:
         sdk_env["ANTHROPIC_BASE_URL"] = base_url
 
-    model = os.getenv("MODEL", "claude-sonnet-4-6")
+    model = os.getenv("MODEL")
     sdk_env["MODEL"] = model
 
     resolved_lang = await _resolve_user_language(user_id, language)
@@ -1590,10 +1592,7 @@ def message_to_dicts(msg: Any, model: str | None = None) -> Iterator[dict[str, A
             "num_turns": msg.num_turns,
             "is_error": msg.is_error,
         }
-        if msg.total_cost_usd is not None:
-            result["total_cost_usd"] = msg.total_cost_usd
         if msg.usage:
-            result["cost_usd"] = msg.usage.get("total_cost_usd", 0)
             result["usage"] = dict(msg.usage)
             if model:
                 result["usage"]["model"] = model
@@ -1612,7 +1611,6 @@ def message_to_dicts(msg: Any, model: str | None = None) -> Iterator[dict[str, A
             "summary": msg.summary,
         }
         if msg.usage:
-            result["cost_usd"] = msg.usage.get("total_cost_usd", 0)
             result["usage"] = dict(msg.usage)
             if model:
                 result["usage"]["model"] = model
@@ -1625,7 +1623,6 @@ def message_to_dicts(msg: Any, model: str | None = None) -> Iterator[dict[str, A
             "subtype": "progress",
         }
         if msg.usage:
-            result["cost_usd"] = msg.usage.get("total_cost_usd", 0)
             result["usage"] = dict(msg.usage)
             if model:
                 result["usage"]["model"] = model
@@ -1900,7 +1897,7 @@ async def _generate_title_via_llm(conversation_text: str, language: str | None =
     """Call the LLM to generate a concise conversation title."""
     api_key = os.getenv("ANTHROPIC_AUTH_TOKEN") or os.getenv("ANTHROPIC_API_KEY")
     base_url = os.getenv("ANTHROPIC_BASE_URL", "")
-    model = os.getenv("MODEL", "claude-sonnet-4-6")
+    model = get_flash_model()
 
     if not api_key or not base_url:
         logger.warning("[AUTO_TITLE] Missing API key or base URL — skipping title generation")
@@ -1933,7 +1930,7 @@ async def _generate_title_via_llm(conversation_text: str, language: str | None =
                 },
                 json={
                     "model": model,
-                    "max_tokens": 80,
+                    "max_tokens": 500,
                     "system": system_prompt,
                     "messages": [{"role": "user", "content": user_prompt}],
                 },
@@ -2182,6 +2179,7 @@ async def run_agent_task(
         msg_count = 0
         generated_files: list[dict[str, Any]] = []
         buffered_result: dict[str, Any] | None = None  # SDK result for reordering
+        tool_observer = ToolObserver(_obs_store, session_id, user_id)
         # Snapshot pre-existing output files so we only emit new ones
         pre_scan_snapshot = _snapshot_output_files(workspace, session_id)
         logger.debug("[AGENT_TASK] Starting receive_response loop")
@@ -2246,6 +2244,13 @@ async def run_agent_task(
                         if dup_idx is not None:
                             generated_files[dup_idx] = generated_files[-1]
                             generated_files.pop()
+                # Record tool_use start for observation
+                if event.get("type") == "tool_use":
+                    await tool_observer.on_tool_use(
+                        event.get("id", ""),
+                        event.get("name", ""),
+                        event.get("input", {}),
+                    )
                 # Truncate oversized tool results
                 if event.get("type") == "tool_result":
                     from src.truncation import truncate_tool_output
@@ -2253,6 +2258,11 @@ async def run_agent_task(
                     content = event.get("content", "")
                     if content and len(content) > 1000:
                         event["content"] = truncate_tool_output(content)
+                    # Record tool_call_end for observation
+                    await tool_observer.on_tool_result(
+                        event.get("tool_use_id", ""),
+                        is_error=event.get("is_error", False),
+                    )
                 await buffer.add_message(session_id, event, user_id)
 
         # Scan session output directory for newly generated files only
@@ -2302,6 +2312,7 @@ async def run_agent_task(
             await _obs_store.record(
                 session_id=session_id, user_id=user_id,
                 event_type="session_complete",
+                success=True,
             )
         asyncio.ensure_future(_summarize_and_store_session(session_id, user_id))
         # Scan for agent-created skills and register any not yet in DB
@@ -2333,6 +2344,7 @@ async def run_agent_task(
             await _obs_store.record(
                 session_id=session_id, user_id=user_id,
                 event_type="session_error",
+                success=False,
                 error_message="timeout",
             )
     except asyncio.CancelledError:
@@ -2361,6 +2373,7 @@ async def run_agent_task(
             await _obs_store.record(
                 session_id=session_id, user_id=user_id,
                 event_type="user_interrupt",
+                success=False,
             )
     except Exception as e:
         error_msg = str(e)
@@ -2401,6 +2414,7 @@ async def run_agent_task(
             await _obs_store.record(
                 session_id=session_id, user_id=user_id,
                 event_type="session_error",
+                success=False,
                 error_message=str(e)[:500],
             )
     # Note: do NOT disconnect — client is kept alive for follow-ups
@@ -2455,6 +2469,7 @@ async def run_agent_task_container(
             buffer=buffer,
             session_store=session_store,
             skill_manager=_skill_manager,
+            obs_store=_obs_store,
         )
 
         start_time = time.time()
@@ -2521,6 +2536,7 @@ async def run_agent_task_container(
             await _obs_store.record(
                 session_id=session_id, user_id=user_id,
                 event_type="session_complete",
+                success=True,
             )
         asyncio.ensure_future(_summarize_and_store_session(session_id, user_id))
         # Scan for agent-created skills and register any not yet in DB
@@ -2554,6 +2570,7 @@ async def run_agent_task_container(
             await _obs_store.record(
                 session_id=session_id, user_id=user_id,
                 event_type="session_error",
+                success=False,
                 error_message="timeout",
             )
 
@@ -2589,6 +2606,7 @@ async def run_agent_task_container(
             await _obs_store.record(
                 session_id=session_id, user_id=user_id,
                 event_type="user_interrupt",
+                success=False,
             )
 
     except Exception as exc:
@@ -3148,6 +3166,7 @@ async def handle_ws(websocket: WebSocket) -> None:
                         await _obs_store.record(
                             session_id=session_id, user_id=_locked_user_id,
                             event_type="user_correct",
+                            success=True,
                         )
                 else:
                     logger.debug("WS: reusing existing task for session %s", session_id)
@@ -3698,7 +3717,6 @@ async def get_session_status(
     return SessionStatusResponse(
         session_id=session_id,
         state=state["state"],
-        cost_usd=state["cost_usd"],
         last_active=state["last_active"],
         buffer_age=state.get("buffer_age", 0.0),
     )

@@ -10,6 +10,8 @@ from typing import Any
 
 import httpx
 
+from src.cost import get_flash_model
+
 logger = logging.getLogger(__name__)
 
 EXTRACTION_PROMPT = """You are analyzing agent execution events to find patterns for improvement.
@@ -354,7 +356,7 @@ class InstinctExtractor:
                     "content-type": "application/json",
                 },
                 json={
-                    "model": "claude-haiku-4-5-20251001",
+                    "model": get_flash_model(),
                     "max_tokens": 2000,
                     "messages": [{"role": "user", "content": prompt}],
                 },
@@ -431,7 +433,7 @@ class InstinctExtractor:
                             "content-type": "application/json",
                         },
                         json={
-                            "model": "claude-haiku-4-5-20251001",
+                            "model": get_flash_model(),
                             "max_tokens": 4000,
                             "messages": [{"role": "user", "content": gen_prompt}],
                         },

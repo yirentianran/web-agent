@@ -175,31 +175,3 @@ class TestSessionLifecycleREST:
         assert resp.status_code == 200
 
 
-# ── Cost tracking ──────────────────────────────────────────────────
-
-
-class TestCostTracking:
-    def test_cost_accumulates_with_messages(self, client: TestClient) -> None:
-        """Messages with usage data should accumulate cost."""
-        sid = _create_session(client, user_id="jack")
-
-        main_server.buffer.add_message(sid, {
-            "type": "assistant",
-            "content": "Response",
-            "usage": {
-                "input_tokens": 1000,
-                "output_tokens": 500,
-                "cache_creation_input_tokens": 0,
-                "cache_read_input_tokens": 0,
-                "model": "claude-sonnet-4-6",
-            },
-        })
-
-        state = main_server.buffer.get_session_state(sid)
-        assert state["cost_usd"] > 0
-
-    def test_initial_cost_is_zero(self, client: TestClient) -> None:
-        """New session should have zero cost."""
-        sid = _create_session(client, user_id="kate")
-        state = main_server.buffer.get_session_state(sid)
-        assert state["cost_usd"] == 0.0

@@ -264,7 +264,6 @@ class TestSessionStatus:
         data = resp.json()
         assert data["session_id"] == sid
         assert data["state"] == "idle"
-        assert data["cost_usd"] == 0.0
 
     @pytest.mark.asyncio
     async def test_status_after_activity(self, client: TestClient) -> None:
@@ -1612,7 +1611,6 @@ class TestFileResultBeforeResult:
             "type": "result",
             "subtype": "complete",
             "duration_ms": 64500,
-            "total_cost_usd": 0.3835,
         })
         await main_server.buffer.mark_done(sid)
 
@@ -1644,7 +1642,6 @@ class TestFileResultBeforeResult:
             "type": "result",
             "subtype": "complete",
             "duration_ms": 64500,
-            "total_cost_usd": 0.3835,
         })
         await main_server.buffer.add_message(sid, {
             "type": "file_result",

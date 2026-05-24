@@ -40,7 +40,6 @@ class SessionItem(BaseModel):
 class SessionStatusResponse(BaseModel):
     session_id: str
     state: SessionState = SessionState.IDLE
-    cost_usd: float = 0.0
     last_active: float = 0.0
     buffer_age: float = 0.0  # seconds since last buffer activity
 

@@ -1,40 +1,6 @@
 .dashboard-page {
   max-width: 1200px;
   margin: 0 auto;
-  padding: 32px 24px;
-}
-
-.dashboard-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 28px;
-  flex-wrap: wrap;
-  gap: 12px;
-}
-
-.dashboard-header h2 {
-  font-size: 1.5rem;
-  font-weight: 700;
-  color: var(--color-text, #1a202c);
-  margin: 0;
-}
-
-.dashboard-back {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  font-size: 0.875rem;
-  color: var(--color-text-muted, #718096);
-  background: none;
-  border: none;
-  cursor: pointer;
-  padding: 4px 0;
-  margin-bottom: 16px;
-}
-
-.dashboard-back:hover {
-  color: var(--color-text, #1a202c);
 }
 
 .dashboard-chart {
