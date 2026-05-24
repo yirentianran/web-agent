@@ -22,6 +22,7 @@ import logging
 import time
 import urllib.error
 import urllib.request
+from typing import Any
 
 import websockets
 from websockets.asyncio.client import ClientConnection
@@ -47,12 +48,14 @@ class ContainerBridge:
         user_id: str,
         buffer,  # MessageBuffer (avoid circular import)
         session_store=None,
+        skill_manager=None,
     ):
         self.container_url = container_url
         self.session_id = session_id
         self.user_id = user_id
         self.buffer = buffer
         self.session_store = session_store
+        self.skill_manager = skill_manager
 
         self._ws: ClientConnection | None = None
         self._receive_task: asyncio.Task | None = None
@@ -170,7 +173,7 @@ class ContainerBridge:
                         error_msg = f"Container receive task died: {exc}" if exc else "Container receive task ended unexpectedly"
                         logger.error("Receive task failed for session %s: %s", self.session_id, exc)
                         if not self._error:
-                            self.buffer.add_message(self.session_id, {
+                            await self.buffer.add_message(self.session_id, {
                                 "type": "error",
                                 "message": error_msg,
                             }, self.user_id)
@@ -188,7 +191,7 @@ class ContainerBridge:
                     pass
 
                 if msg_type == "stream_event":
-                    self.buffer.add_message(self.session_id, data, self.user_id)
+                    await self.buffer.add_message(self.session_id, data, self.user_id)
                     # Accumulate text from content_block_delta events
                     event = data.get("event", {})
                     if isinstance(event, dict) and event.get("type") == "content_block_delta":
@@ -202,20 +205,32 @@ class ContainerBridge:
                     if msg_content:
                         content_blocks = msg_content.get("content", [])
 
-                        def _emit_block(d: dict) -> None:
-                            self.buffer.add_message(self.session_id, d, self.user_id)
+                        emitted: list[dict[str, Any]] = []
+
+                        def _emit_block(d: dict[str, Any]) -> None:  # noqa: B023
+                            emitted.append(d)
 
                         combined_text = process_content_blocks(content_blocks, _emit_block)
 
+                        for d in emitted:
+                            if self.skill_manager is not None:
+                                from src.skill_manager import record_skill_usage_from_event
+
+                                await record_skill_usage_from_event(
+                                    d, self.skill_manager,
+                                    user_id=self.user_id, session_id=self.session_id,
+                                )
+                            await self.buffer.add_message(self.session_id, d, self.user_id)
+
                         if combined_text:
-                            self.buffer.add_message(self.session_id, {
+                            await self.buffer.add_message(self.session_id, {
                                 "type": "assistant",
                                 "content": combined_text,
                             }, self.user_id)
                     else:
                         # Fallback: bare content string (legacy or result-fallback path)
                         if data.get("content"):
-                            self.buffer.add_message(self.session_id, data, self.user_id)
+                            await self.buffer.add_message(self.session_id, data, self.user_id)
                     explicit_assistant = True
 
                 elif msg_type == "permission_check":
@@ -229,7 +244,7 @@ class ContainerBridge:
                             len(accumulated_text),
                             self.session_id,
                         )
-                        self.buffer.add_message(self.session_id, {
+                        await self.buffer.add_message(self.session_id, {
                             "type": "assistant",
                             "content": accumulated_text,
                         }, self.user_id)
@@ -244,7 +259,7 @@ class ContainerBridge:
                         raw_msg,
                         json.dumps(data, default=str)[:500],
                     )
-                    self.buffer.add_message(self.session_id, {
+                    await self.buffer.add_message(self.session_id, {
                         "type": "error",
                         "message": self._error,
                     }, self.user_id)
@@ -298,7 +313,7 @@ class ContainerBridge:
         tool_input = data.get("tool_input", {})
 
         # Buffer the question for browser display (standard tool_use format)
-        self.buffer.add_message(self.session_id, {
+        await self.buffer.add_message(self.session_id, {
             "type": "tool_use",
             "name": "AskUserQuestion",
             "id": tool_use_id,

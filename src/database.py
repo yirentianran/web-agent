@@ -18,7 +18,7 @@ Usage:
 from __future__ import annotations
 
 import asyncio
-import sqlite3
+
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import AsyncIterator
@@ -28,17 +28,6 @@ import aiosqlite
 _CHECKPOINT_INTERVAL = 300  # seconds between WAL checkpoints
 
 
-def connect_sync(db_path: Path) -> sqlite3.Connection:
-    """Open a sync sqlite3 connection with busy_timeout set.
-
-    Use this for any sync code that needs direct DB access alongside
-    the aiosqlite connection. Without busy_timeout, a sync connection
-    fails immediately with "database is locked" whenever the aiosqlite
-    connection holds a write lock.
-    """
-    conn = sqlite3.connect(str(db_path))
-    conn.execute("PRAGMA busy_timeout=30000")
-    return conn
 
 
 _CREATE_TABLES = """
@@ -82,10 +71,17 @@ CREATE TABLE IF NOT EXISTS messages (
     content TEXT,
     payload TEXT,
     usage TEXT,
+    input_tokens INTEGER NOT NULL DEFAULT 0,
+    output_tokens INTEGER NOT NULL DEFAULT 0,
+    cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+    cache_write_tokens INTEGER NOT NULL DEFAULT 0,
     created_at REAL NOT NULL DEFAULT (strftime('%s', 'now'))
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_session_seq ON messages(session_id, seq);
+CREATE INDEX IF NOT EXISTS idx_messages_created_at ON messages(created_at);
+CREATE INDEX IF NOT EXISTS idx_sessions_last_active ON sessions(last_active_at);
+CREATE INDEX IF NOT EXISTS idx_sessions_created_at ON sessions(created_at);
 
 -- Tasks (sub-agent)
 CREATE TABLE IF NOT EXISTS tasks (
@@ -208,7 +204,7 @@ CREATE INDEX IF NOT EXISTS idx_skills_status ON skills(status);
 -- Skill usage tracking
 CREATE TABLE IF NOT EXISTS skill_usage (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,
-    skill_name     TEXT NOT NULL REFERENCES skills(skill_name),
+    skill_name     TEXT NOT NULL,
     user_id        TEXT NOT NULL DEFAULT '',
     session_id     TEXT NOT NULL DEFAULT '',
     version_number INTEGER NOT NULL DEFAULT 0,
@@ -223,7 +219,7 @@ CREATE INDEX IF NOT EXISTS idx_usage_session ON skill_usage(session_id);
 -- Skill version metadata
 CREATE TABLE IF NOT EXISTS skill_versions (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,
-    skill_name     TEXT NOT NULL REFERENCES skills(skill_name),
+    skill_name     TEXT NOT NULL,
     version_number INTEGER NOT NULL,
     path           TEXT NOT NULL DEFAULT '',
     change_summary TEXT NOT NULL DEFAULT '',
@@ -395,6 +391,18 @@ class Database:
         # Add observations and instincts tables for instinct evolution
         try:
             await self.migrate_v6()
+        except Exception:
+            pass
+
+        # Add token integer columns and dashboard performance indexes
+        try:
+            await self.migrate_v7()
+        except Exception:
+            pass
+
+        # Fix broken FK constraints on skill_usage and skill_versions
+        try:
+            await self.migrate_v8()
         except Exception:
             pass
 
@@ -814,6 +822,97 @@ class Database:
             """)
             await conn.commit()
 
+    async def migrate_v7(self) -> None:
+        """Add token integer columns to messages and dashboard performance indexes."""
+        async with self.connection() as conn:
+            # Add token columns if not present
+            for col in [
+                "ALTER TABLE messages ADD COLUMN input_tokens INTEGER NOT NULL DEFAULT 0",
+                "ALTER TABLE messages ADD COLUMN output_tokens INTEGER NOT NULL DEFAULT 0",
+                "ALTER TABLE messages ADD COLUMN cache_read_tokens INTEGER NOT NULL DEFAULT 0",
+                "ALTER TABLE messages ADD COLUMN cache_write_tokens INTEGER NOT NULL DEFAULT 0",
+            ]:
+                try:
+                    await conn.execute(col)
+                except Exception:
+                    pass  # Column already exists
+
+            # Dashboard performance indexes
+            for idx in [
+                "CREATE INDEX IF NOT EXISTS idx_messages_created_at ON messages(created_at)",
+                "CREATE INDEX IF NOT EXISTS idx_sessions_last_active ON sessions(last_active_at)",
+                "CREATE INDEX IF NOT EXISTS idx_sessions_created_at ON sessions(created_at)",
+            ]:
+                await conn.execute(idx)
+
+            await conn.commit()
+
+    async def migrate_v8(self) -> None:
+        """Fix broken FK constraints on skill_usage and skill_versions.
+
+        skills table has UNIQUE(skill_name, source) but skill_usage and
+        skill_versions referenced skills(skill_name) alone — which is NOT
+        a unique column. SQLite rejects those inserts with "foreign key
+        mismatch". Recreate both tables without the invalid FK constraints.
+        """
+        async with self.connection() as conn:
+            await conn.execute("PRAGMA foreign_keys=OFF")
+
+            # -- skill_usage --
+            await conn.execute("ALTER TABLE skill_usage RENAME TO skill_usage_old")
+            await conn.execute("""
+                CREATE TABLE skill_usage (
+                    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+                    skill_name     TEXT NOT NULL,
+                    user_id        TEXT NOT NULL DEFAULT '',
+                    session_id     TEXT NOT NULL DEFAULT '',
+                    version_number INTEGER NOT NULL DEFAULT 0,
+                    action         TEXT NOT NULL DEFAULT 'use',
+                    created_at     REAL NOT NULL DEFAULT (strftime('%s', 'now'))
+                )
+            """)
+            await conn.execute("""
+                INSERT INTO skill_usage (id, skill_name, user_id, session_id,
+                    version_number, action, created_at)
+                SELECT id, skill_name, user_id, session_id,
+                    version_number, action, created_at
+                FROM skill_usage_old
+            """)
+            await conn.execute("DROP TABLE skill_usage_old")
+            await conn.execute("CREATE INDEX IF NOT EXISTS idx_usage_skill ON skill_usage(skill_name, created_at DESC)")
+            await conn.execute("CREATE INDEX IF NOT EXISTS idx_usage_user ON skill_usage(user_id, created_at DESC)")
+            await conn.execute("CREATE INDEX IF NOT EXISTS idx_usage_session ON skill_usage(session_id)")
+
+            # -- skill_versions --
+            await conn.execute("ALTER TABLE skill_versions RENAME TO skill_versions_old")
+            await conn.execute("""
+                CREATE TABLE skill_versions (
+                    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+                    skill_name     TEXT NOT NULL,
+                    version_number INTEGER NOT NULL,
+                    path           TEXT NOT NULL DEFAULT '',
+                    change_summary TEXT NOT NULL DEFAULT '',
+                    status         TEXT NOT NULL DEFAULT 'pending',
+                    created_by     TEXT NOT NULL DEFAULT 'user',
+                    file_count     INTEGER NOT NULL DEFAULT 1,
+                    created_at     REAL NOT NULL DEFAULT (strftime('%s', 'now')),
+                    UNIQUE(skill_name, version_number)
+                )
+            """)
+            await conn.execute("""
+                INSERT INTO skill_versions (id, skill_name, version_number,
+                    path, change_summary, status, created_by, file_count, created_at)
+                SELECT id, skill_name, version_number,
+                    path, change_summary, status, created_by, file_count, created_at
+                FROM skill_versions_old
+            """)
+            await conn.execute("DROP TABLE skill_versions_old")
+            await conn.execute("CREATE INDEX IF NOT EXISTS idx_versions_skill ON skill_versions(skill_name, version_number DESC)")
+            await conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_versions_unique ON skill_versions(skill_name, version_number)")
+
+            await conn.execute("PRAGMA foreign_keys=ON")
+            await conn.commit()
+
     async def migrate_collective_intelligence(self) -> None:
         """Add collective intelligence tables and FTS5 indexes.
 
@@ -864,16 +963,6 @@ class Database:
                 reviewed_at REAL,
                 reviewed_by TEXT,
                 created_at REAL NOT NULL DEFAULT (strftime('%s', 'now'))
-            )""")
-
-            # 5. Learned patterns
-            await conn.execute("""CREATE TABLE IF NOT EXISTS learned_patterns (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                pattern_type TEXT NOT NULL,
-                pattern_data TEXT NOT NULL,
-                confidence REAL NOT NULL,
-                created_at REAL NOT NULL DEFAULT (strftime('%s', 'now')),
-                updated_at REAL NOT NULL DEFAULT (strftime('%s', 'now'))
             )""")
 
             await conn.commit()

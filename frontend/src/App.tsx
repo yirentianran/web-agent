@@ -16,7 +16,7 @@ import ChatArea from "./components/ChatArea";
 import InputBar, { type InputBarHandle } from "./components/InputBar";
 import SkillsPage from "./components/SkillsPage";
 import SessionFilePanel from "./components/SessionFilePanel";
-import FeedbackPage from "./components/FeedbackPage";
+
 import MCPPage from "./components/MCPPage";
 import DashboardPage from "./components/DashboardPage";
 import EvolutionPage from "./pages/EvolutionPage";
@@ -276,7 +276,7 @@ function MainLayout({
         userId={userId}
         authToken={authToken}
         onOpenSkills={() => navigate("/skills")}
-        onOpenFeedback={() => navigate("/feedback")}
+
         onOpenEvolution={() => navigate("/dashboard/evolution")}
         onOpenMCP={() => navigate("/mcp")}
         onOpenDashboard={() => navigate("/dashboard")}
@@ -1418,7 +1418,7 @@ function MainApp() {
     setMessages([]);
     // Prevent WebSocket messages from old sessions from re-activating
     suppressAutoActivateRef.current = true;
-    // Force remount of / route's MainLayout for visible feedback
+    // Force remount of / route's MainLayout
     setNewSessionKey(k => k + 1);
     navigate("/");
   }, [navigate]);
@@ -1554,16 +1554,6 @@ function MainApp() {
             authToken={authToken}
             userId={userId}
             userRole={userRole}
-            onBack={() => navigate("/")}
-          />
-        }
-      />
-      <Route
-        path="/feedback"
-        element={
-          <FeedbackPage
-            userId={userId}
-            authToken={authToken}
             onBack={() => navigate("/")}
           />
         }

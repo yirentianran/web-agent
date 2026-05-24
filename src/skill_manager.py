@@ -167,8 +167,12 @@ class SkillManager:
                     (skill_name, user_id, session_id, version_number, action),
                 )
                 await conn.commit()
-        except Exception:
-            pass  # DB unavailable — don't block agent
+        except Exception as e:
+            import logging
+            logging.getLogger("skill_manager").warning(
+                "record_usage failed for skill=%s user=%s session=%s: %s",
+                skill_name, user_id, session_id, e,
+            )
 
     async def get_usage_stats(self, skill_name: str) -> dict[str, Any]:
         """Get usage statistics for a skill."""
@@ -692,3 +696,23 @@ class SkillManager:
             )
             await conn.commit()
             return cursor.rowcount
+
+
+async def record_skill_usage_from_event(
+    event: dict[str, Any],
+    skill_manager: "SkillManager | None",
+    *,
+    user_id: str = "",
+    session_id: str = "",
+) -> None:
+    """Record skill usage from a tool_use event if it's a Skill invocation.
+
+    Call this from both local and container event-processing loops.
+    """
+    if event.get("type") != "tool_use" or event.get("name") != "Skill":
+        return
+    skill_name = (event.get("input") or {}).get("skill", "")
+    if skill_name and skill_manager is not None:
+        await skill_manager.record_usage(
+            skill_name, user_id=user_id, session_id=session_id,
+        )

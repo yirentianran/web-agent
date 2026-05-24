@@ -12,10 +12,20 @@ import SkillRankingTable from "./dashboard/SkillRankingTable";
 import ResourcePanel from "./dashboard/ResourcePanel";
 import "./dashboard/dashboard.css";
 
+const EMPTY_DAILY_COUNT: import("../hooks/useDashboardApi").DailyCount[] = [];
+const EMPTY_DAILY_TOKENS: import("../hooks/useDashboardApi").DailyTokens[] = [];
+const EMPTY_TOP_USER: import("../hooks/useDashboardApi").TopUser[] = [];
+const EMPTY_TOP_SKILL: import("../hooks/useDashboardApi").TopSkill[] = [];
+
 export default function DashboardPage() {
   const { t } = useTranslation();
   const navigate = useNavigate();
   const [timeRange, setTimeRange] = useState({ from: daysAgoStr(30), to: todayStr() });
+
+  useEffect(() => {
+    performance.mark('dashboard-enter');
+    console.log('[Dashboard] Page mounted, fetch starting...');
+  }, []);
 
   const api = useDashboardApi(timeRange.from, timeRange.to);
 
@@ -75,26 +85,26 @@ export default function DashboardPage() {
       />
 
       <TokenTrendChart
-        data={api.trends.data?.tokens ?? []}
+        data={api.trends.data?.tokens ?? EMPTY_DAILY_TOKENS}
         loading={api.trends.loading}
         error={api.trends.error}
       />
 
       <ActivityTrendChart
-        dauData={api.trends.data?.active_users ?? []}
-        sessionsData={api.trends.data?.sessions ?? []}
+        dauData={api.trends.data?.active_users ?? EMPTY_DAILY_COUNT}
+        sessionsData={api.trends.data?.sessions ?? EMPTY_DAILY_COUNT}
         loading={api.trends.loading}
         error={api.trends.error}
       />
 
       <div className="rankings-row">
         <UserRankingTable
-          data={api.rankings.data?.top_users ?? []}
+          data={api.rankings.data?.top_users ?? EMPTY_TOP_USER}
           loading={api.rankings.loading}
           error={api.rankings.error}
         />
         <SkillRankingTable
-          data={api.rankings.data?.top_skills ?? []}
+          data={api.rankings.data?.top_skills ?? EMPTY_TOP_SKILL}
           loading={api.rankings.loading}
           error={api.rankings.error}
         />

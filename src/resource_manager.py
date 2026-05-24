@@ -23,7 +23,7 @@ MAX_DISK_MB = float(os.getenv("RESOURCE_MAX_DISK_MB", "1024"))
 DATA_ROOT = Path(os.getenv("DATA_ROOT", "/data"))
 
 
-def get_container_stats(user_id: str) -> dict[str, str | float | None]:
+def get_container_stats(user_id: str, _client: "DockerClient | None" = None) -> dict[str, str | float | None]:
     """Get CPU and memory stats for a user's container.
 
     When CONTAINER_MODE is False, returns a disabled status.
@@ -32,7 +32,7 @@ def get_container_stats(user_id: str) -> dict[str, str | float | None]:
         return {"status": "container_mode_disabled"}
 
     try:
-        client = docker.from_env()
+        client = _client or docker.from_env()
         container = client.containers.get(f"web-agent-{user_id}")
         stats = container.stats(stream=False)
 
@@ -87,14 +87,14 @@ def get_disk_usage(user_id: str) -> dict[str, str | float]:
     }
 
 
-def check_quota(user_id: str) -> dict[str, bool | dict]:
-    """Check if a user's container is within resource quotas.
+def _check_quota_from_data(
+    stats: dict[str, str | float | None],
+    disk: dict[str, str | float],
+) -> dict[str, bool | dict]:
+    """Compute quota checks from already-fetched stats and disk data.
 
-    Returns {cpu_ok, memory_ok, disk_ok, details}.
+    Pure function — no side effects, no Docker or filesystem calls.
     """
-    stats = get_container_stats(user_id)
-    disk = get_disk_usage(user_id)
-
     cpu_ok = True
     memory_ok = True
     disk_ok = True
@@ -123,6 +123,16 @@ def check_quota(user_id: str) -> dict[str, bool | dict]:
     }
 
 
+def check_quota(user_id: str) -> dict[str, bool | dict]:
+    """Check if a user's container is within resource quotas.
+
+    Returns {cpu_ok, memory_ok, disk_ok, details}.
+    """
+    stats = get_container_stats(user_id)
+    disk = get_disk_usage(user_id)
+    return _check_quota_from_data(stats, disk)
+
+
 def get_all_resources() -> dict[str, dict]:
     """Return resource stats for all active containers."""
     if not CONTAINER_MODE or docker is None:
@@ -130,17 +140,39 @@ def get_all_resources() -> dict[str, dict]:
 
     try:
         client = docker.from_env()
+    except Exception as e:
+        logger.warning("Docker unavailable: %s", e)
+        return {"status": "docker_unavailable", "detail": "Docker is not running or not accessible"}
+
+    try:
         containers = [c for c in client.containers.list() if c.name.startswith("web-agent-")]
 
         result: dict[str, dict] = {}
         for container in containers:
             user_id = container.name.replace("web-agent-", "")
+            stats = get_container_stats(user_id, _client=client)
+            disk = get_disk_usage(user_id)
             result[user_id] = {
-                "container": get_container_stats(user_id),
-                "disk": get_disk_usage(user_id),
-                "quota": check_quota(user_id),
+                "container": stats,
+                "disk": disk,
+                "quota": _check_quota_from_data(stats, disk),
             }
         return result
     except Exception as e:
         logger.error("Failed to list container resources: %s", e)
         return {"status": "error", "detail": str(e)}
+
+
+def get_user_resource_snapshot(user_id: str) -> dict[str, dict]:
+    """Efficiently fetch container, disk, and quota for one user.
+
+    Fetches stats and disk once each, computes quota from the
+    pre-fetched data — no duplicate Docker or filesystem calls.
+    """
+    stats = get_container_stats(user_id)
+    disk = get_disk_usage(user_id)
+    return {
+        "container": stats,
+        "disk": disk,
+        "quota": _check_quota_from_data(stats, disk),
+    }

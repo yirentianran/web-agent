@@ -136,6 +136,7 @@ MAX_SKILL_FILES = 100
 
 # ── Timezone ─────────────────────────────────────────────────────
 PROJECT_TZ = timezone(timedelta(hours=8))  # UTC+8 (Asia/Shanghai)
+_PROJECT_TZ_OFFSET = int(PROJECT_TZ.utcoffset(None).total_seconds())  # 28800
 
 # In production (single-server), CORS is unnecessary since frontend and API share the same origin
 if not PROD:
@@ -425,24 +426,22 @@ async def load_skills(user_id: str) -> dict[str, dict[str, Any]]:
     # missing from SKILL.md frontmatter, and add category / tags.
     if _db is not None and _db._initialized:
         try:
-            from src.database import connect_sync
-
-            conn = connect_sync(_db.db_path)
-            rows = conn.execute(
-                "SELECT skill_name, description, category, tags FROM skills "
-                "WHERE status != 'deprecated'"
-            ).fetchall()
-            conn.close()
-            for row in rows:
-                name = row[0]
-                if name in all_skills:
-                    db_desc = row[1] or ""
-                    if db_desc and not all_skills[name]["description"]:
-                        all_skills[name]["description"] = db_desc
-                    if row[2]:
-                        all_skills[name]["category"] = row[2]
-                    if row[3]:
-                        all_skills[name]["tags"] = row[3]
+            async with _db.connection() as conn:
+                cursor = await conn.execute(
+                    "SELECT skill_name, description, category, tags FROM skills "
+                    "WHERE status != 'deprecated'"
+                )
+                rows = await cursor.fetchall()
+                for row in rows:
+                    name = row[0]
+                    if name in all_skills:
+                        db_desc = row[1] or ""
+                        if db_desc and not all_skills[name]["description"]:
+                            all_skills[name]["description"] = db_desc
+                        if row[2]:
+                            all_skills[name]["category"] = row[2]
+                        if row[3]:
+                            all_skills[name]["tags"] = row[3]
         except Exception:
             pass  # DB unavailable — disk data is sufficient
 
@@ -488,42 +487,41 @@ def is_path_within_user_dir(file_path: str, user_id: str) -> bool:
 async def _summarize_and_store_session(session_id: str, user_id: str) -> None:
     """Generate a brief summary of the session and store it for L4 retrieval."""
     try:
-        from src.database import connect_sync
         from src.semantic_search import anonymize_summary
 
-        conn = connect_sync(_db.db_path)
-        # Fetch user messages from this session
-        cursor = conn.execute(
-            "SELECT content FROM messages WHERE session_id = ? AND type = 'user' ORDER BY seq DESC LIMIT 5",
-            (session_id,),
-        )
-        user_msgs = [r[0] for r in cursor.fetchall() if r[0]]
-        conn.close()
-
-        if not user_msgs:
+        if _db is None:
             return
 
-        # Build a simple summary from the last few user messages
-        snippets = []
-        total_chars = 0
-        for msg in reversed(user_msgs):
-            stripped = msg.strip()[:200]
-            if stripped:
-                snippets.append(stripped)
-                total_chars += len(stripped)
-                if total_chars > 500:
-                    break
+        async with _db.connection() as conn:
+            cursor = await conn.execute(
+                "SELECT content FROM messages WHERE session_id = ? AND type = 'user' ORDER BY seq DESC LIMIT 5",
+                (session_id,),
+            )
+            rows = await cursor.fetchall()
+            user_msgs = [r[0] for r in rows if r[0]]
 
-        raw_summary = " | ".join(snippets)
-        summary = anonymize_summary(raw_summary)
+            if not user_msgs:
+                return
 
-        conn = connect_sync(_db.db_path)
-        conn.execute(
-            "INSERT OR REPLACE INTO session_summaries (session_id, summary, user_id, created_at) VALUES (?, ?, ?, strftime('%s', 'now'))",
-            (session_id, summary, user_id),
-        )
-        conn.commit()
-        conn.close()
+            snippets: list[str] = []
+            total_chars = 0
+            for msg in reversed(user_msgs):
+                stripped = msg.strip()[:200]
+                if stripped:
+                    snippets.append(stripped)
+                    total_chars += len(stripped)
+                    if total_chars > 500:
+                        break
+
+            raw_summary = " | ".join(snippets)
+            summary = anonymize_summary(raw_summary)
+
+            await conn.execute(
+                "INSERT OR REPLACE INTO session_summaries (session_id, summary, user_id, created_at) "
+                "VALUES (?, ?, ?, strftime('%s', 'now'))",
+                (session_id, summary, user_id),
+            )
+            await conn.commit()
     except Exception:
         pass
 
@@ -811,42 +809,40 @@ def _fallback_extraction_rules() -> str:
     )
 
 
+async def _resolve_user_language(user_id: str, ws_language: str | None = None) -> str:
+    """Resolve language from DB and sync WebSocket preference back."""
+    lang: str | None = ws_language if ws_language in ("en", "zh") else None
+    if _db is not None:
+        try:
+            async with _db.connection() as conn:
+                cursor = await conn.execute(
+                    "SELECT language FROM users WHERE user_id = ?", (user_id,)
+                )
+                row = await cursor.fetchone()
+                db_lang = row[0] if row and row[0] else None
+                if lang:
+                    if lang != db_lang:
+                        await conn.execute(
+                            "UPDATE users SET language = ? WHERE user_id = ?",
+                            (lang, user_id),
+                        )
+                        await conn.commit()
+                else:
+                    lang = db_lang
+        except Exception:
+            pass
+    return lang or "zh"
+
+
 def build_system_prompt(
     user_id: str, skills: dict[str, dict[str, Any]], workspace: Path | None = None, language: str | None = None
 ) -> str:
     """Assemble the full system prompt from skills + evolution context.
 
-    Language priority: WebSocket message → DB users.language → default 'zh'.
-    When WebSocket provides a language that differs from DB, the DB is
-    updated so other consumers stay in sync.
+    `language` is expected to be 'en' or 'zh', already resolved by the caller
+    via _resolve_user_language().
     """
-    db_lang: str | None = None
-    try:
-        from src.database import connect_sync
-
-        conn = connect_sync(_db.db_path)
-        row = conn.execute("SELECT language FROM users WHERE user_id = ?", (user_id,)).fetchone()
-        conn.close()
-        if row and row[0]:
-            db_lang = row[0]
-    except Exception:
-        pass
-
-    if language and language in ("en", "zh"):
-        lang = language
-        # Sync WebSocket language back to DB if stale
-        if lang != db_lang:
-            try:
-                from src.database import connect_sync
-
-                conn = connect_sync(_db.db_path)
-                conn.execute("UPDATE users SET language = ? WHERE user_id = ?", (lang, user_id))
-                conn.commit()
-                conn.close()
-            except Exception:
-                pass
-    else:
-        lang = db_lang if db_lang else "zh"
+    lang = language if language in ("en", "zh") else "zh"
 
     lang_name = "中文" if lang == "zh" else "English"
 
@@ -1009,14 +1005,6 @@ def build_system_prompt(
     except Exception:
         pass
 
-    # ── L5: Pattern Context (tool usage stats) ──
-    try:
-        pattern_ctx = _load_pattern_context(user_id, max_tokens=500)
-        if pattern_ctx:
-            parts.append(pattern_ctx)
-    except Exception:
-        pass
-
     # Final language enforcement — placed at the very end to leverage
     # recency bias. Qwen models weight the last instruction more heavily.
     parts.append(
@@ -1085,35 +1073,6 @@ def _load_semantic_context(user_id: str, max_tokens: int = 500) -> str:
     except Exception:
         return ""
 
-
-def _load_pattern_context(user_id: str, max_tokens: int = 500) -> str:
-    """Load active tool patterns into the system prompt."""
-    try:
-        from src.database import connect_sync
-
-        conn = connect_sync(_db.db_path)
-        cursor = conn.execute(
-            """SELECT pattern_data FROM learned_patterns
-               WHERE pattern_type = 'tool_cooccurrence'
-               ORDER BY updated_at DESC LIMIT 1"""
-        )
-        row = cursor.fetchone()
-        conn.close()
-
-        if not row:
-            return ""
-
-        data = json.loads(row[0])
-        top_tools = data.get("tool_success_rates", {})
-        if not top_tools:
-            return ""
-
-        parts = ["## Active Tool Patterns\n\n"]
-        for tool, stats in list(top_tools.items())[:5]:
-            parts.append(f"- **{tool}**: used {stats['total']} times ({stats['rate']}% success)\n")
-        return "\n".join(parts)[:max_tokens]
-    except Exception:
-        return ""
 
 
 async def load_mcp_config() -> dict[str, Any]:
@@ -1387,7 +1346,8 @@ async def _build_sdk_config(
     model = os.getenv("MODEL", "claude-sonnet-4-6")
     sdk_env["MODEL"] = model
 
-    system_prompt = build_system_prompt(user_id, skills, workspace, language)
+    resolved_lang = await _resolve_user_language(user_id, language)
+    system_prompt = build_system_prompt(user_id, skills, workspace, resolved_lang)
 
     return {
         "model": model,
@@ -2240,6 +2200,14 @@ async def run_agent_task(
                 # AskUserQuestion is already buffered by _can_use_tool_for_session
                 if event.get("type") == "tool_use" and event.get("name") == "AskUserQuestion":
                     continue
+                # Record skill usage when agent invokes a Skill tool
+                if _skill_manager is not None:
+                    from src.skill_manager import record_skill_usage_from_event
+
+                    await record_skill_usage_from_event(
+                        event, _skill_manager,
+                        user_id=user_id, session_id=session_id,
+                    )
                 # Track Write tool use to collect generated files
                 if event.get("type") == "tool_use" and event.get("name") == "Write":
                     tool_input = event.get("input") or {}
@@ -2456,42 +2424,45 @@ async def run_agent_task_container(
     the mounted workspace volume.
     """
     cm = _get_container_manager()
-    container_url = cm.ensure_container(user_id)
-    logger.info(
-        "Container task: user=%s session=%s url=%s continuation=%s",
-        user_id,
-        session_id,
-        container_url,
-        is_continuation,
-    )
-
-    options_dict = await build_container_options_dict(
-        user_id,
-        resume_session_id=None,
-        language=language,
-    )
-
-    from src.agent_logger import AgentLogger
-
-    agent_log = AgentLogger(user_id=user_id)
-    agent_log.start_session(session_id, user_message=user_message)
-
-    bridge = ContainerBridge(
-        container_url=container_url,
-        session_id=session_id,
-        user_id=user_id,
-        buffer=buffer,
-        session_store=session_store,
-    )
-
-    start_time = time.time()
-    workspace = user_workspace_dir(user_id)
-    generated_files: list[dict[str, Any]] = []
-    msg_count = 0
-    # Snapshot pre-existing output files so we only emit new ones
-    pre_scan_snapshot = _snapshot_output_files(workspace, session_id)
+    bridge = None
+    agent_log = None
 
     try:
+        container_url = cm.ensure_container(user_id)
+        logger.info(
+            "Container task: user=%s session=%s url=%s continuation=%s",
+            user_id,
+            session_id,
+            container_url,
+            is_continuation,
+        )
+
+        options_dict = await build_container_options_dict(
+            user_id,
+            resume_session_id=None,
+            language=language,
+        )
+
+        from src.agent_logger import AgentLogger
+
+        agent_log = AgentLogger(user_id=user_id)
+        agent_log.start_session(session_id, user_message=user_message)
+
+        bridge = ContainerBridge(
+            container_url=container_url,
+            session_id=session_id,
+            user_id=user_id,
+            buffer=buffer,
+            session_store=session_store,
+            skill_manager=_skill_manager,
+        )
+
+        start_time = time.time()
+        workspace = user_workspace_dir(user_id)
+        generated_files: list[dict[str, Any]] = []
+        msg_count = 0
+        # Snapshot pre-existing output files so we only emit new ones
+        pre_scan_snapshot = _snapshot_output_files(workspace, session_id)
         # Build the prompt - for continuations, include history
         if is_continuation:
             if session_store is not None:
@@ -2577,7 +2548,8 @@ async def run_agent_task_container(
             user_id,
         )
         await buffer.mark_done(session_id)
-        agent_log.end_session(session_id, status="error")
+        if agent_log is not None:
+            agent_log.end_session(session_id, status="error")
         if _obs_store:
             await _obs_store.record(
                 session_id=session_id, user_id=user_id,
@@ -2587,10 +2559,11 @@ async def run_agent_task_container(
 
     except asyncio.CancelledError:
         logger.info("Container task %s: cancelled", session_id)
-        try:
-            await bridge.send_cancel()
-        except Exception:
-            pass
+        if bridge is not None:
+            try:
+                await bridge.send_cancel()
+            except Exception:
+                pass
         await buffer.add_message(
             session_id,
             {
@@ -2610,7 +2583,8 @@ async def run_agent_task_container(
             user_id,
         )
         await buffer.mark_done(session_id)
-        agent_log.end_session(session_id, status="cancelled")
+        if agent_log is not None:
+            agent_log.end_session(session_id, status="cancelled")
         if _obs_store:
             await _obs_store.record(
                 session_id=session_id, user_id=user_id,
@@ -2642,7 +2616,8 @@ async def run_agent_task_container(
             user_id,
         )
         await buffer.mark_done(session_id)
-        agent_log.end_session(session_id, status="error")
+        if agent_log is not None:
+            agent_log.end_session(session_id, status="error")
         if _obs_store:
             await _obs_store.record(
                 session_id=session_id, user_id=user_id,
@@ -3904,7 +3879,7 @@ async def list_shared_skills() -> list[SkillInfo]:
             )
             rows = await cursor.fetchall()
             for row in rows:
-                skill_path = Path(row[3] or "")
+                skill_path = DATA_ROOT / (row[3] or "")
                 skill_name = row[0]
                 created_at = ""
                 if row[4]:
@@ -4002,7 +3977,7 @@ async def list_user_skills(
             rows = await cursor.fetchall()
             for row in rows:
                 # row: skill_name, source, owner_id, description, path, created_at
-                skill_path = Path(row[4] or "")
+                skill_path = DATA_ROOT / (row[4] or "")
                 skill_name = row[0]
                 owner = row[2]
                 created_at = ""
@@ -4575,12 +4550,11 @@ async def update_user_language(
     if lang not in ("en", "zh"):
         raise HTTPException(status_code=400, detail="language must be 'en' or 'zh'")
     try:
-        from src.database import connect_sync
-
-        conn = connect_sync(_db.db_path)
-        conn.execute("UPDATE users SET language = ? WHERE user_id = ?", (lang, user_id))
-        conn.commit()
-        conn.close()
+        async with _db.connection() as conn:
+            await conn.execute(
+                "UPDATE users SET language = ? WHERE user_id = ?", (lang, user_id)
+            )
+            await conn.commit()
     except Exception:
         pass
     return {"status": "ok", "language": lang}
@@ -4852,18 +4826,17 @@ async def dashboard_overview(
         # Token aggregation
         cursor = await conn.execute(
             "SELECT "
-            "COALESCE(SUM(CAST(json_extract(m.usage, '$.input_tokens') AS INTEGER)), 0), "
-            "COALESCE(SUM(CAST(json_extract(m.usage, '$.output_tokens') AS INTEGER)), 0), "
-            "COALESCE(SUM(CAST(json_extract(m.usage, '$.cache_read_input_tokens') AS INTEGER)), 0), "
-            "COALESCE(SUM(CAST(json_extract(m.usage, '$.cache_creation_input_tokens') AS INTEGER)), 0) "
+            "COALESCE(SUM(m.input_tokens), 0), "
+            "COALESCE(SUM(m.output_tokens), 0), "
+            "COALESCE(SUM(m.cache_read_tokens), 0), "
+            "COALESCE(SUM(m.cache_write_tokens), 0) "
             "FROM messages m "
-            "JOIN sessions s ON m.session_id = s.session_id "
             "WHERE m.created_at >= ? AND m.created_at <= ?",
             (from_ts, to_ts),
         )
         row = await cursor.fetchone()
 
-    return {
+    result = {
         "active_users": active_users,
         "total_users": total_users,
         "new_users": new_users,
@@ -4873,6 +4846,7 @@ async def dashboard_overview(
         "total_cache_read_tokens": row[2] if row else 0,
         "total_cache_write_tokens": row[3] if row else 0,
     }
+    return result
 
 
 @app.get("/api/admin/dashboard/trends")
@@ -4892,11 +4866,12 @@ async def dashboard_trends(
 
     from_ts, to_ts = _parse_dashboard_dates(from_date, to_date)
 
-    # SQL group expression per interval — dict lookup, never string interpolation
+    # SQL group expression per interval — arithmetic offset avoids per-row tzset()
+    _offset = _PROJECT_TZ_OFFSET
     _group_expr: dict[str, str] = {
-        "5min": "strftime('%Y-%m-%dT%H:%M', {col}, 'unixepoch', 'localtime')",
-        "hour": "strftime('%Y-%m-%dT%H:00', {col}, 'unixepoch', 'localtime')",
-        "day": "date({col}, 'unixepoch', 'localtime')",
+        "5min": f"strftime('%Y-%m-%dT%H:%M', {{col}} + {_offset}, 'unixepoch')",
+        "hour": f"strftime('%Y-%m-%dT%H:00', {{col}} + {_offset}, 'unixepoch')",
+        "day": f"date({{col}} + {_offset}, 'unixepoch')",
     }
     group_fmt = _group_expr[interval]
 
@@ -4929,12 +4904,11 @@ async def dashboard_trends(
         # Tokens
         cursor = await conn.execute(
             f"SELECT {group_fmt.format(col='m.created_at')}, "
-            "COALESCE(SUM(CAST(json_extract(m.usage, '$.input_tokens') AS INTEGER)), 0), "
-            "COALESCE(SUM(CAST(json_extract(m.usage, '$.output_tokens') AS INTEGER)), 0), "
-            "COALESCE(SUM(CAST(json_extract(m.usage, '$.cache_read_input_tokens') AS INTEGER)), 0), "
-            "COALESCE(SUM(CAST(json_extract(m.usage, '$.cache_creation_input_tokens') AS INTEGER)), 0) "
+            "COALESCE(SUM(m.input_tokens), 0), "
+            "COALESCE(SUM(m.output_tokens), 0), "
+            "COALESCE(SUM(m.cache_read_tokens), 0), "
+            "COALESCE(SUM(m.cache_write_tokens), 0) "
             "FROM messages m "
-            "JOIN sessions s ON m.session_id = s.session_id "
             "WHERE m.created_at >= ? AND m.created_at <= ? "
             "GROUP BY 1 ORDER BY 1",
             (from_ts, to_ts),
@@ -4945,12 +4919,13 @@ async def dashboard_trends(
             for r in rows
         ]
 
-    return {
+    result = {
         "interval": interval,
         "active_users": active_users,
         "sessions": sessions,
         "tokens": tokens,
     }
+    return result
 
 
 @app.get("/api/admin/dashboard/rankings")
@@ -4970,10 +4945,7 @@ async def dashboard_rankings(
         cursor = await conn.execute(
             "SELECT s.user_id, "
             "COALESCE(SUM("
-            "CAST(json_extract(m.usage, '$.input_tokens') AS INTEGER) + "
-            "CAST(json_extract(m.usage, '$.output_tokens') AS INTEGER) + "
-            "CAST(json_extract(m.usage, '$.cache_read_input_tokens') AS INTEGER) + "
-            "CAST(json_extract(m.usage, '$.cache_creation_input_tokens') AS INTEGER)"
+            "m.input_tokens + m.output_tokens + m.cache_read_tokens + m.cache_write_tokens"
             "), 0) as total_tokens, "
             "COUNT(DISTINCT s.session_id) as session_count "
             "FROM messages m "
@@ -4990,7 +4962,6 @@ async def dashboard_rankings(
             "SELECT su.skill_name, COUNT(*) as use_count, "
             "COUNT(DISTINCT su.user_id) as unique_users "
             "FROM skill_usage su "
-            "JOIN sessions s ON su.session_id = s.session_id "
             "WHERE su.created_at >= ? AND su.created_at <= ? "
             "AND su.session_id != '' "
             "GROUP BY su.skill_name "
@@ -5901,7 +5872,8 @@ async def get_all_resources(
     """Get resource stats for all active containers."""
     from src.resource_manager import get_all_resources as _get_all
 
-    return JSONResponse(_get_all())
+    result = await asyncio.to_thread(_get_all)
+    return JSONResponse(result)
 
 
 @app.get("/api/users/{user_id}/resources")
@@ -5911,15 +5883,10 @@ async def get_user_resources(
 ) -> JSONResponse:
     """Get resource stats for a specific user's container."""
     verify_path_user(user_id, current_user)
-    from src.resource_manager import check_quota, get_container_stats, get_disk_usage
+    from src.resource_manager import get_user_resource_snapshot
 
-    return JSONResponse(
-        {
-            "container": get_container_stats(user_id),
-            "disk": get_disk_usage(user_id),
-            "quota": check_quota(user_id),
-        }
-    )
+    result = await asyncio.to_thread(get_user_resource_snapshot, user_id)
+    return JSONResponse(result)
 
 
 # ── Audit Logs ────────────────────────────────────────────────────
@@ -5984,6 +5951,17 @@ async def evolution_overview(
             item["instinct_count"] = row[0] if row else 0
 
     return result
+
+
+@app.get("/api/admin/evolution/stats")
+async def evolution_stats(
+    current_user: str = Depends(require_admin),
+):
+    """Dashboard stats for the instinct evolution panel."""
+    from src.evolution_log import EvolutionLogStore
+
+    store = EvolutionLogStore(_db)
+    return await store.get_overview_stats()
 
 
 @app.get("/api/admin/evolution/{evolution_id}")
@@ -6179,17 +6157,6 @@ async def evolution_review(
             review_decision="rolled_back",
         )
         return {"status": "rolled_back", "message": "Evolution rolled back"}
-
-
-# ---- Instinct Evolution Admin APIs ----
-
-@app.get("/api/admin/evolution/stats")
-async def evolution_stats(
-    current_user: str = Depends(require_admin),
-):
-    """Dashboard stats for the instinct evolution panel."""
-    store = EvolutionLogStore(_db)
-    return await store.get_overview_stats()
 
 
 @app.get("/api/admin/instincts")

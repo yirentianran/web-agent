@@ -111,9 +111,9 @@ export default function SkillsPage({ authToken, userId, userRole, onBack }: Skil
 
   if (viewingSkill) {
     return (
-      <div className="skills-page feedback-page">
-        <div className="skills-header feedback-header">
-          <button className="skills-back-btn feedback-back-btn" onClick={() => setViewingSkill(null)} type="button">{t('common.back')}</button>
+      <div className="skills-page detail-page">
+        <div className="skills-header detail-header">
+          <button className="skills-back-btn detail-back-btn" onClick={() => setViewingSkill(null)} type="button">{t('common.back')}</button>
           <div className="skills-header-title-group">
             <h2>{viewingSkill.name}</h2>
             {viewingSkill.owner && <span className="skill-owner">{viewingSkill.owner}</span>}
@@ -130,9 +130,9 @@ export default function SkillsPage({ authToken, userId, userRole, onBack }: Skil
   }
 
   return (
-    <div className="skills-page feedback-page">
-      <div className="skills-header feedback-header">
-        <button className="skills-back-btn feedback-back-btn" onClick={onBack} type="button">{t('common.back')}</button>
+    <div className="skills-page detail-page">
+      <div className="skills-header detail-header">
+        <button className="skills-back-btn detail-back-btn" onClick={onBack} type="button">{t('common.back')}</button>
         <div className="skills-header-title-group">
           <label className="skills-upload-btn">
             {uploading ? t('skills.uploadingSkill') : t('skills.uploadSkill')}

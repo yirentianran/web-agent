@@ -1,4 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
+import { useNavigate } from 'react-router-dom';
+import { useTranslation } from 'react-i18next';
 import { StatsCards } from './evolution/StatsCards';
 import { PipelineFunnel } from './evolution/PipelineFunnel';
 import OverviewTable from './evolution/OverviewTable';
@@ -11,6 +13,8 @@ import './evolution/evolution.css';
 type TabId = 'evolutions' | 'instincts' | 'observations';
 
 export default function EvolutionPage() {
+  const { t } = useTranslation();
+  const navigate = useNavigate();
   const api = useEvolutionApi();
   const [activeTab, setActiveTab] = useState<TabId>('evolutions');
   const [detailId, setDetailId] = useState<number | null>(null);
@@ -35,40 +39,58 @@ export default function EvolutionPage() {
     [api.fetchObservations]
   );
 
+  const TABS: { id: TabId; labelKey: string }[] = [
+    { id: 'evolutions', labelKey: 'evolutionMonitor.evolutionsTab' },
+    { id: 'instincts', labelKey: 'evolutionMonitor.instinctsTab' },
+    { id: 'observations', labelKey: 'evolutionMonitor.observationsTab' },
+  ];
+
   if (detailId !== null) {
     return (
-      <div className="evolution-page">
-        <button className="evolution-back" onClick={() => setDetailId(null)}>
-          ← Back to overview
-        </button>
+      <div className="evolution-page detail-page">
+        <div className="evolution-header skills-header detail-header">
+          <button
+            className="evolution-back-btn skills-back-btn detail-back-btn"
+            onClick={() => setDetailId(null)}
+            type="button"
+          >
+            {t('evolutionMonitor.backToOverview')}
+          </button>
+          <div className="evolution-header-title-group skills-header-title-group">
+            <h2>{t('evolutionMonitor.title')}</h2>
+          </div>
+        </div>
         <EvolutionDetail evolutionId={detailId} api={api} />
       </div>
     );
   }
 
-  const TABS: { id: TabId; label: string }[] = [
-    { id: 'evolutions', label: '进化列表' },
-    { id: 'instincts', label: '本能列表' },
-    { id: 'observations', label: '事件浏览' },
-  ];
-
   return (
-    <div className="evolution-page">
-      <div className="evolution-header">
-        <h1>Evolution Monitor</h1>
+    <div className="evolution-page detail-page">
+      <div className="evolution-header skills-header detail-header">
+        <button
+          className="evolution-back-btn skills-back-btn detail-back-btn"
+          onClick={() => navigate('/')}
+          type="button"
+        >
+          {t('common.back')}
+        </button>
+        <div className="evolution-header-title-group skills-header-title-group">
+          <h2>{t('evolutionMonitor.title')}</h2>
+        </div>
       </div>
 
       <StatsCards stats={api.stats.data ?? null} loading={api.stats.loading} />
       <PipelineFunnel stats={api.stats.data ?? null} />
 
-      <div className="status-tabs">
-        {TABS.map(({ id, label }) => (
+      <div className="skills-tabs">
+        {TABS.map(({ id, labelKey }) => (
           <button
             key={id}
-            className={`tab-btn ${activeTab === id ? 'active' : ''}`}
+            className={`skills-tab ${activeTab === id ? 'active' : ''}`}
             onClick={() => setActiveTab(id)}
           >
-            {label}
+            {t(labelKey)}
           </button>
         ))}
       </div>

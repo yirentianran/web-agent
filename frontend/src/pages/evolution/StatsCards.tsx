@@ -1,4 +1,5 @@
 import React from 'react';
+import { useTranslation } from 'react-i18next';
 import type { EvolutionStats } from '../../hooks/useEvolutionApi';
 
 interface Props {
@@ -7,24 +8,26 @@ interface Props {
 }
 
 const CARD_CONFIG = [
-  { key: 'today_events' as const, icon: '📡', label: '今日事件' },
-  { key: 'active_instincts' as const, icon: '🧬', label: '活跃本能' },
-  { key: 'pending_reviews' as const, icon: '⏳', label: '待审核' },
-  { key: 'week_auto_applied' as const, icon: '⚡', label: '本周自动应用' },
+  { key: 'today_events' as const, labelKey: 'evolutionMonitor.todayEvents' },
+  { key: 'active_instincts' as const, labelKey: 'evolutionMonitor.activeInstincts' },
+  { key: 'pending_reviews' as const, labelKey: 'evolutionMonitor.pendingReviews' },
+  { key: 'week_auto_applied' as const, labelKey: 'evolutionMonitor.weekAutoApplied' },
 ];
 
-export const StatsCards: React.FC<Props> = ({ stats, loading }) => (
-  <div className="stats-cards">
-    {CARD_CONFIG.map(({ key, icon, label }) => (
-      <div className="stats-card" key={key}>
-        <span className="stats-card-icon">{icon}</span>
-        <div className="stats-card-body">
-          <span className="stats-card-value">
-            {loading ? '—' : stats?.[key] ?? 0}
-          </span>
-          <span className="stats-card-label">{label}</span>
+export const StatsCards: React.FC<Props> = ({ stats, loading }) => {
+  const { t } = useTranslation();
+  return (
+    <div className="stats-cards">
+      {CARD_CONFIG.map(({ key, labelKey }) => (
+        <div className="stats-card" key={key}>
+          <div className="stats-card-body">
+            <span className="stats-card-value">
+              {loading ? '—' : stats?.[key] ?? 0}
+            </span>
+            <span className="stats-card-label">{t(labelKey)}</span>
+          </div>
         </div>
-      </div>
-    ))}
-  </div>
-);
+      ))}
+    </div>
+  );
+};

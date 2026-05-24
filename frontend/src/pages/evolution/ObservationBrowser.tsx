@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import type { ObservationItem } from '../../hooks/useEvolutionApi';
 
 interface Props {
@@ -14,6 +15,7 @@ const EVENT_TYPES = [
 ];
 
 export const ObservationBrowser: React.FC<Props> = ({ data, loading, error, onFilterChange }) => {
+  const { t } = useTranslation();
   const [sessionId, setSessionId] = useState('');
   const [eventType, setEventType] = useState('');
 
@@ -21,34 +23,34 @@ export const ObservationBrowser: React.FC<Props> = ({ data, loading, error, onFi
     { session_id: sessionId || undefined, event_type: eventType || undefined }
   );
 
-  if (loading) return <div className="evo-loading">Loading observations...</div>;
+  if (loading) return <div className="evo-loading">{t('evolutionMonitor.loadingObservations')}</div>;
   if (error) return <div className="evo-error">{error}</div>;
-  if (!data || data.items.length === 0) return <div className="evo-empty">No observations found</div>;
+  if (!data || data.items.length === 0) return <div className="evo-empty">{t('evolutionMonitor.noObservations')}</div>;
 
   return (
     <div>
       <div className="filter-bar">
         <input
-          type="text" placeholder="Session ID"
+          type="text" placeholder={t('evolutionMonitor.sessionId')}
           value={sessionId} onChange={(e) => setSessionId(e.target.value)}
         />
         <select value={eventType} onChange={(e) => setEventType(e.target.value)}>
-          <option value="">All types</option>
+          <option value="">{t('evolutionMonitor.allTypes')}</option>
           {EVENT_TYPES.map((et) => (
             <option key={et} value={et}>{et}</option>
           ))}
         </select>
-        <button onClick={handleFilter} className="btn-filter">Filter</button>
+        <button onClick={handleFilter} className="btn-filter">{t('evolutionMonitor.filter')}</button>
       </div>
       <table className="evo-table">
         <thead>
           <tr>
-            <th>ID</th>
-            <th>Session</th>
-            <th>Type</th>
-            <th>Tool</th>
-            <th>Success</th>
-            <th>Time</th>
+            <th>{t('evolutionMonitor.id')}</th>
+            <th>{t('evolutionMonitor.session')}</th>
+            <th>{t('evolutionMonitor.type')}</th>
+            <th>{t('evolutionMonitor.tool')}</th>
+            <th>{t('evolutionMonitor.success')}</th>
+            <th>{t('evolutionMonitor.time')}</th>
           </tr>
         </thead>
         <tbody>

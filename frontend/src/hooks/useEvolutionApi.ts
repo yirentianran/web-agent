@@ -226,7 +226,7 @@ export function useEvolutionApi(statusFilter?: string, page: number = 1) {
         if (params?.scope) qs.set('scope', params.scope)
         if (params?.page) qs.set('page', String(params.page))
         const data = await fetchJson<{ items: InstinctItem[]; total: number; page: number }>(
-          `${API_BASE}/instincts?${qs.toString()}`,
+          `/api/admin/instincts?${qs.toString()}`,
           authToken,
         )
         setInstincts({ data, loading: false, error: null })
@@ -255,7 +255,7 @@ export function useEvolutionApi(statusFilter?: string, page: number = 1) {
         if (params?.event_type) qs.set('event_type', params.event_type)
         if (params?.page) qs.set('page', String(params.page))
         const data = await fetchJson<{ items: ObservationItem[]; total: number; page: number }>(
-          `${API_BASE}/observations?${qs.toString()}`,
+          `/api/admin/observations?${qs.toString()}`,
           authToken,
         )
         setObservations({ data, loading: false, error: null })

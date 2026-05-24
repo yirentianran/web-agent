@@ -1,3 +1,4 @@
+import { memo } from "react";
 import { useTranslation } from "react-i18next";
 import type { TopSkill } from "../../hooks/useDashboardApi";
 
@@ -7,7 +8,7 @@ interface SkillRankingTableProps {
   error: string | null;
 }
 
-export default function SkillRankingTable({ data, loading, error }: SkillRankingTableProps) {
+export default memo(function SkillRankingTable({ data, loading, error }: SkillRankingTableProps) {
   const { t } = useTranslation();
 
   if (error) {
@@ -45,4 +46,4 @@ export default function SkillRankingTable({ data, loading, error }: SkillRanking
       )}
     </div>
   );
-}
+});

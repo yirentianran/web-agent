@@ -1,5 +1,14 @@
-import { useEffect, useState, type ComponentType } from "react";
+import { memo, useEffect, useMemo, useRef } from "react";
 import { useTranslation } from "react-i18next";
+import {
+  LineChart,
+  Line,
+  XAxis,
+  YAxis,
+  Tooltip,
+  ResponsiveContainer,
+  Legend,
+} from "recharts";
 import type { DailyCount } from "../../hooks/useDashboardApi";
 
 interface ActivityTrendChartProps {
@@ -9,50 +18,48 @@ interface ActivityTrendChartProps {
   error: string | null;
 }
 
-interface ChartComponents {
-  LineChart: ComponentType<any>;
-  Line: ComponentType<any>;
-  XAxis: ComponentType<any>;
-  YAxis: ComponentType<any>;
-  Tooltip: ComponentType<any>;
-  ResponsiveContainer: ComponentType<any>;
-  Legend: ComponentType<any>;
-}
-
 interface MergedPoint {
   date: string;
   dau: number;
   sessions: number;
 }
 
-export default function ActivityTrendChart({
+export default memo(function ActivityTrendChart({
   dauData,
   sessionsData,
   loading,
   error,
 }: ActivityTrendChartProps) {
   const { t } = useTranslation();
-  const [ChartComponents, setChartComponents] = useState<ChartComponents | null>(null);
 
+  const logged = useRef(false);
   useEffect(() => {
-    let cancelled = false;
-    import("recharts").then((mod) => {
-      if (!cancelled) {
-        setChartComponents({
-          LineChart: mod.LineChart,
-          Line: mod.Line,
-          XAxis: mod.XAxis,
-          YAxis: mod.YAxis,
-          Tooltip: mod.Tooltip,
-          ResponsiveContainer: mod.ResponsiveContainer,
-          Legend: mod.Legend,
-        });
+    if (!loading && (dauData.length > 0 || sessionsData.length > 0) && !logged.current) {
+      console.log(`[Dashboard] ActivityTrendChart render with ${dauData.length}dau + ${sessionsData.length}sessions at ${performance.now().toFixed(0)}ms`);
+      logged.current = true;
+    }
+  });
+
+  const merged: MergedPoint[] = useMemo(() => {
+    if (dauData.length === 0 && sessionsData.length === 0) return [];
+
+    const map = new Map<string, MergedPoint>();
+
+    for (const s of sessionsData) {
+      map.set(s.date, { date: s.date, dau: 0, sessions: s.count });
+    }
+
+    for (const d of dauData) {
+      const existing = map.get(d.date);
+      if (existing) {
+        existing.dau = d.count;
+      } else {
+        map.set(d.date, { date: d.date, dau: d.count, sessions: 0 });
       }
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+    }
+
+    return Array.from(map.values()).sort((a, b) => a.date.localeCompare(b.date));
+  }, [dauData, sessionsData]);
 
   if (error) {
     return (
@@ -62,40 +69,15 @@ export default function ActivityTrendChart({
     );
   }
 
-  if (loading || !ChartComponents) {
+  if (loading) {
     return <div className="chart-loading">{t("dashboard.chart.loading")}</div>;
   }
 
-  if (dauData.length === 0 && sessionsData.length === 0) {
+  if (merged.length === 0) {
     return (
       <div className="chart-empty">{t("dashboard.chart.noActivityData")}</div>
     );
   }
-
-  // Merge DAU and session data by date
-  const merged: MergedPoint[] = dauData.map((d) => {
-    const session = sessionsData.find((s) => s.date === d.date);
-    return { date: d.date, dau: d.count, sessions: session?.count ?? 0 };
-  });
-
-  // Include dates that only appear in sessionsData
-  if (merged.length === 0 && sessionsData.length > 0) {
-    sessionsData.forEach((s) => {
-      if (!merged.find((m) => m.date === s.date)) {
-        merged.push({ date: s.date, dau: 0, sessions: s.count });
-      }
-    });
-  }
-
-  const {
-    LineChart,
-    Line,
-    XAxis,
-    YAxis,
-    Tooltip,
-    ResponsiveContainer,
-    Legend,
-  } = ChartComponents;
 
   return (
     <div className="dashboard-chart">
@@ -129,4 +111,4 @@ export default function ActivityTrendChart({
       </ResponsiveContainer>
     </div>
   );
-}
+});

@@ -123,36 +123,49 @@ export function useDashboardApi(
       setRankings((s) => ({ ...s, loading: true, error: null }))
 
       const params = `?from_date=${fromDate}&to_date=${toDate}`
+      const tStart = performance.now()
 
-      fetchJson<OverviewData>(`${API_BASE}/overview${params}`, authToken)
-        .then((data) => setOverview({ data, loading: false, error: null }))
-        .catch((e: unknown) =>
-          setOverview({
-            data: null,
-            loading: false,
-            error: e instanceof Error ? e.message : 'Unknown error',
-          }),
-        )
+      const timedFetch = <T,>(label: string, url: string): Promise<T> => {
+        const t0 = performance.now()
+        return fetchJson<T>(url, authToken).then((data) => {
+          console.log(`[Dashboard] ${label} done in ${(performance.now() - t0).toFixed(0)}ms`, data)
+          return data
+        })
+      }
 
-      fetchJson<TrendsData>(`${API_BASE}/trends${params}&interval=${interval}`, authToken)
-        .then((data) => setTrends({ data, loading: false, error: null }))
-        .catch((e: unknown) =>
-          setTrends({
-            data: null,
-            loading: false,
-            error: e instanceof Error ? e.message : 'Unknown error',
-          }),
-        )
+      Promise.all([
+        timedFetch<OverviewData>("overview", `${API_BASE}/overview${params}`)
+          .then((data) => setOverview({ data, loading: false, error: null }))
+          .catch((e: unknown) =>
+            setOverview({
+              data: null,
+              loading: false,
+              error: e instanceof Error ? e.message : 'Unknown error',
+            }),
+          ),
 
-      fetchJson<RankingsData>(`${API_BASE}/rankings${params}`, authToken)
-        .then((data) => setRankings({ data, loading: false, error: null }))
-        .catch((e: unknown) =>
-          setRankings({
-            data: null,
-            loading: false,
-            error: e instanceof Error ? e.message : 'Unknown error',
-          }),
-        )
+        timedFetch<TrendsData>("trends", `${API_BASE}/trends${params}&interval=${interval}`)
+          .then((data) => setTrends({ data, loading: false, error: null }))
+          .catch((e: unknown) =>
+            setTrends({
+              data: null,
+              loading: false,
+              error: e instanceof Error ? e.message : 'Unknown error',
+            }),
+          ),
+
+        timedFetch<RankingsData>("rankings", `${API_BASE}/rankings${params}`)
+          .then((data) => setRankings({ data, loading: false, error: null }))
+          .catch((e: unknown) =>
+            setRankings({
+              data: null,
+              loading: false,
+              error: e instanceof Error ? e.message : 'Unknown error',
+            }),
+          ),
+      ]).then(() => {
+        console.log(`[Dashboard] All 3 API calls settled in ${(performance.now() - tStart).toFixed(0)}ms`)
+      })
     },
     [authToken],
   )

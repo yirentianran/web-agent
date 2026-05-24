@@ -1,3 +1,4 @@
+import { memo } from "react";
 import { useTranslation } from "react-i18next";
 import type { TopUser } from "../../hooks/useDashboardApi";
 
@@ -13,7 +14,7 @@ interface UserRankingTableProps {
   error: string | null;
 }
 
-export default function UserRankingTable({ data, loading, error }: UserRankingTableProps) {
+export default memo(function UserRankingTable({ data, loading, error }: UserRankingTableProps) {
   const { t } = useTranslation();
 
   if (error) {
@@ -51,4 +52,4 @@ export default function UserRankingTable({ data, loading, error }: UserRankingTa
       )}
     </div>
   );
-}
+});

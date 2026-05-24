@@ -10,7 +10,6 @@ interface HeaderProps {
   userId: string
   authToken?: string | null
   onOpenSkills: () => void
-  onOpenFeedback: () => void
   onOpenEvolution: () => void
   onOpenMCP: () => void
   onOpenDashboard: () => void
@@ -18,7 +17,7 @@ interface HeaderProps {
   userRole: string
 }
 
-export default function Header({ connectionStatus, userId, authToken, onOpenSkills, onOpenFeedback, onOpenEvolution, onOpenMCP, onOpenDashboard, onLogout, userRole }: HeaderProps) {
+export default function Header({ connectionStatus, userId, authToken, onOpenSkills, onOpenEvolution, onOpenMCP, onOpenDashboard, onLogout, userRole }: HeaderProps) {
   const { t } = useTranslation()
 
   const statusKey: Record<ConnectionStatus, string> = {
@@ -43,7 +42,7 @@ export default function Header({ connectionStatus, userId, authToken, onOpenSkil
         <ThemeToggle />
         <SettingsMenu
           onOpenSkills={onOpenSkills}
-          onOpenFeedback={onOpenFeedback}
+
           onOpenEvolution={onOpenEvolution}
           onOpenMCP={onOpenMCP}
           onOpenDashboard={onOpenDashboard}

@@ -1,5 +1,14 @@
-import { useEffect, useState, type ComponentType } from "react";
+import { memo, useEffect, useRef } from "react";
 import { useTranslation } from "react-i18next";
+import {
+  LineChart,
+  Line,
+  XAxis,
+  YAxis,
+  Tooltip,
+  ResponsiveContainer,
+  Legend,
+} from "recharts";
 import type { DailyTokens } from "../../hooks/useDashboardApi";
 
 interface TokenTrendChartProps {
@@ -8,49 +17,28 @@ interface TokenTrendChartProps {
   error: string | null;
 }
 
-export default function TokenTrendChart({ data, loading, error }: TokenTrendChartProps) {
+export default memo(function TokenTrendChart({ data, loading, error }: TokenTrendChartProps) {
   const { t } = useTranslation();
-  const [ChartComponents, setChartComponents] = useState<{
-    LineChart: ComponentType<any>;
-    Line: ComponentType<any>;
-    XAxis: ComponentType<any>;
-    YAxis: ComponentType<any>;
-    Tooltip: ComponentType<any>;
-    ResponsiveContainer: ComponentType<any>;
-    Legend: ComponentType<any>;
-  } | null>(null);
 
+  const logged = useRef(false);
   useEffect(() => {
-    let cancelled = false;
-    import("recharts").then((mod) => {
-      if (!cancelled) {
-        setChartComponents({
-          LineChart: mod.LineChart,
-          Line: mod.Line,
-          XAxis: mod.XAxis,
-          YAxis: mod.YAxis,
-          Tooltip: mod.Tooltip,
-          ResponsiveContainer: mod.ResponsiveContainer,
-          Legend: mod.Legend,
-        });
-      }
-    });
-    return () => { cancelled = true; };
-  }, []);
+    if (!loading && data.length > 0 && !logged.current) {
+      console.log(`[Dashboard] TokenTrendChart render with ${data.length} points at ${performance.now().toFixed(0)}ms`);
+      logged.current = true;
+    }
+  });
 
   if (error) {
     return <div className="chart-error">{t("dashboard.chart.tokenLoadFailed", { error })}</div>;
   }
 
-  if (loading || !ChartComponents) {
+  if (loading) {
     return <div className="chart-loading">{t("dashboard.chart.loading")}</div>;
   }
 
   if (data.length === 0) {
     return <div className="chart-empty">{t("dashboard.chart.noTokenData")}</div>;
   }
-
-  const { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, Legend } = ChartComponents;
 
   return (
     <div className="dashboard-chart">
@@ -60,7 +48,7 @@ export default function TokenTrendChart({ data, loading, error }: TokenTrendChar
           <XAxis dataKey="date" tick={{ fontSize: 12 }} />
           <YAxis tick={{ fontSize: 12 }} tickFormatter={(v: number) => `${(v / 1000).toFixed(0)}K`} />
           <Tooltip
-            formatter={(value: number) => [value.toLocaleString(), undefined]}
+            formatter={(value) => [Number(value).toLocaleString(), undefined] as [string, undefined]}
             labelStyle={{ fontSize: 12 }}
           />
           <Legend />
@@ -72,4 +60,4 @@ export default function TokenTrendChart({ data, loading, error }: TokenTrendChar
       </ResponsiveContainer>
     </div>
   );
-}
+});

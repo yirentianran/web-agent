@@ -5,7 +5,6 @@ import SettingsMenu from '../components/SettingsMenu'
 
 function renderSettingsMenu(props?: {
   onOpenSkills?: () => void
-  onOpenFeedback?: () => void
   onOpenEvolution?: () => void
   onOpenMCP?: () => void
   onOpenDashboard?: () => void
@@ -14,7 +13,6 @@ function renderSettingsMenu(props?: {
   return render(
     <SettingsMenu
       onOpenSkills={props?.onOpenSkills ?? (() => {})}
-      onOpenFeedback={props?.onOpenFeedback ?? (() => {})}
       onOpenEvolution={props?.onOpenEvolution ?? (() => {})}
       onOpenMCP={props?.onOpenMCP ?? (() => {})}
       onOpenDashboard={props?.onOpenDashboard ?? (() => {})}
@@ -110,7 +108,6 @@ describe('SettingsMenu - admin role filtering', () => {
     const trigger = document.querySelector('.settings-menu-trigger') as HTMLElement
     fireEvent.click(trigger)
     expect(screen.getByText('MCP Servers')).toBeInTheDocument()
-    expect(screen.getByText('Feedback Management')).toBeInTheDocument()
     expect(screen.getByText('Skill Evolution')).toBeInTheDocument()
   })
 
@@ -119,7 +116,6 @@ describe('SettingsMenu - admin role filtering', () => {
     const trigger = document.querySelector('.settings-menu-trigger') as HTMLElement
     fireEvent.click(trigger)
     expect(screen.queryByText('MCP Servers')).not.toBeInTheDocument()
-    expect(screen.queryByText('Feedback Management')).not.toBeInTheDocument()
     expect(screen.queryByText('Skill Evolution')).not.toBeInTheDocument()
   })
 

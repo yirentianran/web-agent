@@ -1646,7 +1646,7 @@ body {
 }
 
 /* Expanded widget header */
-.feedback-header {
+.detail-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -1887,15 +1887,15 @@ body {
 /* ── Memory Panel ──────────────────────────────────────────────── */
 
 .memory-page {
-  /* inherits .feedback-page */
+  /* inherits .detail-page */
 }
 
 .memory-header {
-  /* inherits .feedback-header */
+  /* inherits .detail-header */
 }
 
 .memory-back-btn {
-  /* inherits .feedback-back-btn */
+  /* inherits .detail-back-btn */
 }
 
 .memory-tabs {
@@ -3541,7 +3541,7 @@ body {
 
 /* ── Feedback Management Page ─────────────────────────────────── */
 
-.feedback-page {
+.detail-page {
   flex: 1;
   display: flex;
   flex-direction: column;
@@ -3551,14 +3551,14 @@ body {
   gap: 20px;
 }
 
-.feedback-header {
+.detail-header {
   display: flex;
   align-items: center;
   gap: 16px;
   flex-shrink: 0;
 }
 
-.feedback-back-btn {
+.detail-back-btn {
   display: inline-flex;
   align-items: center;
   gap: 4px;
@@ -3572,13 +3572,13 @@ body {
   transition: all var(--transition-fast);
 }
 
-.feedback-back-btn:hover {
+.detail-back-btn:hover {
   border-color: var(--color-primary);
   color: var(--color-primary);
   background: var(--color-primary-light);
 }
 
-.feedback-header h2 {
+.detail-header h2 {
   font-size: 1.25rem;
   font-weight: 600;
   color: var(--color-text);
@@ -3998,7 +3998,7 @@ body {
   background: var(--color-bg);
 }
 
-.mcp-page.feedback-page {
+.mcp-page.detail-page {
   flex: 1;
   padding: 24px 32px;
   gap: 20px;
@@ -4013,7 +4013,7 @@ body {
   border-bottom: 1px solid var(--color-border);
 }
 
-.mcp-header.feedback-header {
+.mcp-header.detail-header {
   background: none;
   border-bottom: none;
   padding: 0;
@@ -4030,7 +4030,7 @@ body {
   border-radius: 6px;
 }
 
-.mcp-back-btn.feedback-back-btn {
+.mcp-back-btn.detail-back-btn {
   display: inline-flex;
   align-items: center;
   gap: 4px;
@@ -4047,7 +4047,7 @@ body {
   background: rgba(59, 130, 246, 0.08);
 }
 
-.mcp-back-btn.feedback-back-btn:hover {
+.mcp-back-btn.detail-back-btn:hover {
   border-color: var(--color-primary);
   color: var(--color-primary);
   background: var(--color-primary-light);

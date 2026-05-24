@@ -5,12 +5,13 @@ import "./ResourcePanel.css";
 interface ContainerInfo {
   container: {
     cpu_percent: number;
-    memory_usage_mb: number;
+    memory_mb: number;
+    memory_limit_mb: number;
     status: string;
   } | null;
   disk: {
-    used_gb: number;
-    total_gb: number;
+    disk_mb: number;
+    status: string;
   } | null;
   quota: Record<string, any> | null;
 }
@@ -37,18 +38,31 @@ export default function ResourcePanel() {
   const [data, setData] = useState<ResourcesData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [emptyMessage, setEmptyMessage] = useState<string | null>(null);
   const token = localStorage.getItem("authToken") || "";
 
   useEffect(() => {
+    const t0 = performance.now();
+    console.log('[Dashboard] ResourcePanel fetch start');
     fetch("/api/admin/resources", {
       headers: token ? { Authorization: `Bearer ${token}` } : {},
     })
       .then((r) => {
+        console.log(`[Dashboard] ResourcePanel response ${r.status} at ${(performance.now() - t0).toFixed(0)}ms`);
         if (!r.ok) throw new Error(`${r.status}`);
         return r.json();
       })
       .then((d) => {
-        if (d.status === "container_mode_disabled" || d.status === "error") {
+        console.log(`[Dashboard] ResourcePanel JSON parsed at ${(performance.now() - t0).toFixed(0)}ms`, d);
+        if (d.status === "container_mode_disabled") {
+          setData(null);
+          setError(null);
+          setEmptyMessage(t("dashboard.resources.modeDisabled"));
+        } else if (d.status === "docker_unavailable") {
+          setData(null);
+          setError(null);
+          setEmptyMessage(t("dashboard.resources.dockerUnavailable"));
+        } else if (d.status === "error") {
           setData(null);
           setError(d.detail || "Container mode not available");
         } else {
@@ -57,6 +71,7 @@ export default function ResourcePanel() {
         setLoading(false);
       })
       .catch((e: unknown) => {
+        console.log(`[Dashboard] ResourcePanel error at ${(performance.now() - t0).toFixed(0)}ms:`, e);
         setError(e instanceof Error ? e.message : "Unknown error");
         setLoading(false);
       });
@@ -64,15 +79,16 @@ export default function ResourcePanel() {
 
   if (loading) return <div className="resource-loading">{t("dashboard.resources.loading")}</div>;
   if (error) return <div className="resource-empty">{t("dashboard.resources.unavailable", { error })}</div>;
+  if (emptyMessage) return <div className="resource-empty">{emptyMessage}</div>;
   if (!data || Object.keys(data).length === 0) {
     return <div className="resource-empty">{t("dashboard.resources.noContainers")}</div>;
   }
 
   const entries = Object.entries(data);
   const totalCpu = entries.reduce((sum, [, v]) => sum + (v.container?.cpu_percent ?? 0), 0);
-  const totalMem = entries.reduce((sum, [, v]) => sum + (v.container?.memory_usage_mb ?? 0), 0);
-  const totalDisk = entries.reduce((sum, [, v]) => sum + (v.disk?.used_gb ?? 0), 0);
-  const totalDiskMax = entries.reduce((sum, [, v]) => sum + (v.disk?.total_gb ?? 0), 0);
+  const totalMem = entries.reduce((sum, [, v]) => sum + (v.container?.memory_mb ?? 0), 0);
+  const totalDisk = entries.reduce((sum, [, v]) => sum + (v.disk?.disk_mb ?? 0), 0);
+  const totalDiskMax = entries.reduce((sum, [, v]) => sum + (v.quota?.details?.limits?.max_disk_mb ?? 0), 0);
 
   return (
     <div className="resource-panel">
@@ -84,7 +100,7 @@ export default function ResourcePanel() {
           {t("dashboard.resources.mem")}: {(totalMem / 1024).toFixed(1)} GB
         </span>
         <span className="resource-stat">
-          {t("dashboard.resources.disk")}: {totalDisk.toFixed(1)} / {totalDiskMax.toFixed(0)} GB
+          {t("dashboard.resources.disk")}: {(totalDisk / 1024).toFixed(1)} / {(totalDiskMax / 1024).toFixed(0)} GB
         </span>
       </div>
       <table className="resource-table">
@@ -107,12 +123,12 @@ export default function ResourcePanel() {
                 <td className="mono">web-agent-{userId}</td>
                 <td className="right">{info.container?.cpu_percent?.toFixed(1) ?? "—"}%</td>
                 <td className="right">
-                  {info.container?.memory_usage_mb != null
-                    ? `${info.container.memory_usage_mb.toFixed(0)}MB`
+                  {info.container?.memory_mb != null
+                    ? `${(info.container.memory_mb / 1024).toFixed(1)}GB`
                     : "—"}
                 </td>
                 <td className="right">
-                  {info.disk ? `${info.disk.used_gb.toFixed(1)}GB` : "—"}
+                  {info.disk?.disk_mb != null ? `${(info.disk.disk_mb / 1024).toFixed(1)}GB` : "—"}
                 </td>
                 <td className={`center status-${st}`}>{statusDot(st)}</td>
               </tr>

@@ -52,13 +52,13 @@ class TestCollectiveIntelligenceMigration:
             cursor = await conn.execute(
                 "SELECT name FROM sqlite_master WHERE type='table' AND name IN "
                 "('wiki_pages', 'session_summaries', "
-                "'skill_promotion_queue', 'learned_patterns')"
+                "'skill_promotion_queue')"
             )
             rows = await cursor.fetchall()
         names = {r[0] for r in rows}
         expected = {
             "wiki_pages", "session_summaries",
-            "skill_promotion_queue", "learned_patterns",
+            "skill_promotion_queue",
         }
         assert names == expected, f"Missing tables: {expected - names}"
 
@@ -157,32 +157,5 @@ class TestAutoPromotion:
         assert len(result) == 0
 
 
-# ── Task 6: Pattern learner ───────────────────────────────────────────
 
 
-class TestPatternLearner:
-    @pytest.mark.asyncio
-    async def test_extract_tool_patterns_returns_empty_on_empty_db(self) -> None:
-        """extract_tool_patterns should return empty dict when no tool data exists."""
-        from src.pattern_learner import PatternLearner
-
-        mock_conn = MagicMock()
-        mock_cursor = MagicMock()
-        mock_cursor.fetchall = AsyncMock(return_value=[])
-        mock_conn.execute = AsyncMock(return_value=mock_cursor)
-        mock_conn.commit = AsyncMock(return_value=None)
-
-        class FakeConn:
-            async def __aenter__(self):
-                return mock_conn
-
-            async def __aexit__(self, *args):
-                pass
-
-        mock_db = MagicMock()
-        mock_db.connection = MagicMock(return_value=FakeConn())
-
-        learner = PatternLearner(db=mock_db)
-        result = await learner.extract_tool_patterns()
-        assert "tool_pairs" in result
-        assert "tool_success_rates" in result

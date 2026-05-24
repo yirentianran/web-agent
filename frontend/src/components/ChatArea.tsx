@@ -2,7 +2,7 @@ import { useEffect, useRef, useCallback, useState, useMemo } from "react";
 import { useTranslation } from "react-i18next";
 import MessageBubble, { parseTagBlocks, hasIncompleteTag } from "./MessageBubble";
 import MarkdownRenderer from "./MarkdownRenderer";
-import SkillFeedbackWidget from "./SkillFeedbackWidget";
+
 import StatusSpinner from "./StatusSpinner";
 import type { Message, SessionStatus } from "../lib/types";
 
@@ -319,18 +319,6 @@ export default function ChatArea({
     });
   }, [messages]);
 
-  // Derive skill names from tool_use messages for feedback endpoint.
-  // Collect all unique skill names; the widget handles single vs multi-skill display.
-  const feedbackSkillNames = useMemo(() => {
-    const skillTools = new Set<string>();
-    for (const msg of messages) {
-      if (msg.type === "tool_use" && msg.name) {
-        skillTools.add(msg.name);
-      }
-    }
-    return Array.from(skillTools);
-  }, [messages]);
-
   return (
     <div className="chat-area">
       <div className="messages" ref={containerRef} onScroll={handleScroll}>
@@ -454,29 +442,6 @@ export default function ChatArea({
         )}
       </div>
 
-      {sessionId !== null && sessionState === "completed" && (
-        <SkillFeedbackWidget
-          skillNames={
-            feedbackSkillNames.length > 0 ? feedbackSkillNames : undefined
-          }
-          onSubmit={async (rating, comment, userEdits, skillName) => {
-            const headers: Record<string, string> = {
-              "Content-Type": "application/json",
-            };
-            if (authToken) headers["Authorization"] = `Bearer ${authToken}`;
-            await fetch(`/api/skills/${skillName}/feedback`, {
-              method: "POST",
-              headers,
-              body: JSON.stringify({
-                rating,
-                comment,
-                user_edits: userEdits,
-                session_id: sessionId,
-              }),
-            });
-          }}
-        />
-      )}
     </div>
   );
 }

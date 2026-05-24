@@ -195,13 +195,23 @@ class MessageBuffer:
             self._seq[session_id] = next_seq + 1
 
             usage_json = None
+            input_tokens = 0
+            output_tokens = 0
+            cache_read_tokens = 0
+            cache_write_tokens = 0
             if message.get("usage"):
-                usage_json = json.dumps(message["usage"], ensure_ascii=False)
+                u = message["usage"]
+                usage_json = json.dumps(u, ensure_ascii=False)
+                input_tokens = u.get("input_tokens", 0) or 0
+                output_tokens = u.get("output_tokens", 0) or 0
+                cache_read_tokens = u.get("cache_read_input_tokens", 0) or 0
+                cache_write_tokens = u.get("cache_creation_input_tokens", 0) or 0
 
             await conn.execute(
                 """INSERT INTO messages
-                   (session_id, seq, type, subtype, name, content, payload, usage, created_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   (session_id, seq, type, subtype, name, content, payload, usage,
+                    input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     session_id,
                     next_seq,
@@ -211,6 +221,10 @@ class MessageBuffer:
                     message.get("content"),
                     json.dumps(message, ensure_ascii=False),
                     usage_json,
+                    input_tokens,
+                    output_tokens,
+                    cache_read_tokens,
+                    cache_write_tokens,
                     time.time(),
                 ),
             )

@@ -28,31 +28,31 @@ describe('MCPPage - styling', () => {
     mockListServers.mockResolvedValue([])
   })
 
-  it('uses feedback-page CSS class for page container', async () => {
+  it('uses detail-page CSS class for page container', async () => {
     const { container } = renderPage()
     await waitFor(() => {
       expect(container.querySelector('.mcp-empty')).not.toBeNull()
     })
     const page = container.querySelector('.mcp-page')
-    expect(page?.classList.contains('feedback-page')).toBe(true)
+    expect(page?.classList.contains('detail-page')).toBe(true)
   })
 
-  it('uses feedback-header CSS class for header', async () => {
+  it('uses detail-header CSS class for header', async () => {
     const { container } = renderPage()
     await waitFor(() => {
       expect(container.querySelector('.mcp-empty')).not.toBeNull()
     })
     const header = container.querySelector('.mcp-header')
-    expect(header?.classList.contains('feedback-header')).toBe(true)
+    expect(header?.classList.contains('detail-header')).toBe(true)
   })
 
-  it('uses feedback-back-btn class for back button', async () => {
+  it('uses detail-back-btn class for back button', async () => {
     const { container } = renderPage()
     await waitFor(() => {
       expect(container.querySelector('.mcp-empty')).not.toBeNull()
     })
     const backBtn = container.querySelector('.mcp-back-btn')
-    expect(backBtn?.classList.contains('feedback-back-btn')).toBe(true)
+    expect(backBtn?.classList.contains('detail-back-btn')).toBe(true)
   })
 
   it('renders title as h2 to match feedback page', async () => {

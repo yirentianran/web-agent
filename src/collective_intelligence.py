@@ -7,7 +7,6 @@ import logging
 from pathlib import Path
 
 from src.evolution_log import EvolutionLogStore
-from src.pattern_learner import PatternLearner
 from src.semantic_search import SemanticSearch
 from src.wiki_generator import WikiGenerator
 
@@ -26,7 +25,6 @@ class CollectiveIntelligenceEngine:
         self.data_root = data_root
         self.wiki_generator = WikiGenerator(db)
         self.semantic_search = SemanticSearch(db)
-        self.pattern_learner = PatternLearner(db)
         self._skill_manager = SkillManager(db)
         self._evo_log_store = EvolutionLogStore(db)
 

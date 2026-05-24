@@ -3,14 +3,13 @@ import { useTranslation } from 'react-i18next'
 
 interface SettingsMenuProps {
   onOpenSkills: () => void
-  onOpenFeedback: () => void
   onOpenEvolution: () => void
   onOpenMCP: () => void
   onOpenDashboard: () => void
   userRole: string
 }
 
-export default function SettingsMenu({ onOpenSkills, onOpenFeedback, onOpenEvolution, onOpenMCP, onOpenDashboard, userRole }: SettingsMenuProps) {
+export default function SettingsMenu({ onOpenSkills, onOpenEvolution, onOpenMCP, onOpenDashboard, userRole }: SettingsMenuProps) {
   const { t } = useTranslation()
   const [open, setOpen] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
@@ -57,12 +56,6 @@ export default function SettingsMenu({ onOpenSkills, onOpenFeedback, onOpenEvolu
             <button className="settings-menu-item" role="menuitem" onClick={() => handleAction(onOpenMCP)} type="button">
               <span className="settings-menu-item-icon">⚡</span>
               {t('header.mcpServers')}
-            </button>
-          )}
-          {isAdmin && (
-            <button className="settings-menu-item" role="menuitem" onClick={() => handleAction(onOpenFeedback)} type="button">
-              <span className="settings-menu-item-icon">💬</span>
-              {t('header.feedbackManagement')}
             </button>
           )}
           {isAdmin && (
