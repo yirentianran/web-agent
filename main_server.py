@@ -6338,6 +6338,90 @@ async def _cleanup_loop() -> None:
                 logger.exception("Skill registration scan failed")
 
 
+# ── User Management ──────────────────────────────────────────────
+
+_ALLOWED_USER_SORT_COLUMNS = frozenset(
+    {"user_id", "role", "status", "created_at", "last_active_at"}
+)
+
+
+@app.get("/api/admin/users")
+async def admin_list_users(
+    q: str = "",
+    role: str = "",
+    status: str = "",
+    sort: str = "created_at",
+    order: str = "desc",
+    page: int = 1,
+    page_size: int = 20,
+    current_user: str = Depends(require_admin),
+):
+    if sort not in _ALLOWED_USER_SORT_COLUMNS:
+        raise HTTPException(400, f"Invalid sort column: {sort}")
+    if order not in ("asc", "desc"):
+        raise HTTPException(400, "order must be 'asc' or 'desc'")
+
+    conditions: list[str] = []
+    params: list[str | int] = []
+
+    if q:
+        conditions.append("u.user_id LIKE ?")
+        params.append(f"%{q}%")
+    if role:
+        conditions.append("u.role = ?")
+        params.append(role)
+    if status:
+        conditions.append("u.status = ?")
+        params.append(status)
+
+    where_clause = ("WHERE " + " AND ".join(conditions)) if conditions else ""
+    params.extend([page_size, (page - 1) * page_size])
+
+    async with _db.connection() as conn:
+        cursor = await conn.execute(
+            f"SELECT COUNT(*) FROM users u {where_clause}",
+            params[:-2] if conditions else [],
+        )
+        count_row = await cursor.fetchone()
+        total = count_row[0] if count_row else 0
+
+        cursor = await conn.execute(
+            f"""
+            SELECT u.user_id, u.role, u.status, u.created_at, u.last_active_at,
+                   u.disabled_at, u.disabled_by,
+                   COALESCE((SELECT COUNT(*) FROM sessions WHERE user_id = u.user_id), 0) AS session_count,
+                   COALESCE((SELECT SUM(input_tokens + output_tokens + cache_read_tokens + cache_write_tokens)
+                    FROM messages WHERE user_id = u.user_id), 0) AS total_tokens
+            FROM users u
+            {where_clause}
+            ORDER BY u.{sort} {order}
+            LIMIT ? OFFSET ?
+            """,
+            params,
+        )
+        rows = await cursor.fetchall()
+
+    items = [
+        {
+            "user_id": r[0],
+            "role": r[1],
+            "status": r[2],
+            "created_at": r[3],
+            "last_active_at": r[4],
+            "disabled_at": r[5],
+            "disabled_by": r[6],
+            "session_count": r[7],
+            "total_tokens": r[8],
+        }
+        for r in rows
+    ]
+
+    return {
+        "success": True,
+        "data": {"items": items, "total": total, "page": page, "page_size": page_size},
+    }
+
+
 # ── Static Files (Production) ───────────────────────────────────
 
 
