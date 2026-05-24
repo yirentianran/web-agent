@@ -59,6 +59,11 @@ async def _patch_data_root_and_db(tmp_path: Path) -> None:
                VALUES (?, ?, ?, 1735056000, 1735142400)""",
             ["disabled_user", "user", "disabled"],
         )
+        await conn.execute(
+            """INSERT INTO users (user_id, role, status, created_at, last_active_at)
+               VALUES (?, ?, ?, 1735056000, 1735056000)""",
+            ["testuser", "user", "active"],
+        )
 
     yield
 
@@ -116,3 +121,50 @@ def test_list_users_sort_by_last_active(client: TestClient):
 def test_list_users_rejects_invalid_sort_column(client: TestClient):
     resp = client.get("/api/admin/users?sort=password_hash&order=asc")
     assert resp.status_code == 400
+
+
+def test_disable_user_sets_status(client: TestClient):
+    resp = client.post("/api/admin/users/testuser/disable")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["success"] is True
+    assert body["data"]["status"] == "disabled"
+    assert body["data"]["disabled_by"] is not None
+    assert body["data"]["disabled_at"] is not None
+
+
+def test_disable_user_already_disabled_returns_409(client: TestClient):
+    # first disable, then second call on already-disabled user
+    client.post("/api/admin/users/testuser/disable")
+    resp = client.post("/api/admin/users/testuser/disable")
+    assert resp.status_code == 409
+
+
+def test_disable_self_returns_403(client: TestClient):
+    resp = client.post("/api/admin/users/default/disable")
+    assert resp.status_code == 403
+
+
+def test_enable_user_clears_disabled_fields(client: TestClient):
+    # first disable, then enable
+    client.post("/api/admin/users/testuser/disable")
+    resp = client.post("/api/admin/users/testuser/enable")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["data"]["status"] == "active"
+    assert body["data"]["disabled_at"] is None
+    assert body["data"]["disabled_by"] is None
+
+
+def test_enable_user_already_active_returns_409(client: TestClient):
+    resp = client.post("/api/admin/users/testuser/enable")
+    assert resp.status_code == 409
+
+
+def test_non_admin_rejected(client: TestClient):
+    src.admin_auth.ENFORCE_AUTH = True
+    try:
+        resp = client.get("/api/admin/users")
+        assert resp.status_code in (401, 403)
+    finally:
+        src.admin_auth.ENFORCE_AUTH = False

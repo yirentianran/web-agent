@@ -6345,6 +6345,19 @@ _ALLOWED_USER_SORT_COLUMNS = frozenset(
 )
 
 
+def _row_to_user_dict(row) -> dict:
+    """Convert a users table row to a dict with named keys."""
+    return {
+        "user_id": row[0],
+        "role": row[1],
+        "status": row[2],
+        "created_at": row[3],
+        "last_active_at": row[4],
+        "disabled_at": row[5] if len(row) > 5 else None,
+        "disabled_by": row[6] if len(row) > 6 else None,
+    }
+
+
 @app.get("/api/admin/users")
 async def admin_list_users(
     q: str = "",
@@ -6419,6 +6432,74 @@ async def admin_list_users(
     return {
         "success": True,
         "data": {"items": items, "total": total, "page": page, "page_size": page_size},
+    }
+
+
+@app.post("/api/admin/users/{user_id}/disable")
+async def admin_disable_user(
+    user_id: str,
+    current_user: str = Depends(require_admin),
+):
+    if user_id == current_user:
+        raise HTTPException(403, "Cannot disable your own account")
+
+    async with _db.connection() as conn:
+        cursor = await conn.execute(
+            "SELECT status FROM users WHERE user_id = ?", (user_id,)
+        )
+        row = await cursor.fetchone()
+        if row is None:
+            raise HTTPException(404, "User not found")
+        if row[0] == "disabled":
+            raise HTTPException(409, "User is already disabled")
+
+        now = time.time()
+        await conn.execute(
+            "UPDATE users SET status = 'disabled', disabled_at = ?, disabled_by = ? WHERE user_id = ?",
+            (now, current_user, user_id),
+        )
+
+        cursor = await conn.execute(
+            "SELECT user_id, role, status, created_at, last_active_at, disabled_at, disabled_by FROM users WHERE user_id = ?",
+            (user_id,),
+        )
+        updated = await cursor.fetchone()
+
+    return {
+        "success": True,
+        "data": _row_to_user_dict(updated),
+    }
+
+
+@app.post("/api/admin/users/{user_id}/enable")
+async def admin_enable_user(
+    user_id: str,
+    current_user: str = Depends(require_admin),
+):
+    async with _db.connection() as conn:
+        cursor = await conn.execute(
+            "SELECT status FROM users WHERE user_id = ?", (user_id,)
+        )
+        row = await cursor.fetchone()
+        if row is None:
+            raise HTTPException(404, "User not found")
+        if row[0] == "active":
+            raise HTTPException(409, "User is already active")
+
+        await conn.execute(
+            "UPDATE users SET status = 'active', disabled_at = NULL, disabled_by = NULL WHERE user_id = ?",
+            (user_id,),
+        )
+
+        cursor = await conn.execute(
+            "SELECT user_id, role, status, created_at, last_active_at, disabled_at, disabled_by FROM users WHERE user_id = ?",
+            (user_id,),
+        )
+        updated = await cursor.fetchone()
+
+    return {
+        "success": True,
+        "data": _row_to_user_dict(updated),
     }
 
 
