@@ -161,6 +161,47 @@ def test_enable_user_already_active_returns_409(client: TestClient):
     assert resp.status_code == 409
 
 
+def test_promote_user_to_admin(client: TestClient):
+    # first ensure user is active
+    client.post("/api/admin/users/testuser/enable")
+    resp = client.post("/api/admin/users/testuser/promote")
+    assert resp.status_code == 200
+    assert resp.json()["data"]["role"] == "admin"
+
+
+def test_promote_already_admin_returns_409(client: TestClient):
+    # first promote, then second call on already-admin user
+    client.post("/api/admin/users/testuser/promote")
+    resp = client.post("/api/admin/users/testuser/promote")
+    assert resp.status_code == 409
+
+
+def test_promote_disabled_user_returns_409(client: TestClient):
+    client.post("/api/admin/users/testuser/disable")
+    resp = client.post("/api/admin/users/testuser/promote")
+    assert resp.status_code == 409
+    # clean up
+    client.post("/api/admin/users/testuser/enable")
+
+
+def test_demote_user_from_admin(client: TestClient):
+    # first promote to admin, then demote
+    client.post("/api/admin/users/testuser/promote")
+    resp = client.post("/api/admin/users/testuser/demote")
+    assert resp.status_code == 200
+    assert resp.json()["data"]["role"] == "user"
+
+
+def test_demote_non_admin_returns_409(client: TestClient):
+    resp = client.post("/api/admin/users/testuser/demote")
+    assert resp.status_code == 409
+
+
+def test_demote_self_returns_403(client: TestClient):
+    resp = client.post("/api/admin/users/default/demote")
+    assert resp.status_code == 403
+
+
 def test_non_admin_rejected(client: TestClient):
     src.admin_auth.ENFORCE_AUTH = True
     try:

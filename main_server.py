@@ -6503,6 +6503,73 @@ async def admin_enable_user(
     }
 
 
+@app.post("/api/admin/users/{user_id}/promote")
+async def admin_promote_user(
+    user_id: str,
+    current_user: str = Depends(require_admin),
+):
+    async with _db.connection() as conn:
+        cursor = await conn.execute(
+            "SELECT role, status FROM users WHERE user_id = ?", (user_id,)
+        )
+        row = await cursor.fetchone()
+        if row is None:
+            raise HTTPException(404, "User not found")
+        if row[0] == "admin":
+            raise HTTPException(409, "User is already an admin")
+        if row[1] == "disabled":
+            raise HTTPException(409, "Cannot promote a disabled user")
+
+        await conn.execute(
+            "UPDATE users SET role = 'admin' WHERE user_id = ?", (user_id,)
+        )
+
+        cursor = await conn.execute(
+            "SELECT user_id, role, status, created_at, last_active_at, disabled_at, disabled_by FROM users WHERE user_id = ?",
+            (user_id,),
+        )
+        updated = await cursor.fetchone()
+
+    return {
+        "success": True,
+        "data": _row_to_user_dict(updated),
+    }
+
+
+@app.post("/api/admin/users/{user_id}/demote")
+async def admin_demote_user(
+    user_id: str,
+    current_user: str = Depends(require_admin),
+):
+    if user_id == current_user:
+        raise HTTPException(403, "Cannot demote your own account")
+
+    async with _db.connection() as conn:
+        cursor = await conn.execute(
+            "SELECT role FROM users WHERE user_id = ?", (user_id,)
+        )
+        row = await cursor.fetchone()
+        if row is None:
+            raise HTTPException(404, "User not found")
+        if row[0] != "admin":
+            raise HTTPException(409, "User is not an admin")
+
+        await conn.execute(
+            "UPDATE users SET role = 'user' WHERE user_id = ?", (user_id,)
+        )
+
+        cursor = await conn.execute(
+            "SELECT user_id, role, status, created_at, last_active_at, disabled_at, disabled_by FROM users WHERE user_id = ?",
+            (user_id,),
+        )
+        updated = await cursor.fetchone()
+
+    return {
+        "success": True,
+        "data": _row_to_user_dict(updated),
+    }
+
+
 # ── Static Files (Production) ───────────────────────────────────
 
 
