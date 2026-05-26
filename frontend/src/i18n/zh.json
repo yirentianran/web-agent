@@ -342,7 +342,7 @@
     "weekAutoApplied": "本周自动应用",
     "evolutionsTab": "进化",
     "instinctsTab": "本能",
-    "observationsTab": "事件",
+    "observationsTab": "观测",
     "observations": "观测",
     "instincts": "本能",
     "evolutionsStage": "进化",
@@ -389,6 +389,9 @@
     "compositeScore": "综合分数",
     "daysActive": "活跃天数",
     "inputSummary": "输入摘要",
-    "outputSummary": "输出/状态"
+    "outputSummary": "输出/状态",
+    "obsDetail": "观测详情",
+    "duration": "耗时",
+    "errorMessage": "错误信息"
   }
 }

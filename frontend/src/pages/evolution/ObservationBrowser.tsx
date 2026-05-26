@@ -14,14 +14,87 @@ const EVENT_TYPES = [
   'user_retry', 'user_interrupt', 'session_complete', 'session_error',
 ];
 
+function ObsDetail({ item, onBack }: { item: ObservationItem; onBack: () => void }) {
+  const { t } = useTranslation();
+
+  return (
+    <div className="obs-detail">
+      <button className="evolution-back-btn skills-back-btn detail-back-btn" onClick={onBack} type="button">
+        {t('evolutionMonitor.backToOverview')}
+      </button>
+
+      <h3 className="obs-detail-title">{t('evolutionMonitor.obsDetail')} #{item.id}</h3>
+
+      <div className="obs-detail-grid">
+        <div className="obs-detail-field">
+          <span className="obs-detail-label">{t('evolutionMonitor.session')}</span>
+          <span className="obs-detail-value">{item.session_id}</span>
+        </div>
+        <div className="obs-detail-field">
+          <span className="obs-detail-label">{t('evolutionMonitor.type')}</span>
+          <span className="evo-badge">{item.event_type}</span>
+        </div>
+        <div className="obs-detail-field">
+          <span className="obs-detail-label">{t('evolutionMonitor.tool')}</span>
+          <span className="obs-detail-value">{item.tool_name || '—'}</span>
+        </div>
+        <div className="obs-detail-field">
+          <span className="obs-detail-label">{t('evolutionMonitor.success')}</span>
+          <span className="obs-detail-value">
+            {item.success === null ? '—' : item.success ? '✓' : '✗'}
+          </span>
+        </div>
+        <div className="obs-detail-field">
+          <span className="obs-detail-label">{t('evolutionMonitor.duration')}</span>
+          <span className="obs-detail-value">{item.duration_ms}ms</span>
+        </div>
+        <div className="obs-detail-field">
+          <span className="obs-detail-label">{t('evolutionMonitor.time')}</span>
+          <span className="obs-detail-value">
+            {new Date(item.created_at * 1000).toLocaleString()}
+          </span>
+        </div>
+      </div>
+
+      <div className="obs-detail-block">
+        <h4>{t('evolutionMonitor.inputSummary')}</h4>
+        <pre className="obs-detail-pre">
+          {item.tool_input_summary || '—'}
+        </pre>
+      </div>
+
+      <div className="obs-detail-block">
+        <h4>{t('evolutionMonitor.outputSummary')}</h4>
+        <pre className="obs-detail-pre">
+          {item.tool_output_summary
+            ? item.tool_output_summary
+            : item.success === null ? '—' : item.success ? 'OK' : item.error_message || 'Error'}
+        </pre>
+      </div>
+
+      {item.error_message && (
+        <div className="obs-detail-block">
+          <h4>{t('evolutionMonitor.errorMessage')}</h4>
+          <pre className="obs-detail-pre obs-detail-error">{item.error_message}</pre>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export const ObservationBrowser: React.FC<Props> = ({ data, loading, error, onFilterChange }) => {
   const { t } = useTranslation();
   const [sessionId, setSessionId] = useState('');
   const [eventType, setEventType] = useState('');
+  const [selectedObs, setSelectedObs] = useState<ObservationItem | null>(null);
 
   const handleFilter = () => onFilterChange(
     { session_id: sessionId || undefined, event_type: eventType || undefined }
   );
+
+  if (selectedObs) {
+    return <ObsDetail item={selectedObs} onBack={() => setSelectedObs(null)} />;
+  }
 
   return (
     <div>
@@ -60,7 +133,11 @@ export const ObservationBrowser: React.FC<Props> = ({ data, loading, error, onFi
             </thead>
             <tbody>
               {data.items.map((obs) => (
-                <tr key={obs.id} className="evo-row">
+                <tr
+                  key={obs.id}
+                  className="evo-row"
+                  onClick={() => setSelectedObs(obs)}
+                >
                   <td>{obs.id}</td>
                   <td>{obs.session_id.substring(0, 12)}...</td>
                   <td><span className="evo-badge">{obs.event_type}</span></td>

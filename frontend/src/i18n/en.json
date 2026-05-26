@@ -276,7 +276,7 @@
     "weekAutoApplied": "This Week Auto-Applied",
     "evolutionsTab": "Evolutions",
     "instinctsTab": "Instincts",
-    "observationsTab": "Events",
+    "observationsTab": "Observations",
     "observations": "Observations",
     "instincts": "Instincts",
     "evolutionsStage": "Evolutions",
@@ -323,7 +323,10 @@
     "compositeScore": "Score",
     "daysActive": "Active",
     "inputSummary": "Input",
-    "outputSummary": "Output"
+    "outputSummary": "Output",
+    "obsDetail": "Observation Detail",
+    "duration": "Duration",
+    "errorMessage": "Error Message"
   },
   "dashboard": {
     "title": "Usage Dashboard",
