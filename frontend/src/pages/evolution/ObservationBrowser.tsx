@@ -15,32 +15,52 @@ const EVENT_TYPES = [
   'user_retry', 'user_interrupt', 'session_complete', 'session_error',
 ];
 
+const ROLE_LABELS: Record<string, string> = {
+  user: 'User',
+  assistant: 'Assistant',
+};
+
+function getRoleLabel(msg: SessionMessage): string {
+  if (ROLE_LABELS[msg.type]) return ROLE_LABELS[msg.type];
+  if (msg.subtype === 'tool_use') return 'Tool Use';
+  if (msg.subtype === 'tool_result') return 'Tool Result';
+  if (msg.type === 'system') return `System: ${msg.subtype || ''}`;
+  return `${msg.type}${msg.subtype ? `: ${msg.subtype}` : ''}`;
+}
+
+function getMessageBody(msg: SessionMessage): string {
+  if (msg.subtype === 'tool_use' && msg.input) {
+    return JSON.stringify(msg.input, null, 2);
+  }
+  if (msg.subtype === 'tool_result' && msg.result_content) {
+    return typeof msg.result_content === 'string'
+      ? msg.result_content
+      : JSON.stringify(msg.result_content, null, 2);
+  }
+  return msg.content || (msg.subtype === 'tool_use' && msg.name ? `Call: ${msg.name}` : '');
+}
+
 function MessageBlock({ msg }: { msg: SessionMessage }) {
-  const roleLabel =
-    msg.type === 'user' ? 'User' :
-    msg.type === 'assistant' ? 'Assistant' :
-    msg.subtype === 'tool_use' ? 'Tool Use' :
-    msg.subtype === 'tool_result' ? 'Tool Result' :
-    msg.type === 'system' ? `System: ${msg.subtype || ''}` :
-    `${msg.type}${msg.subtype ? `: ${msg.subtype}` : ''}`
-
-  const body =
-    msg.subtype === 'tool_use' && msg.input
-      ? JSON.stringify(msg.input, null, 2)
-      : msg.subtype === 'tool_result' && msg.result_content
-        ? typeof msg.result_content === 'string'
-          ? msg.result_content
-          : JSON.stringify(msg.result_content, null, 2)
-        : msg.content || (msg.subtype === 'tool_use' && msg.name ? `Call: ${msg.name}` : '')
-
-  if (!body) return null
+  const body = getMessageBody(msg);
+  if (!body) return null;
 
   return (
     <div className={`obs-msg ${msg.type}`}>
-      <span className="obs-msg-role">{roleLabel}</span>
+      <span className="obs-msg-role">{getRoleLabel(msg)}</span>
       <pre className="obs-msg-body">{body}</pre>
     </div>
-  )
+  );
+}
+
+function truncate(s: string, max: number): string {
+  return s.length > max ? s.substring(0, max) + '...' : s;
+}
+
+function formatObsOutput(obs: ObservationItem): string {
+  if (obs.tool_output_summary) return obs.tool_output_summary;
+  if (obs.success === null) return '—';
+  if (obs.success) return 'OK';
+  return obs.error_message || 'Error';
 }
 
 function ObsDetail({
@@ -112,11 +132,7 @@ function ObsDetail({
 
       <div className="obs-detail-block">
         <h4>{t('evolutionMonitor.outputSummary')}</h4>
-        <pre className="obs-detail-pre">
-          {item.tool_output_summary
-            ? item.tool_output_summary
-            : item.success === null ? '—' : item.success ? 'OK' : item.error_message || 'Error'}
-        </pre>
+        <pre className="obs-detail-pre">{formatObsOutput(item)}</pre>
       </div>
 
       {item.error_message && (
@@ -212,17 +228,13 @@ export const ObservationBrowser: React.FC<Props> = ({ data, loading, error, onFi
                   <td>{obs.tool_name || '—'}</td>
                   <td className="cell-summary" title={obs.tool_input_summary}>
                     {obs.tool_input_summary
-                      ? obs.tool_input_summary.length > 60
-                        ? obs.tool_input_summary.substring(0, 60) + '...'
-                        : obs.tool_input_summary
+                      ? truncate(obs.tool_input_summary, 60)
                       : '—'}
                   </td>
                   <td className="cell-summary" title={obs.tool_output_summary}>
                     {obs.tool_output_summary
-                      ? obs.tool_output_summary.length > 60
-                        ? obs.tool_output_summary.substring(0, 60) + '...'
-                        : obs.tool_output_summary
-                      : obs.success === null ? '—' : obs.success ? 'OK' : obs.error_message || 'Error'}
+                      ? truncate(obs.tool_output_summary, 60)
+                      : formatObsOutput(obs)}
                   </td>
                   <td>{obs.success === null ? '—' : obs.success ? '✓' : '✗'}</td>
                   <td>{new Date(obs.created_at * 1000).toLocaleString()}</td>

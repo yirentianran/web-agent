@@ -5958,27 +5958,38 @@ async def evolution_overview(
     store = EvolutionLogStore(_db)
     result = await store.list_logs(status=status, page=page, page_size=page_size)
 
-    # Add instinct count, composite_score, days_active to each item
+    item_ids = [item["id"] for item in result["items"]]
+    if item_ids:
+        placeholders = ",".join("?" for _ in item_ids)
+        async with _db.connection() as conn:
+            # Batch instinct counts
+            instinct_rows = await conn.execute_fetchall(
+                f"SELECT source_evolution_id, COUNT(*) FROM instincts WHERE source_evolution_id IN ({placeholders}) GROUP BY source_evolution_id",
+                item_ids,
+            )
+            instinct_map = {r[0]: r[1] for r in instinct_rows}
+
+            # Batch latest composite scores via correlated subquery
+            snap_rows = await conn.execute_fetchall(
+                f"""SELECT s.evolution_log_id, s.composite_score
+                    FROM skill_eval_snapshots s
+                    INNER JOIN (
+                        SELECT evolution_log_id, MAX(snapshot_date) AS max_date
+                        FROM skill_eval_snapshots
+                        WHERE evolution_log_id IN ({placeholders})
+                        GROUP BY evolution_log_id
+                    ) latest ON s.evolution_log_id = latest.evolution_log_id
+                    AND s.snapshot_date = latest.max_date""",
+                item_ids,
+            )
+            snap_map = {r[0]: r[1] for r in snap_rows if r[1] is not None}
+
     import time as _time
     now = _time.time()
     for item in result["items"]:
-        async with _db.connection() as conn:
-            cursor = await conn.execute(
-                "SELECT COUNT(*) FROM instincts WHERE source_evolution_id = ?",
-                (item["id"],),
-            )
-            row = await cursor.fetchone()
-            item["instinct_count"] = row[0] if row else 0
-
-            # Latest snapshot composite score
-            snap_cursor = await conn.execute(
-                """SELECT composite_score FROM skill_eval_snapshots
-                   WHERE evolution_log_id = ? ORDER BY snapshot_date DESC LIMIT 1""",
-                (item["id"],),
-            )
-            snap_row = await snap_cursor.fetchone()
-            item["composite_score"] = round(snap_row[0], 4) if snap_row and snap_row[0] is not None else None
-
+        item["instinct_count"] = instinct_map.get(item["id"], 0) if item_ids else 0
+        score = snap_map.get(item["id"]) if item_ids else None
+        item["composite_score"] = round(score, 4) if score is not None else None
         item["days_active"] = max(1, int((now - item["created_at"]) / 86400))
 
     return result

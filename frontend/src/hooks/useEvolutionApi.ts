@@ -302,18 +302,22 @@ export function useEvolutionApi(statusFilter?: string, page: number = 1) {
     setRefreshKey((k) => k + 1)
   }, [])
 
-  return {
-    overview,
-    stats,
-    instincts,
-    observations,
-    fetchDetail,
-    fetchDiff,
-    review,
-    fetchStats,
-    fetchInstincts,
-    fetchObservations,
-    fetchSessionMessages,
-    refetch,
-  }
+  return useMemo(
+    () => ({
+      overview,
+      stats,
+      instincts,
+      observations,
+      fetchDetail,
+      fetchDiff,
+      review,
+      fetchStats,
+      fetchInstincts,
+      fetchObservations,
+      fetchSessionMessages,
+      refetch,
+    }),
+    [overview, stats, instincts, observations, fetchDetail, fetchDiff, review,
+     fetchStats, fetchInstincts, fetchObservations, fetchSessionMessages, refetch],
+  )
 }
