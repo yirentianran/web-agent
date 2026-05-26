@@ -326,7 +326,9 @@
     "outputSummary": "Output",
     "obsDetail": "Observation Detail",
     "duration": "Duration",
-    "errorMessage": "Error Message"
+    "errorMessage": "Error Message",
+    "sessionMessages": "Session Messages",
+    "noMessages": "No messages in this session"
   },
   "dashboard": {
     "title": "Usage Dashboard",

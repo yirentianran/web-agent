@@ -75,6 +75,17 @@ export interface ObservationItem {
   created_at: number
 }
 
+export interface SessionMessage {
+  type: string
+  seq: number
+  subtype?: string
+  name?: string
+  content?: string
+  input?: Record<string, unknown>
+  result_content?: string
+  tool_use_id?: string
+}
+
 export interface EvolutionStats {
   today_events: number
   active_instincts: number
@@ -123,6 +134,7 @@ export interface EvolutionApi {
   fetchStats: (days?: number) => Promise<void>
   fetchInstincts: (params?: { domain?: string; scope?: string; page?: number }) => Promise<void>
   fetchObservations: (params?: { session_id?: string; event_type?: string; page?: number }) => Promise<void>
+  fetchSessionMessages: (sessionId: string) => Promise<SessionMessage[]>
   refetch: () => void
 }
 
@@ -276,6 +288,15 @@ export function useEvolutionApi(statusFilter?: string, page: number = 1) {
     [authToken],
   )
 
+  const fetchSessionMessages = useCallback(
+    (sessionId: string): Promise<SessionMessage[]> =>
+      fetchJson<SessionMessage[]>(
+        `/api/admin/sessions/${sessionId}/messages`,
+        authToken,
+      ),
+    [authToken],
+  )
+
   const refetch = useCallback(() => {
     setRefreshKey((k) => k + 1)
   }, [])
@@ -291,6 +312,7 @@ export function useEvolutionApi(statusFilter?: string, page: number = 1) {
     fetchStats,
     fetchInstincts,
     fetchObservations,
+    fetchSessionMessages,
     refetch,
   }
 }

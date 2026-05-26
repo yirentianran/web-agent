@@ -164,6 +164,7 @@ export default function EvolutionPage() {
           loading={api.observations.loading}
           error={api.observations.error}
           onFilterChange={handleObsFilter}
+          fetchSessionMessages={api.fetchSessionMessages}
         />
       )}
     </div>

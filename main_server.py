@@ -6240,6 +6240,18 @@ async def list_observations(
     )
 
 
+@app.get("/api/admin/sessions/{session_id}/messages")
+async def admin_session_messages(
+    session_id: str,
+    limit: int = 50,
+    current_user: str = Depends(require_admin),
+):
+    """Get session messages for admin review (no user-scope check)."""
+    if session_store is None:
+        raise HTTPException(503, "Session store not available")
+    return await session_store.get_messages_for_session(session_id, limit=limit)
+
+
 # ── Health ───────────────────────────────────────────────────────
 
 

@@ -531,3 +531,40 @@
   background: #fef2f2;
   color: #991b1b;
 }
+
+/* Session messages in observation detail */
+.obs-msg {
+  margin-bottom: 8px;
+  border-left: 3px solid var(--border-color, #e2e8f0);
+  padding-left: 10px;
+}
+
+.obs-msg.user {
+  border-left-color: #3b82f6;
+}
+
+.obs-msg.assistant {
+  border-left-color: #22c55e;
+}
+
+.obs-msg-role {
+  display: block;
+  font-size: 0.7rem;
+  color: #6b7280;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: 4px;
+}
+
+.obs-msg-body {
+  margin: 0;
+  font-size: 0.8rem;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: transparent;
+  border: none;
+  padding: 0;
+  max-height: 300px;
+  overflow-y: auto;
+}

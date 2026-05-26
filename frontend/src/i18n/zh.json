@@ -392,6 +392,8 @@
     "outputSummary": "输出/状态",
     "obsDetail": "观测详情",
     "duration": "耗时",
-    "errorMessage": "错误信息"
+    "errorMessage": "错误信息",
+    "sessionMessages": "会话消息",
+    "noMessages": "该会话暂无消息"
   }
 }

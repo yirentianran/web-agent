@@ -165,6 +165,41 @@ class SessionStore:
             result.append(msg)
         return result
 
+    async def get_messages_for_session(
+        self, session_id: str, limit: int = 50
+    ) -> list[dict[str, Any]]:
+        """Get recent messages for a session without user verification (admin use)."""
+        async with self.db.connection() as conn:
+            cursor = await conn.execute(
+                """SELECT m.type, m.subtype, m.name, m.content, m.payload, m.usage, m.seq
+                   FROM messages m
+                   WHERE m.session_id = ?
+                   ORDER BY m.seq DESC
+                   LIMIT ?""",
+                (session_id, limit),
+            )
+            rows = await cursor.fetchall()
+
+        result: list[dict[str, Any]] = []
+        for row in reversed(rows):
+            msg: dict[str, Any] = {"type": row[0], "seq": row[6]}
+            if row[1] is not None:
+                msg["subtype"] = row[1]
+            if row[2] is not None:
+                msg["name"] = row[2]
+            if row[3] is not None:
+                msg["content"] = row[3]
+            if row[4] is not None:
+                parsed = json.loads(row[4])
+                if msg.get("type") == "tool_use" and "input" in parsed:
+                    msg["input"] = parsed["input"]
+                if msg.get("type") == "tool_result" and "tool_use_id" in parsed:
+                    msg["tool_use_id"] = parsed["tool_use_id"]
+                if msg.get("type") == "tool_result" and "content" in parsed:
+                    msg["result_content"] = parsed["content"]
+            result.append(msg)
+        return result
+
     async def has_session_history(
         self, user_id: str, session_id: str
     ) -> bool:

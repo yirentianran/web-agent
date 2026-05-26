@@ -1,12 +1,13 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
-import type { ObservationItem } from '../../hooks/useEvolutionApi';
+import type { ObservationItem, SessionMessage } from '../../hooks/useEvolutionApi';
 
 interface Props {
   data: { items: ObservationItem[]; total: number; page: number } | null;
   loading: boolean;
   error: string | null;
   onFilterChange: (filters: { session_id?: string; event_type?: string }) => void;
+  fetchSessionMessages: (sessionId: string) => Promise<SessionMessage[]>;
 }
 
 const EVENT_TYPES = [
@@ -14,8 +15,54 @@ const EVENT_TYPES = [
   'user_retry', 'user_interrupt', 'session_complete', 'session_error',
 ];
 
-function ObsDetail({ item, onBack }: { item: ObservationItem; onBack: () => void }) {
+function MessageBlock({ msg }: { msg: SessionMessage }) {
+  const roleLabel =
+    msg.type === 'user' ? 'User' :
+    msg.type === 'assistant' ? 'Assistant' :
+    msg.subtype === 'tool_use' ? 'Tool Use' :
+    msg.subtype === 'tool_result' ? 'Tool Result' :
+    msg.type === 'system' ? `System: ${msg.subtype || ''}` :
+    `${msg.type}${msg.subtype ? `: ${msg.subtype}` : ''}`
+
+  const body =
+    msg.subtype === 'tool_use' && msg.input
+      ? JSON.stringify(msg.input, null, 2)
+      : msg.subtype === 'tool_result' && msg.result_content
+        ? typeof msg.result_content === 'string'
+          ? msg.result_content
+          : JSON.stringify(msg.result_content, null, 2)
+        : msg.content || (msg.subtype === 'tool_use' && msg.name ? `Call: ${msg.name}` : '')
+
+  if (!body) return null
+
+  return (
+    <div className={`obs-msg ${msg.type}`}>
+      <span className="obs-msg-role">{roleLabel}</span>
+      <pre className="obs-msg-body">{body}</pre>
+    </div>
+  )
+}
+
+function ObsDetail({
+  item,
+  onBack,
+  fetchSessionMessages,
+}: {
+  item: ObservationItem
+  onBack: () => void
+  fetchSessionMessages: (sessionId: string) => Promise<SessionMessage[]>
+}) {
   const { t } = useTranslation();
+  const [messages, setMessages] = useState<SessionMessage[]>([])
+  const [msgsLoading, setMsgsLoading] = useState(false)
+
+  useEffect(() => {
+    setMsgsLoading(true)
+    fetchSessionMessages(item.session_id)
+      .then(setMessages)
+      .catch(() => setMessages([]))
+      .finally(() => setMsgsLoading(false))
+  }, [item.session_id, fetchSessionMessages])
 
   return (
     <div className="obs-detail">
@@ -78,11 +125,22 @@ function ObsDetail({ item, onBack }: { item: ObservationItem; onBack: () => void
           <pre className="obs-detail-pre obs-detail-error">{item.error_message}</pre>
         </div>
       )}
+
+      <div className="obs-detail-block">
+        <h4>{t('evolutionMonitor.sessionMessages')} ({messages.length})</h4>
+        {msgsLoading && <div className="evo-loading">{t('common.loading')}</div>}
+        {!msgsLoading && messages.length === 0 && (
+          <div className="evo-empty" style={{ padding: '1rem' }}>{t('evolutionMonitor.noMessages')}</div>
+        )}
+        {messages.map((msg, i) => (
+          <MessageBlock key={i} msg={msg} />
+        ))}
+      </div>
     </div>
   );
 }
 
-export const ObservationBrowser: React.FC<Props> = ({ data, loading, error, onFilterChange }) => {
+export const ObservationBrowser: React.FC<Props> = ({ data, loading, error, onFilterChange, fetchSessionMessages }) => {
   const { t } = useTranslation();
   const [sessionId, setSessionId] = useState('');
   const [eventType, setEventType] = useState('');
@@ -93,7 +151,7 @@ export const ObservationBrowser: React.FC<Props> = ({ data, loading, error, onFi
   );
 
   if (selectedObs) {
-    return <ObsDetail item={selectedObs} onBack={() => setSelectedObs(null)} />;
+    return <ObsDetail item={selectedObs} onBack={() => setSelectedObs(null)} fetchSessionMessages={fetchSessionMessages} />;
   }
 
   return (
