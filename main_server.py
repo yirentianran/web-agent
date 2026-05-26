@@ -5958,7 +5958,9 @@ async def evolution_overview(
     store = EvolutionLogStore(_db)
     result = await store.list_logs(status=status, page=page, page_size=page_size)
 
-    # Add instinct count to each item
+    # Add instinct count, composite_score, days_active to each item
+    import time as _time
+    now = _time.time()
     for item in result["items"]:
         async with _db.connection() as conn:
             cursor = await conn.execute(
@@ -5968,18 +5970,30 @@ async def evolution_overview(
             row = await cursor.fetchone()
             item["instinct_count"] = row[0] if row else 0
 
+            # Latest snapshot composite score
+            snap_cursor = await conn.execute(
+                """SELECT composite_score FROM skill_eval_snapshots
+                   WHERE evolution_log_id = ? ORDER BY snapshot_date DESC LIMIT 1""",
+                (item["id"],),
+            )
+            snap_row = await snap_cursor.fetchone()
+            item["composite_score"] = round(snap_row[0], 4) if snap_row and snap_row[0] is not None else None
+
+        item["days_active"] = max(1, int((now - item["created_at"]) / 86400))
+
     return result
 
 
 @app.get("/api/admin/evolution/stats")
 async def evolution_stats(
+    days: int = 0,
     current_user: str = Depends(require_admin),
 ):
     """Dashboard stats for the instinct evolution panel."""
     from src.evolution_log import EvolutionLogStore
 
     store = EvolutionLogStore(_db)
-    return await store.get_overview_stats()
+    return await store.get_overview_stats(days=days)
 
 
 @app.get("/api/admin/evolution/{evolution_id}")
@@ -5988,56 +6002,58 @@ async def evolution_detail(
     current_user: str = Depends(require_admin),
 ):
     """Get evolution detail with snapshots and signal breakdown."""
+    import json as _json
     from src.evolution_log import EvolutionLogStore
 
-    DEFAULT_BASELINE_RATING = 4.0
-    DEFAULT_BASELINE_DAILY_USAGE = 10
-    DEFAULT_BASELINE_SUCCESS_RATE = 0.80
-
     store = EvolutionLogStore(_db)
-    log = await store.get_log(evolution_id)
-    if not log:
+    log_with_instincts = await store.get_log_with_instincts(evolution_id)
+    if not log_with_instincts:
         raise HTTPException(404, "Evolution record not found")
 
     snaps = await store.get_snapshots(evolution_id)
 
-    # Build signal breakdown from most recent snapshot
-    if snaps and log.get("baseline_composite"):
+    # Parse stored baseline metrics
+    stored_baseline: dict = {}
+    if log_with_instincts.get("baseline_metrics"):
+        try:
+            stored_baseline = _json.loads(log_with_instincts["baseline_metrics"])
+        except (_json.JSONDecodeError, TypeError):
+            pass
+
+    baseline_rating = stored_baseline.get("avg_rating", 4.0)
+    baseline_usage = stored_baseline.get("daily_usage", 10)
+    baseline_success = stored_baseline.get("session_success_rate", 0.80)
+
+    if snaps and log_with_instincts.get("baseline_composite"):
         current_snap = snaps[-1]
         signal_breakdown = {
             "rating": {
-                "current": current_snap["avg_rating"],
-                "baseline": DEFAULT_BASELINE_RATING,
+                "current": current_snap.get("avg_rating", 0),
+                "baseline": baseline_rating,
                 "delta_pct": round(
-                    (current_snap["avg_rating"] - DEFAULT_BASELINE_RATING) / DEFAULT_BASELINE_RATING * 100, 1
-                )
-                if current_snap["avg_rating"]
-                else 0,
+                    (current_snap.get("avg_rating", 0) - baseline_rating) / baseline_rating * 100, 1
+                ) if baseline_rating and current_snap.get("avg_rating") else 0,
             },
             "usage": {
-                "current": current_snap["usage_count"],
-                "baseline": DEFAULT_BASELINE_DAILY_USAGE,
+                "current": current_snap.get("usage_count", 0),
+                "baseline": baseline_usage,
                 "delta_pct": round(
-                    (current_snap["usage_count"] - DEFAULT_BASELINE_DAILY_USAGE) / DEFAULT_BASELINE_DAILY_USAGE * 100, 1
-                )
-                if current_snap["usage_count"]
-                else 0,
+                    (current_snap.get("usage_count", 0) - baseline_usage) / baseline_usage * 100, 1
+                ) if baseline_usage and current_snap.get("usage_count") else 0,
             },
             "session_success": {
-                "current": current_snap["session_success_rate"],
-                "baseline": DEFAULT_BASELINE_SUCCESS_RATE,
+                "current": current_snap.get("session_success_rate", 0),
+                "baseline": baseline_success,
                 "delta_pct": round(
-                    (current_snap["session_success_rate"] - DEFAULT_BASELINE_SUCCESS_RATE) / DEFAULT_BASELINE_SUCCESS_RATE * 100, 1
-                )
-                if current_snap["session_success_rate"]
-                else 0,
+                    (current_snap.get("session_success_rate", 0) - baseline_success) / baseline_success * 100, 1
+                ) if baseline_success and current_snap.get("session_success_rate") else 0,
             },
         }
     else:
         signal_breakdown = None
 
     return {
-        **log,
+        **log_with_instincts,
         "snapshots": snaps,
         "signal_breakdown": signal_breakdown,
     }

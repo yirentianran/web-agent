@@ -199,32 +199,59 @@ class EvolutionLogStore:
             )
             return [dict(r) for r in await cursor.fetchall()]
 
-    async def get_overview_stats(self) -> dict[str, Any]:
-        """Dashboard stats: evolution counts by status, plus instinct and observation counts."""
+    async def get_overview_stats(self, days: int = 0) -> dict[str, Any]:
+        """Dashboard stats. days=0 means today only, days>0 means last N days."""
+        if days > 0:
+            cutoff = time.time() - days * 86400
+        else:
+            cutoff = time.time() - (time.time() % 86400)
+        week_cutoff = time.time() - 7 * 86400
+
         async with self.db.connection() as conn:
             status_rows = await conn.execute_fetchall(
                 "SELECT status, COUNT(*) FROM evolution_log GROUP BY status"
             )
             status_counts = {r[0]: r[1] for r in status_rows}
 
-            instinct_total = await conn.execute_fetchall(
+            instinct_active_row = await conn.execute_fetchall(
                 "SELECT COUNT(*) FROM instincts WHERE scope = 'active'"
             )
-            instinct_active = instinct_total[0][0] if instinct_total else 0
+            instinct_active = instinct_active_row[0][0] if instinct_active_row else 0
 
-            obs_today = await conn.execute_fetchall(
-                "SELECT COUNT(*) FROM observations WHERE created_at >= ?",
-                (time.time() - (time.time() % 86400),),
+            obs_count = await conn.execute_fetchall(
+                "SELECT COUNT(*) FROM observations WHERE created_at >= ?", (cutoff,),
             )
-            today_events = obs_today[0][0] if obs_today else 0
+            events_in_window = obs_count[0][0] if obs_count else 0
+
+            evo_active = await conn.execute_fetchall(
+                "SELECT COUNT(*) FROM evolution_log WHERE status = 'active' AND created_at >= ?",
+                (cutoff,),
+            )
+            evo_active_in_window = evo_active[0][0] if evo_active else 0
+
+            evo_proposed = await conn.execute_fetchall(
+                "SELECT COUNT(*) FROM evolution_log WHERE status = 'proposed' AND created_at >= ?",
+                (cutoff,),
+            )
+            evo_proposed_in_window = evo_proposed[0][0] if evo_proposed else 0
 
             week_applied = await conn.execute_fetchall(
                 """SELECT COUNT(*) FROM evolution_log
                    WHERE status = 'active' AND source = 'instinct_extractor'
                    AND created_at >= ?""",
-                (time.time() - 7 * 86400,),
+                (week_cutoff,),
             )
             week_auto = week_applied[0][0] if week_applied else 0
+
+            if days == 0:
+                today_events = events_in_window
+            else:
+                today_start = time.time() - (time.time() % 86400)
+                today_row = await conn.execute_fetchall(
+                    "SELECT COUNT(*) FROM observations WHERE created_at >= ?",
+                    (today_start,),
+                )
+                today_events = today_row[0][0] if today_row else 0
 
         return {
             "today_events": today_events,
@@ -232,9 +259,10 @@ class EvolutionLogStore:
             "pending_reviews": status_counts.get("proposed", 0),
             "week_auto_applied": week_auto,
             "funnel": {
-                "observations": today_events,
+                "observations": events_in_window,
                 "active_instincts": instinct_active,
-                "active_evolutions": status_counts.get("active", 0),
-                "proposed_evolutions": status_counts.get("proposed", 0),
+                "active_evolutions": evo_active_in_window,
+                "proposed_evolutions": evo_proposed_in_window,
             },
+            "time_window": f"last_{days}_days" if days > 0 else "today",
         }
