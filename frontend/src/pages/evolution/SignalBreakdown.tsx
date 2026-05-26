@@ -22,11 +22,17 @@ export default function SignalBreakdown({ breakdown }: Props) {
           {breakdown.rating.current.toFixed(1)} / 5
         </div>
         <DeltaIndicator deltaPct={breakdown.rating.delta_pct} />
+        <div className="signal-baseline">
+          Baseline: {breakdown.rating.baseline.toFixed(1)}
+        </div>
       </div>
       <div className="signal-card">
         <h5>Usage</h5>
         <div className="signal-value">{breakdown.usage.current} / day</div>
         <DeltaIndicator deltaPct={breakdown.usage.delta_pct} />
+        <div className="signal-baseline">
+          Baseline: {breakdown.usage.baseline.toFixed(0)} / day
+        </div>
       </div>
       <div className="signal-card">
         <h5>Session Success</h5>
@@ -34,6 +40,9 @@ export default function SignalBreakdown({ breakdown }: Props) {
           {(breakdown.session_success.current * 100).toFixed(0)}%
         </div>
         <DeltaIndicator deltaPct={breakdown.session_success.delta_pct} />
+        <div className="signal-baseline">
+          Baseline: {(breakdown.session_success.baseline * 100).toFixed(0)}%
+        </div>
       </div>
     </div>
   )
