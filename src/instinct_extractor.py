@@ -495,8 +495,15 @@ class InstinctExtractor:
                 (cutoff,),
             )
         total = sum(r[1] for r in rows)
+        if total == 0:
+            return {
+                "tool_success_rate": 0.0,
+                "session_success_rate": 0.0,
+                "daily_usage": 0,
+                "composite_score": -1.0,
+            }
         success_count = sum(r[1] for r in rows if r[0] == 1)
-        tool_success_rate = success_count / total if total > 0 else 1.0
+        tool_success_rate = success_count / total
 
         async with self.db.connection() as conn:
             session_rows = await conn.execute_fetchall(
@@ -544,11 +551,12 @@ class InstinctExtractor:
         if skill_file.exists():
             shutil.copy2(skill_file, v_dir / "SKILL.md")
 
+        # Capture pre-evolution baseline BEFORE mutating the skill file
+        baseline = await self._compute_baseline_metrics()
+        baseline_composite = baseline["composite_score"] if baseline["composite_score"] >= 0 else None
+
         # Write new content
         skill_file.write_text(new_content)
-
-        # Capture pre-evolution baseline
-        baseline = await self._compute_baseline_metrics()
 
         # Create evolution log
         log = await self.evolution_store.create_log(
@@ -558,7 +566,7 @@ class InstinctExtractor:
             source="instinct_extractor",
             evolve_reason=f"Auto-applied cluster: {cluster[0]['normalized_trigger']}",
             proposed_content="",
-            baseline_composite=baseline["composite_score"],
+            baseline_composite=baseline_composite,
             baseline_metrics=json.dumps(baseline),
             status="active",
         )
@@ -575,6 +583,7 @@ class InstinctExtractor:
     ) -> None:
         """Write proposed evolution_log entry for admin review."""
         baseline = await self._compute_baseline_metrics()
+        baseline_composite = baseline["composite_score"] if baseline["composite_score"] >= 0 else None
         log = await self.evolution_store.create_log(
             skill_name=skill_name,
             from_version="current",
@@ -583,7 +592,7 @@ class InstinctExtractor:
             evolve_reason=f"Proposed cluster: {cluster[0]['normalized_trigger']} "
                           f"(avg confidence {sum(i['confidence'] for i in cluster) / len(cluster):.2f})",
             proposed_content=new_content,
-            baseline_composite=baseline["composite_score"],
+            baseline_composite=baseline_composite,
             baseline_metrics=json.dumps(baseline),
             status="proposed",
         )
