@@ -13,6 +13,13 @@ const STATUS_CLASSES: Record<string, string> = {
   proposed: 'status-proposed',
   under_review: 'status-review',
   rolled_back: 'status-rolled',
+  superseded: 'status-rolled',
+}
+
+function ScoreBadge({ score }: { score: number | null | undefined }) {
+  if (score == null) return <span className="score-na">—</span>
+  const color = score >= 0.7 ? 'score-good' : score >= 0.5 ? 'score-warn' : 'score-bad'
+  return <span className={`score-badge ${color}`}>{(score * 100).toFixed(0)}%</span>
 }
 
 export default function OverviewTable({
@@ -35,6 +42,9 @@ export default function OverviewTable({
         <tr>
           <th>{t('evolutionMonitor.skill')}</th>
           <th>{t('evolutionMonitor.version')}</th>
+          <th>{t('evolutionMonitor.instinctCount')}</th>
+          <th>{t('evolutionMonitor.compositeScore')}</th>
+          <th>{t('evolutionMonitor.daysActive')}</th>
           <th>{t('evolutionMonitor.source')}</th>
           <th>{t('evolutionMonitor.status')}</th>
           <th>{t('evolutionMonitor.created')}</th>
@@ -51,6 +61,9 @@ export default function OverviewTable({
             <td>
               v{item.from_version} → v{item.to_version}
             </td>
+            <td>{item.instinct_count ?? 0}</td>
+            <td><ScoreBadge score={item.composite_score} /></td>
+            <td>{item.days_active ?? 1}d</td>
             <td>{item.source}</td>
             <td>
               <span className={`evo-badge ${STATUS_CLASSES[item.status] || ''}`}>
