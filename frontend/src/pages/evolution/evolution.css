@@ -460,14 +460,14 @@
 
 /* Observation table column widths */
 .obs-table-fixed { table-layout: fixed; }
-.obs-table-fixed .col-title  { width: 12%; }
-.obs-table-fixed .col-session { width: 16%; }
-.obs-table-fixed .col-type   { width: 8%; }
+.obs-table-fixed .col-title  { width: 10%; }
+.obs-table-fixed .col-session { width: 14%; }
+.obs-table-fixed .col-type   { width: 12%; }
 .obs-table-fixed .col-tool   { width: 8%; }
-.obs-table-fixed .col-input  { width: 18%; }
-.obs-table-fixed .col-output { width: 18%; }
-.obs-table-fixed .col-success { width: 5%; }
-.obs-table-fixed .col-time   { width: 15%; }
+.obs-table-fixed .col-input  { width: 16%; }
+.obs-table-fixed .col-output { width: 14%; }
+.obs-table-fixed .col-success { width: 8%; }
+.obs-table-fixed .col-time   { width: 18%; }
 
 .cell-title {
   overflow: hidden;
