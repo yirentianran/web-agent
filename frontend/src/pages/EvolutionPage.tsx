@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { StatsCards } from './evolution/StatsCards';
@@ -12,18 +12,49 @@ import './evolution/evolution.css';
 
 type TabId = 'evolutions' | 'instincts' | 'observations';
 
+const TIME_RANGES: { days: number; labelKey: string }[] = [
+  { days: 0, labelKey: 'evolutionMonitor.timeToday' },
+  { days: 7, labelKey: 'evolutionMonitor.time7Days' },
+  { days: 30, labelKey: 'evolutionMonitor.time30Days' },
+  { days: 90, labelKey: 'evolutionMonitor.timeAll' },
+];
+
 export default function EvolutionPage() {
   const { t } = useTranslation();
   const navigate = useNavigate();
   const api = useEvolutionApi();
   const [activeTab, setActiveTab] = useState<TabId>('evolutions');
   const [detailId, setDetailId] = useState<number | null>(null);
+  const [timeRange, setTimeRange] = useState(0);
+  const refreshRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  useEffect(() => {
-    api.fetchStats();
+  const loadData = useCallback((days: number) => {
+    api.fetchStats(days);
     api.fetchInstincts({});
     api.fetchObservations({});
-  }, []);
+  }, [api]);
+
+  useEffect(() => {
+    loadData(timeRange);
+  }, [timeRange]);
+
+  // Auto-refresh every 30s when not viewing detail
+  useEffect(() => {
+    if (detailId !== null) {
+      if (refreshRef.current) {
+        clearInterval(refreshRef.current);
+        refreshRef.current = null;
+      }
+      return;
+    }
+    refreshRef.current = setInterval(() => loadData(timeRange), 30000);
+    return () => {
+      if (refreshRef.current) {
+        clearInterval(refreshRef.current);
+        refreshRef.current = null;
+      }
+    };
+  }, [detailId, timeRange, loadData]);
 
   const handleInstinctFilter = useCallback(
     (filters: { domain?: string; scope?: string }) => {
@@ -78,6 +109,22 @@ export default function EvolutionPage() {
         <div className="evolution-header-title-group skills-header-title-group">
           <h2>{t('evolutionMonitor.title')}</h2>
         </div>
+      </div>
+
+      {/* Time range selector */}
+      <div className="time-range-bar">
+        {TIME_RANGES.map(({ days, labelKey }) => (
+          <button
+            key={days}
+            className={`time-range-btn ${timeRange === days ? 'active' : ''}`}
+            onClick={() => setTimeRange(days)}
+          >
+            {t(labelKey)}
+          </button>
+        ))}
+        <span className="auto-refresh-indicator" title={t('evolutionMonitor.autoRefresh')}>
+          {t('evolutionMonitor.autoRefresh')}
+        </span>
       </div>
 
       <StatsCards stats={api.stats.data ?? null} loading={api.stats.loading} />
