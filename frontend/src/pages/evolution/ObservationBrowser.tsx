@@ -52,6 +52,8 @@ export const ObservationBrowser: React.FC<Props> = ({ data, loading, error, onFi
                 <th>{t('evolutionMonitor.session')}</th>
                 <th>{t('evolutionMonitor.type')}</th>
                 <th>{t('evolutionMonitor.tool')}</th>
+                <th>{t('evolutionMonitor.inputSummary')}</th>
+                <th>{t('evolutionMonitor.outputSummary')}</th>
                 <th>{t('evolutionMonitor.success')}</th>
                 <th>{t('evolutionMonitor.time')}</th>
               </tr>
@@ -63,6 +65,20 @@ export const ObservationBrowser: React.FC<Props> = ({ data, loading, error, onFi
                   <td>{obs.session_id.substring(0, 12)}...</td>
                   <td><span className="evo-badge">{obs.event_type}</span></td>
                   <td>{obs.tool_name || '—'}</td>
+                  <td className="cell-summary" title={obs.tool_input_summary}>
+                    {obs.tool_input_summary
+                      ? obs.tool_input_summary.length > 60
+                        ? obs.tool_input_summary.substring(0, 60) + '...'
+                        : obs.tool_input_summary
+                      : '—'}
+                  </td>
+                  <td className="cell-summary" title={obs.tool_output_summary}>
+                    {obs.tool_output_summary
+                      ? obs.tool_output_summary.length > 60
+                        ? obs.tool_output_summary.substring(0, 60) + '...'
+                        : obs.tool_output_summary
+                      : obs.success === null ? '—' : obs.success ? 'OK' : obs.error_message || 'Error'}
+                  </td>
                   <td>{obs.success === null ? '—' : obs.success ? '✓' : '✗'}</td>
                   <td>{new Date(obs.created_at * 1000).toLocaleString()}</td>
                 </tr>
