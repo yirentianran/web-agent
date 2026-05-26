@@ -9,14 +9,16 @@ export interface EvolutionItem {
   evolve_reason: string
   status: 'active' | 'under_review' | 'rolled_back' | 'proposed' | 'superseded'
   baseline_composite: number | null
+  baseline_metrics: string | null
   proposed_content: string | null
+  instinct_count: number
+  composite_score: number | null
+  days_active: number
   created_at: number
   reviewed_at: number | null
   reviewed_by: string | null
   review_decision: string | null
   auto_rollback_at: number | null
-  days_active?: number
-  composite_score?: number
 }
 
 export interface EvolutionDetail extends EvolutionItem {
@@ -65,6 +67,8 @@ export interface ObservationItem {
   user_id: string
   event_type: string
   tool_name: string
+  tool_input_summary: string
+  tool_output_summary: string
   success: boolean | null
   error_message: string
   duration_ms: number
@@ -76,6 +80,7 @@ export interface EvolutionStats {
   active_instincts: number
   pending_reviews: number
   week_auto_applied: number
+  time_window: string
   funnel: {
     observations: number
     active_instincts: number
@@ -115,7 +120,7 @@ export interface EvolutionApi {
   fetchDetail: (id: number) => Promise<EvolutionDetail>
   fetchDiff: (id: number) => Promise<EvolutionDiff>
   review: (id: number, decision: 'keep' | 'rollback' | 'discard') => Promise<void>
-  fetchStats: () => Promise<void>
+  fetchStats: (days?: number) => Promise<void>
   fetchInstincts: (params?: { domain?: string; scope?: string; page?: number }) => Promise<void>
   fetchObservations: (params?: { session_id?: string; event_type?: string; page?: number }) => Promise<void>
   refetch: () => void
@@ -195,11 +200,12 @@ export function useEvolutionApi(statusFilter?: string, page: number = 1) {
     error: null,
   })
 
-  const fetchStats = useCallback(async () => {
+  const fetchStats = useCallback(async (days: number = 0) => {
     setStats((s) => ({ ...s, loading: true, error: null }))
     try {
+      const qs = days > 0 ? `?days=${days}` : ''
       const data = await fetchJson<EvolutionStats>(
-        `${API_BASE}/stats`,
+        `${API_BASE}/stats${qs}`,
         authToken,
       )
       setStats({ data, loading: false, error: null })
