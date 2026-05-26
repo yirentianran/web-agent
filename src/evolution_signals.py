@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import time
 from typing import Any
@@ -116,6 +117,14 @@ class EvolutionSignals:
             }
 
     def _compute_baseline(self, log: dict[str, Any]) -> float:
+        if log.get("baseline_metrics"):
+            try:
+                bl = json.loads(log["baseline_metrics"])
+                score = bl.get("composite_score", -1)
+                if score >= 0:
+                    return score
+            except (json.JSONDecodeError, TypeError):
+                pass
         return log.get("baseline_composite") or 0.6
 
     async def _rollback(self, log: dict[str, Any]) -> None:
