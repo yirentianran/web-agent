@@ -207,7 +207,7 @@ export const ObservationBrowser: React.FC<Props> = ({ data, loading, error, onFi
                   onClick={() => setSelectedObs(obs)}
                 >
                   <td className="cell-title">{obs.session_title || '—'}</td>
-                  <td className="cell-session">{obs.session_id.substring(0, 12)}...</td>
+                  <td className="cell-session" title={obs.session_id}>{obs.session_id}</td>
                   <td><span className="evo-badge">{obs.event_type}</span></td>
                   <td>{obs.tool_name || '—'}</td>
                   <td className="cell-summary" title={obs.tool_input_summary}>
