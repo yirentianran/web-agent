@@ -406,6 +406,12 @@ class Database:
         except Exception:
             pass
 
+        # Add baseline_metrics to evolution_log
+        try:
+            await self.migrate_v9()
+        except Exception:
+            pass
+
     async def _checkpoint_loop(self) -> None:
         """Periodically run a PASSIVE WAL checkpoint.
 
@@ -912,6 +918,13 @@ class Database:
 
             await conn.execute("PRAGMA foreign_keys=ON")
             await conn.commit()
+
+    async def migrate_v9(self) -> None:
+        """Add baseline_metrics JSON column to evolution_log."""
+        async with self.connection() as conn:
+            await conn.execute(
+                "ALTER TABLE evolution_log ADD COLUMN baseline_metrics TEXT"
+            )
 
     async def migrate_collective_intelligence(self) -> None:
         """Add collective intelligence tables and FTS5 indexes.
