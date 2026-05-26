@@ -24,16 +24,17 @@ class EvolutionLogStore:
         evolve_reason: str = "",
         proposed_content: str = "",
         baseline_composite: float | None = None,
+        baseline_metrics: str = "",
         status: str = "active",
     ) -> dict[str, Any]:
         async with self.db.connection() as conn:
             cursor = await conn.execute(
                 """INSERT INTO evolution_log
                    (skill_name, from_version, to_version, source, evolve_reason,
-                    proposed_content, baseline_composite, status, created_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    proposed_content, baseline_composite, baseline_metrics, status, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (skill_name, from_version, to_version, source, evolve_reason,
-                 proposed_content, baseline_composite, status,
+                 proposed_content, baseline_composite, baseline_metrics, status,
                  int(time.time())),
             )
             return {"id": cursor.lastrowid}

@@ -483,6 +483,43 @@ class InstinctExtractor:
             return ""
         return skill_file.read_text()
 
+    async def _compute_baseline_metrics(self) -> dict[str, float]:
+        """Compute pre-evolution metrics from the last 7 days of observations."""
+        cutoff = time.time() - 7 * 86400
+        async with self.db.connection() as conn:
+            rows = await conn.execute_fetchall(
+                """SELECT success, COUNT(*) as cnt FROM observations
+                   WHERE created_at >= ? AND event_type = 'tool_call_end'
+                   AND success IS NOT NULL
+                   GROUP BY success""",
+                (cutoff,),
+            )
+        total = sum(r[1] for r in rows)
+        success_count = sum(r[1] for r in rows if r[0] == 1)
+        tool_success_rate = success_count / total if total > 0 else 1.0
+
+        async with self.db.connection() as conn:
+            session_rows = await conn.execute_fetchall(
+                """SELECT event_type, COUNT(DISTINCT session_id) as cnt
+                   FROM observations WHERE created_at >= ?
+                   AND event_type IN ('session_complete', 'session_error')
+                   GROUP BY event_type""",
+                (cutoff,),
+            )
+        sc = {r[0]: r[1] for r in session_rows}
+        completed = sc.get("session_complete", 0)
+        errored = sc.get("session_error", 0)
+        session_rate = completed / (completed + errored) if (completed + errored) > 0 else 1.0
+
+        composite = 0.5 * tool_success_rate + 0.3 * session_rate + 0.2 * min(1.0, total / 50)
+
+        return {
+            "tool_success_rate": round(tool_success_rate, 4),
+            "session_success_rate": round(session_rate, 4),
+            "daily_usage": total,
+            "composite_score": round(composite, 4),
+        }
+
     async def _apply_skill_change(
         self,
         skill_name: str,
@@ -510,6 +547,9 @@ class InstinctExtractor:
         # Write new content
         skill_file.write_text(new_content)
 
+        # Capture pre-evolution baseline
+        baseline = await self._compute_baseline_metrics()
+
         # Create evolution log
         log = await self.evolution_store.create_log(
             skill_name=skill_name,
@@ -518,6 +558,8 @@ class InstinctExtractor:
             source="instinct_extractor",
             evolve_reason=f"Auto-applied cluster: {cluster[0]['normalized_trigger']}",
             proposed_content="",
+            baseline_composite=baseline["composite_score"],
+            baseline_metrics=json.dumps(baseline),
             status="active",
         )
 
@@ -532,6 +574,7 @@ class InstinctExtractor:
         cluster: list[dict[str, Any]],
     ) -> None:
         """Write proposed evolution_log entry for admin review."""
+        baseline = await self._compute_baseline_metrics()
         log = await self.evolution_store.create_log(
             skill_name=skill_name,
             from_version="current",
@@ -540,6 +583,8 @@ class InstinctExtractor:
             evolve_reason=f"Proposed cluster: {cluster[0]['normalized_trigger']} "
                           f"(avg confidence {sum(i['confidence'] for i in cluster) / len(cluster):.2f})",
             proposed_content=new_content,
+            baseline_composite=baseline["composite_score"],
+            baseline_metrics=json.dumps(baseline),
             status="proposed",
         )
         await self.instinct_store.link_to_evolution(instinct_ids, log["id"])
