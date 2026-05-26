@@ -105,11 +105,14 @@ class ObservationStore:
 
             offset = (page - 1) * page_size
             cursor = await conn.execute(
-                f"""SELECT id, session_id, user_id, event_type, tool_name,
-                           tool_input_summary, tool_output_summary,
-                           success, error_message, duration_ms, created_at
-                    FROM observations {where}
-                    ORDER BY created_at DESC
+                f"""SELECT o.id, o.session_id, o.user_id, o.event_type, o.tool_name,
+                           o.tool_input_summary, o.tool_output_summary,
+                           o.success, o.error_message, o.duration_ms, o.created_at,
+                           COALESCE(s.title, '') as session_title
+                    FROM observations o
+                    LEFT JOIN sessions s ON o.session_id = s.session_id
+                    {where}
+                    ORDER BY o.created_at DESC
                     LIMIT ? OFFSET ?""",
                 params + [page_size, offset],
             )
@@ -124,6 +127,7 @@ class ObservationStore:
                     "tool_output_summary": r[6] or "",
                     "success": bool(r[7]) if r[7] is not None else None,
                     "error_message": r[8], "duration_ms": r[9], "created_at": r[10],
+                    "session_title": r[11] or "",
                 }
                 for r in rows
             ],

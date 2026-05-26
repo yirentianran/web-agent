@@ -179,7 +179,6 @@ export const ObservationBrowser: React.FC<Props> = ({ data, loading, error, onFi
           <table className="evo-table">
             <thead>
               <tr>
-                <th>{t('evolutionMonitor.id')}</th>
                 <th>{t('evolutionMonitor.session')}</th>
                 <th>{t('evolutionMonitor.type')}</th>
                 <th>{t('evolutionMonitor.tool')}</th>
@@ -196,8 +195,7 @@ export const ObservationBrowser: React.FC<Props> = ({ data, loading, error, onFi
                   className="evo-row"
                   onClick={() => setSelectedObs(obs)}
                 >
-                  <td>{obs.id}</td>
-                  <td>{obs.session_id.substring(0, 12)}...</td>
+                  <td title={obs.session_id}>{obs.session_title || obs.session_id.substring(0, 12) + '...'}</td>
                   <td><span className="evo-badge">{obs.event_type}</span></td>
                   <td>{obs.tool_name || '—'}</td>
                   <td className="cell-summary" title={obs.tool_input_summary}>

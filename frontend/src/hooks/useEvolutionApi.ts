@@ -64,6 +64,7 @@ export interface InstinctItem {
 export interface ObservationItem {
   id: number
   session_id: string
+  session_title: string
   user_id: string
   event_type: string
   tool_name: string
