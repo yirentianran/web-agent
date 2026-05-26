@@ -106,6 +106,7 @@ class ObservationStore:
             offset = (page - 1) * page_size
             cursor = await conn.execute(
                 f"""SELECT id, session_id, user_id, event_type, tool_name,
+                           tool_input_summary, tool_output_summary,
                            success, error_message, duration_ms, created_at
                     FROM observations {where}
                     ORDER BY created_at DESC
@@ -119,8 +120,10 @@ class ObservationStore:
                 {
                     "id": r[0], "session_id": r[1], "user_id": r[2],
                     "event_type": r[3], "tool_name": r[4],
-                    "success": bool(r[5]) if r[5] is not None else None,
-                    "error_message": r[6], "duration_ms": r[7], "created_at": r[8],
+                    "tool_input_summary": r[5] or "",
+                    "tool_output_summary": r[6] or "",
+                    "success": bool(r[7]) if r[7] is not None else None,
+                    "error_message": r[8], "duration_ms": r[9], "created_at": r[10],
                 }
                 for r in rows
             ],
