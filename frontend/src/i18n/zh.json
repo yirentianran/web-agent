@@ -379,6 +379,16 @@
     "version": "版本",
     "source": "来源",
     "status": "状态",
-    "created": "创建时间"
+    "created": "创建时间",
+    "timeToday": "今日",
+    "time7Days": "最近 7 天",
+    "time30Days": "最近 30 天",
+    "timeAll": "全部",
+    "autoRefresh": "每 30s 自动刷新",
+    "instinctCount": "本能数",
+    "compositeScore": "综合分数",
+    "daysActive": "活跃天数",
+    "inputSummary": "输入摘要",
+    "outputSummary": "输出/状态"
   }
 }

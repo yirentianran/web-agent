@@ -313,7 +313,17 @@
     "version": "Version",
     "source": "Source",
     "status": "Status",
-    "created": "Created"
+    "created": "Created",
+    "timeToday": "Today",
+    "time7Days": "Last 7 Days",
+    "time30Days": "Last 30 Days",
+    "timeAll": "All",
+    "autoRefresh": "Auto-refresh 30s",
+    "instinctCount": "Instincts",
+    "compositeScore": "Score",
+    "daysActive": "Active",
+    "inputSummary": "Input",
+    "outputSummary": "Output"
   },
   "dashboard": {
     "title": "Usage Dashboard",
