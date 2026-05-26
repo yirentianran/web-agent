@@ -6,10 +6,17 @@ interface Props {
   stats: EvolutionStats | null;
 }
 
+const WINDOW_LABELS: Record<string, string> = {
+  today: 'evolutionMonitor.timeToday',
+  last_7_days: 'evolutionMonitor.time7Days',
+  last_30_days: 'evolutionMonitor.time30Days',
+  last_90_days: 'evolutionMonitor.timeAll',
+};
+
 export const PipelineFunnel: React.FC<Props> = ({ stats }) => {
   const { t } = useTranslation();
   if (!stats) return null;
-  const { funnel } = stats;
+  const { funnel, time_window } = stats;
   const stages = [
     { labelKey: 'evolutionMonitor.observations', value: funnel.observations, key: 'observations' },
     { labelKey: 'evolutionMonitor.instincts', value: funnel.active_instincts, key: 'instincts' },
@@ -35,6 +42,11 @@ export const PipelineFunnel: React.FC<Props> = ({ stats }) => {
           </div>
         </React.Fragment>
       ))}
+      {time_window && (
+        <p className="funnel-window-label">
+          {t(WINDOW_LABELS[time_window] || time_window)}
+        </p>
+      )}
     </div>
   );
 };
