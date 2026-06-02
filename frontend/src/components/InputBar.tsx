@@ -10,7 +10,7 @@ interface AttachedFile {
 }
 
 interface InputBarProps {
-  onSend: (message: string, fileMeta?: Array<{filename: string; size: number}>) => void
+  onSend: (message: string, fileMeta?: Array<{filename: string; size: number}>, sessionId?: string) => void
   onEnsureSession: () => Promise<string | undefined>
   onStop?: () => void
   disabled?: boolean
@@ -49,6 +49,16 @@ const InputBar = forwardRef<InputBarHandle, InputBarProps>(
 
       if (prevId && prevId !== newId) {
         draftsRef.current.set(prevId, {
+          input: inputRef.current,
+          files: filesRef.current,
+        })
+      }
+
+      // When auto-creating a session (e.g., file upload on /),
+      // save in-progress input and files through the undefined→ID jump
+      // so they survive the route navigation.
+      if (!prevId && newId && (inputRef.current || filesRef.current.length > 0)) {
+        draftsRef.current.set(newId, {
           input: inputRef.current,
           files: filesRef.current,
         })
@@ -127,6 +137,13 @@ const InputBar = forwardRef<InputBarHandle, InputBarProps>(
       const hasUploading = attachedFiles.some(f => f.status === 'uploading')
       if ((!trimmed && attachedFiles.length === 0) || disabled || hasUploading) return
 
+      // Ensure session exists before sending (auto-create on /)
+      let sendSessionId = sessionId
+      if (!sendSessionId) {
+        sendSessionId = await onEnsureSession()
+        if (!sendSessionId) return
+      }
+
       // All files are already uploaded (or there are none) — send immediately
       const uploadedFiles = attachedFiles.filter(f => f.status === 'uploaded')
       const fileMeta = uploadedFiles.map(f => ({ filename: f.file.name, size: f.file.size }))
@@ -136,7 +153,7 @@ const InputBar = forwardRef<InputBarHandle, InputBarProps>(
         const refs = refFiles.map(name => `@${name}`).join(' ')
         messageContent = `${refs} ${trimmed}`
       }
-      onSend(messageContent, fileMeta.length > 0 ? fileMeta : undefined)
+      onSend(messageContent, fileMeta.length > 0 ? fileMeta : undefined, sendSessionId)
       setInput('')
       setAttachedFiles([])
       if (fileInputRef.current) fileInputRef.current.value = ''

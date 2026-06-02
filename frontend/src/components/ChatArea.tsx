@@ -377,12 +377,12 @@ export default function ChatArea({
             .filter(p => p.kind === 'text')
             .map(p => p.content)
             .join('\n')
-          // If no tags found, render as plain streaming text
+          // If no tags found, render with MarkdownRenderer for proper formatting
           if (!hasAnalysis && !hasSummary) {
             return (
               <div className="message assistant-message streaming-message">
                 <div className="bubble">
-                  <span className="streaming-text">{textContent}</span>
+                  <MarkdownRenderer>{textContent}</MarkdownRenderer>
                 </div>
               </div>
             )
@@ -416,7 +416,7 @@ export default function ChatArea({
                   </details>
                 )}
                 {textContent && (
-                  <span className="streaming-text">{textContent}</span>
+                  <MarkdownRenderer>{textContent}</MarkdownRenderer>
                 )}
               </div>
             </div>
