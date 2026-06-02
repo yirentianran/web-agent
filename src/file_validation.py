@@ -11,7 +11,7 @@ ALLOWED_EXTENSIONS = {
     ".java", ".go", ".rs", ".rb", ".php", ".c", ".cpp", ".h",
     ".html", ".css", ".scss", ".sql",
     ".log", ".cfg", ".ini", ".toml",
-    ".pdf", ".docx", ".doc", ".xlsx",
+    ".pdf", ".docx", ".doc", ".xlsx", ".xlsm", ".xls",
     ".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp",
 }
 

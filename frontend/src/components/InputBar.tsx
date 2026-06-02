@@ -10,7 +10,8 @@ interface AttachedFile {
 }
 
 interface InputBarProps {
-  onSend: (message: string, files?: File[], fileMeta?: Array<{filename: string; size: number}>) => void
+  onSend: (message: string, fileMeta?: Array<{filename: string; size: number}>) => void
+  onEnsureSession: () => Promise<string | undefined>
   onStop?: () => void
   disabled?: boolean
   isRunning?: boolean
@@ -26,12 +27,44 @@ export interface InputBarHandle {
 let fileCounter = 0
 
 const InputBar = forwardRef<InputBarHandle, InputBarProps>(
-  function InputBar({ onSend, onStop, disabled, isRunning, userId, authToken, sessionId }: InputBarProps, ref) {
+  function InputBar({ onSend, onEnsureSession, onStop, disabled, isRunning, userId, authToken, sessionId }: InputBarProps, ref) {
     const { t } = useTranslation()
     const [input, setInput] = useState('')
     const [attachedFiles, setAttachedFiles] = useState<AttachedFile[]>([])
     const fileInputRef = useRef<HTMLInputElement>(null)
     const textareaRef = useRef<HTMLTextAreaElement>(null)
+
+    // Per-session draft preservation — save input/files when switching away,
+    // restore when switching back. Avoids losing typed content on session switch.
+    const inputRef = useRef(input)
+    inputRef.current = input
+    const filesRef = useRef(attachedFiles)
+    filesRef.current = attachedFiles
+    const draftsRef = useRef<Map<string, { input: string; files: AttachedFile[] }>>(new Map())
+    const prevSessionRef = useRef(sessionId)
+
+    useEffect(() => {
+      const prevId = prevSessionRef.current
+      const newId = sessionId
+
+      if (prevId && prevId !== newId) {
+        draftsRef.current.set(prevId, {
+          input: inputRef.current,
+          files: filesRef.current,
+        })
+      }
+
+      if (newId) {
+        const draft = draftsRef.current.get(newId)
+        setInput(draft?.input ?? '')
+        setAttachedFiles(draft?.files ?? [])
+      } else {
+        setInput('')
+        setAttachedFiles([])
+      }
+
+      prevSessionRef.current = newId
+    }, [sessionId])
 
     // Expose insertText method for click-to-reference
     useImperativeHandle(ref, () => ({
@@ -55,11 +88,9 @@ const InputBar = forwardRef<InputBarHandle, InputBarProps>(
       }
     }
 
-    // Reset textarea height after input is cleared (form submit)
+    // Auto-resize textarea when input or files change
     useEffect(() => {
-      if (input === '' && attachedFiles.length === 0) {
-        autoResize()
-      }
+      autoResize()
     }, [input, attachedFiles])
 
     // ── Upload helpers ────────────────────────────────────────
@@ -88,108 +119,24 @@ const InputBar = forwardRef<InputBarHandle, InputBarProps>(
       }
     }
 
-    const uploadAllPending = async (): Promise<{ fileMeta: Array<{filename: string; size: number}>; fileObjs: File[]; allSuccess: boolean }> => {
-      const pending = attachedFiles.filter(f => f.status === 'pending' || f.status === 'failed')
-      if (pending.length === 0) {
-        return {
-          fileMeta: attachedFiles.map(f => ({ filename: f.file.name, size: f.file.size })),
-          fileObjs: attachedFiles.map(f => f.file),
-          allSuccess: true,
-        }
-      }
-
-      // Mark all as uploading
-      setAttachedFiles(prev => prev.map(f =>
-        (f.status === 'pending' || f.status === 'failed') ? { ...f, status: 'uploading' as const } : f,
-      ))
-
-      let allSuccess = true
-      const results: Array<{ id: string; success: boolean; filename?: string; size?: number }> = []
-
-      for (const af of pending) {
-        const result = await uploadFile(af)
-        results.push({ id: af.id, ...result })
-        if (!result.success) allSuccess = false
-      }
-
-      // Update statuses based on results
-      setAttachedFiles(prev => prev.map(f => {
-        const result = results.find(r => r.id === f.id)
-        if (result) {
-          return { ...f, status: result.success ? 'uploaded' as const : 'failed' as const }
-        }
-        return f
-      }))
-
-      // Build metadata directly from upload responses
-      const fileMeta = results
-        .filter(r => r.success && r.filename)
-        .map(r => ({
-          filename: pending.find(f => f.id === r.id)?.file.name ?? r.filename!,
-          size: r.size ?? 0,
-        }))
-      const fileObjs = results
-        .filter(r => r.success)
-        .map(r => pending.find(f => f.id === r.id)!)
-        .filter(Boolean)
-        .map(f => f.file)
-
-      return { fileMeta, fileObjs, allSuccess }
-    }
-
     // ── Form submission ──────────────────────────────────────
 
     const handleSubmit = async (e: FormEvent) => {
       e.preventDefault()
       const trimmed = input.trim()
-      const hasPending = attachedFiles.some(f => f.status === 'pending' || f.status === 'failed')
       const hasUploading = attachedFiles.some(f => f.status === 'uploading')
       if ((!trimmed && attachedFiles.length === 0) || disabled || hasUploading) return
 
-      // Collect already-uploaded files
+      // All files are already uploaded (or there are none) — send immediately
       const uploadedFiles = attachedFiles.filter(f => f.status === 'uploaded')
-
-      // If there are pending/failed files and no sessionId yet, defer uploads to onSend
-      // (App.tsx will create session first, then upload with session_id)
-      if (hasPending && !sessionId) {
-        const allFiles = attachedFiles.map(f => f.file)
-        const allMeta = attachedFiles.map(f => ({ filename: f.file.name, size: f.file.size }))
-        onSend(trimmed, allFiles, allMeta.length > 0 ? allMeta : undefined)
-        setInput('')
-        setAttachedFiles([])
-        if (fileInputRef.current) fileInputRef.current.value = ''
-        return
-      }
-
-      // If there are pending or failed files with a sessionId, upload them now
-      if (hasPending) {
-        const { allSuccess, fileMeta, fileObjs } = await uploadAllPending()
-        if (!allSuccess) {
-          return
-        }
-        const refFiles = fileMeta.length > 0 ? fileMeta.map(f => f.filename) : fileObjs.map(f => f.name)
-        let messageContent = trimmed
-        if (refFiles.length > 0 && trimmed) {
-          const refs = refFiles.map(name => `@${name}`).join(' ')
-          messageContent = `${refs} ${trimmed}`
-        }
-        onSend(messageContent, fileObjs, fileMeta.length > 0 ? fileMeta : undefined)
-        setInput('')
-        setAttachedFiles([])
-        if (fileInputRef.current) fileInputRef.current.value = ''
-        return
-      }
-
-      // All files already uploaded
       const fileMeta = uploadedFiles.map(f => ({ filename: f.file.name, size: f.file.size }))
-      const uploadedFileObjects = attachedFiles.map(f => f.file)
-      const refFiles = fileMeta.length > 0 ? fileMeta.map(f => f.filename) : uploadedFileObjects.map(f => f.name)
+      const refFiles = fileMeta.map(f => f.filename)
       let messageContent = trimmed
       if (refFiles.length > 0 && trimmed) {
         const refs = refFiles.map(name => `@${name}`).join(' ')
         messageContent = `${refs} ${trimmed}`
       }
-      onSend(messageContent, uploadedFileObjects, fileMeta.length > 0 ? fileMeta : undefined)
+      onSend(messageContent, fileMeta.length > 0 ? fileMeta : undefined)
       setInput('')
       setAttachedFiles([])
       if (fileInputRef.current) fileInputRef.current.value = ''
@@ -202,9 +149,9 @@ const InputBar = forwardRef<InputBarHandle, InputBarProps>(
       }
     }
 
-    // ── File selection (store as pending, don't upload yet) ──
+    // ── File selection (upload immediately) ───────────────────
 
-    const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
       const files = Array.from(e.target.files || [])
       if (files.length === 0) return
 
@@ -215,6 +162,46 @@ const InputBar = forwardRef<InputBarHandle, InputBarProps>(
       }))
       setAttachedFiles(prev => [...prev, ...newFiles])
       if (fileInputRef.current) fileInputRef.current.value = ''
+
+      // Ensure session exists before uploading
+      let uploadSessionId = sessionId
+      if (!uploadSessionId) {
+        uploadSessionId = await onEnsureSession()
+        if (!uploadSessionId) return
+      }
+      await uploadFiles(newFiles, uploadSessionId)
+    }
+
+    const uploadFiles = async (files: AttachedFile[], uploadSessionId: string) => {
+      // Mark all as uploading
+      setAttachedFiles(prev => prev.map(f => {
+        const match = files.find(nf => nf.id === f.id)
+        return match ? { ...f, status: 'uploading' as const } : f
+      }))
+
+      for (const af of files) {
+        const formData = new FormData()
+        formData.append('file', af.file)
+        formData.append('session_id', uploadSessionId)
+        try {
+          const headers: Record<string, string> = {}
+          if (authToken) headers['Authorization'] = `Bearer ${authToken}`
+          const resp = await fetch(`/api/users/${userId}/upload`, { method: 'POST', headers, body: formData })
+          if (resp.ok) {
+            setAttachedFiles(prev => prev.map(f =>
+              f.id === af.id ? { ...f, status: 'uploaded' as const } : f,
+            ))
+          } else {
+            setAttachedFiles(prev => prev.map(f =>
+              f.id === af.id ? { ...f, status: 'failed' as const } : f,
+            ))
+          }
+        } catch {
+          setAttachedFiles(prev => prev.map(f =>
+            f.id === af.id ? { ...f, status: 'failed' as const } : f,
+          ))
+        }
+      }
     }
 
     // ── File actions ─────────────────────────────────────────
@@ -228,9 +215,9 @@ const InputBar = forwardRef<InputBarHandle, InputBarProps>(
       if (!af) return
 
       setAttachedFiles(prev => prev.map((f, i) => i === index ? { ...f, status: 'uploading' as const } : f))
-      const success = await uploadFile(af)
+      const result = await uploadFile(af)
       setAttachedFiles(prev => prev.map((f, i) =>
-        i === index ? { ...f, status: success ? 'uploaded' as const : 'failed' as const } : f,
+        i === index ? { ...f, status: result.success ? 'uploaded' as const : 'failed' as const } : f,
       ))
     }
 

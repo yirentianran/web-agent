@@ -219,7 +219,8 @@ interface MainLayoutProps {
   authToken: string | null;
   streamingText: string;
   inputBarRef: React.RefObject<InputBarHandle | null>;
-  handleSend: (message: string, files?: File[]) => Promise<void>;
+  handleSend: (message: string, fileMeta?: Array<{filename: string; size: number}>) => void;
+  onEnsureSession: () => Promise<string | undefined>;
   stopSession: () => Promise<void>;
   filePanelOpen: boolean;
   setFilePanelOpen: (v: boolean | ((v: boolean) => boolean)) => void;
@@ -254,6 +255,7 @@ function MainLayout({
   streamingText,
   inputBarRef,
   handleSend,
+  onEnsureSession,
   stopSession,
   filePanelOpen,
   setFilePanelOpen,
@@ -351,9 +353,9 @@ function MainLayout({
             sessionLoading={sessionLoading}
           />
           <InputBar
-            key={activeSession}
             ref={inputBarRef}
             onSend={handleSend}
+            onEnsureSession={onEnsureSession}
             onStop={stopSession}
             disabled={status !== "connected" || activeSessionStatus === "running"}
             isRunning={activeSessionStatus === "running" && status === "connected"}
@@ -418,6 +420,9 @@ function MainApp() {
   useEffect(() => {
     urlSessionIdRef.current = urlSessionId;
   }, [urlSessionId]);
+
+  // Sync InputBar key with active session, but skip auto-created sessions
+  // so the InputBar state (files, input) survives the auto-create navigation.
   const [sessionStates, setSessionStatuss] = useState<Map<string, string>>(
     new Map(),
   );
@@ -1294,52 +1299,30 @@ function MainApp() {
     [sendMessage, setSessionStateFor],
   );
 
+  const ensureSession = useCallback(async (): Promise<string | undefined> => {
+    try {
+      const headers: Record<string, string> = {};
+      if (authToken) headers["Authorization"] = `Bearer ${authToken}`;
+      const resp = await fetch(`/api/users/${userId}/sessions`, {
+        method: "POST",
+        headers,
+      });
+      const data = await resp.json();
+      const sessionId: string = data.session_id;
+      navigate("/chat/" + sessionId);
+      await loadSessions();
+      return sessionId;
+    } catch (err) {
+      const errorMsg = err instanceof Error ? err.message : String(err);
+      logger.error("Session creation failed", errorMsg);
+      return undefined;
+    }
+  }, [authToken, userId, navigate, loadSessions]);
 
   const handleSend = useCallback(
-    async (message: string, files?: File[], fileMeta?: Array<{filename: string; size: number}>) => {
-      let sessionId = urlSessionIdRef.current;
-
-      // Auto-create session if none exists
-      if (!sessionId) {
-        maxMsgIndexRef.current = -1;
-        try {
-          const headers: Record<string, string> = {};
-          if (authToken) headers["Authorization"] = `Bearer ${authToken}`;
-          const resp = await fetch(`/api/users/${userId}/sessions`, {
-            method: "POST",
-            headers,
-          });
-          const data = await resp.json();
-          sessionId = data.session_id;
-          navigate("/chat/" + sessionId);
-          await loadSessions();
-        } catch (err) {
-          const errorMsg = err instanceof Error ? err.message : String(err);
-          logger.error("Session creation failed", errorMsg);
-          setSessionCreateError(true);
-          setTimeout(() => setSessionCreateError(false), 8000);
-          return;
-        }
-      }
-
-      // Upload files that haven't been uploaded yet (deferred from InputBar when no sessionId existed)
-      let resolvedFileMeta = fileMeta;
-      if (files && files.length > 0) {
-        const headers: Record<string, string> = {};
-        if (authToken) headers["Authorization"] = `Bearer ${authToken}`;
-        const uploadedMeta: Array<{filename: string; size: number}> = [];
-        for (const file of files) {
-          const formData = new FormData();
-          formData.append("file", file);
-          formData.append("session_id", sessionId!);
-          const resp = await fetch(`/api/users/${userId}/upload`, { method: "POST", headers, body: formData });
-          if (resp.ok) {
-            const data = await resp.json();
-            uploadedMeta.push({ filename: data.filename, size: data.size ?? file.size });
-          }
-        }
-        resolvedFileMeta = uploadedMeta;
-      }
+    async (message: string, fileMeta?: Array<{filename: string; size: number}>) => {
+      const sessionId = urlSessionIdRef.current;
+      if (!sessionId) return;
 
       // Use index = maxMsgIndex + 1 so it sorts AFTER all existing
       // messages (including the last assistant result) but won't collide
@@ -1351,7 +1334,7 @@ function MainApp() {
       clearThresholdRef.current = lastBackendIndex;
       replayStartedRef.current = false;
       const fileMetadata: Array<{ filename: string; size: number }> | undefined =
-        resolvedFileMeta?.map((f) => ({ filename: f.filename, size: f.size }));
+        fileMeta?.map((f) => ({ filename: f.filename, size: f.size }));
       const clientMsgId = generateUUID();
       const optimisticMsg: Message = {
         type: "user",
@@ -1364,9 +1347,6 @@ function MainApp() {
       };
       // Track send state
       sendStateMapRef.current.set(clientMsgId, "sending");
-      // Track pending message — survives session switches so it can be
-      // restored when switching back, even if the backend hasn't received
-      // the WebSocket message yet.
       if (sessionId) {
         pendingUserMsgsRef.current.set(sessionId, optimisticMsg);
         // Persist to localStorage so the pending message survives page refresh
@@ -1378,9 +1358,6 @@ function MainApp() {
         });
       }
       setMessages((prev) => {
-        // If WebSocket echo already added this message (race: echo beat
-        // the optimistic insert), update sendState from the source-of-truth
-        // map instead of duplicating the user message.
         const existing = prev.find((m) => m.clientMsgId === clientMsgId);
         if (existing) {
           const state = sendStateMapRef.current.get(clientMsgId) ?? "sending";
@@ -1390,30 +1367,24 @@ function MainApp() {
           );
         }
         const updated = [...prev, optimisticMsg];
-        // Update maxMsgIndexRef synchronously so follow-up sends use the correct anchor.
         if (optimisticMsg.index != null && optimisticMsg.index > maxMsgIndexRef.current) {
           maxMsgIndexRef.current = optimisticMsg.index;
         }
         return updated;
       });
-      setSessionStateFor(sessionId!, "running");
-      // Clear the suppress flag — a real session is now active
+      setSessionStateFor(sessionId, "running");
       suppressAutoActivateRef.current = false;
 
-      // Send via WebSocket with send state tracking
+      // Send via WebSocket
       const currentLanguage = localStorage.getItem('i18nextLng') || 'zh';
       sendMessage({
         message,
         session_id: sessionId ?? undefined,
         last_index: lastBackendIndex + 1,
-        files: resolvedFileMeta?.map((f) => ({ stored_name: f.filename, size: f.size })),
+        files: fileMeta?.map((f) => ({ stored_name: f.filename, size: f.size })),
         client_msg_id: clientMsgId,
         language: currentLanguage,
       });
-
-      // Monitor send outcome (timeout / disconnect)
-      // Since sendMessage returns a clientMsgId, we track it here.
-      // The actual resolution happens when backend echoes or timeout fires.
     },
     [messagesRef, sendMessage, authToken, userId, navigate],
   );
@@ -1612,45 +1583,7 @@ function MainApp() {
         }
       />
       <Route
-        path="/chat/:sessionId"
-        element={
-          <MainLayout
-            status={status}
-            queueFull={queueFull}
-            userId={userId}
-            sidebarOpen={sidebarOpen}
-            setSidebarOpen={setSidebarOpen}
-            sessions={sessions}
-            activeSession={urlSessionId}
-            onSelectSession={(id) => navigate("/chat/" + id)}
-            onNewSession={handleNewSession}
-            onDeleteSession={handleDeleteSession}
-            onRenameSession={handleRenameSession}
-            messages={messages}
-            activeSessionStatus={activeSessionStatus}
-            sendAnswer={sendAnswer}
-            handleFileClick={handleFileClick}
-            handleResend={handleResend}
-            authToken={authToken}
-            streamingText={streamingTextState.accumulatedText}
-            inputBarRef={inputBarRef}
-            handleSend={handleSend}
-            stopSession={stopSession}
-            filePanelOpen={filePanelOpen}
-            setFilePanelOpen={setFilePanelOpen}
-            fileRefreshKey={fileRefreshKey}
-            setFileRefreshKey={setFileRefreshKey}
-            handleLogout={handleLogout}
-            navigate={navigate}
-            sessionLoading={sessionLoading}
-            sessionCreateError={sessionCreateError}
-            setSessionCreateError={setSessionCreateError}
-            userRole={userRole}
-          />
-        }
-      />
-      <Route
-        path="/"
+        path="/*"
         element={
           <MainLayout
             key={newSessionKey}
@@ -1674,6 +1607,7 @@ function MainApp() {
             streamingText={streamingTextState.accumulatedText}
             inputBarRef={inputBarRef}
             handleSend={handleSend}
+            onEnsureSession={ensureSession}
             stopSession={stopSession}
             filePanelOpen={filePanelOpen}
             setFilePanelOpen={setFilePanelOpen}
