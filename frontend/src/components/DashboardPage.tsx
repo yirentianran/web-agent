@@ -20,7 +20,7 @@ const EMPTY_TOP_SKILL: import("../hooks/useDashboardApi").TopSkill[] = [];
 export default function DashboardPage() {
   const { t } = useTranslation();
   const navigate = useNavigate();
-  const [timeRange, setTimeRange] = useState({ from: daysAgoStr(30), to: todayStr() });
+  const [timeRange, setTimeRange] = useState({ from: daysAgoStr(7), to: todayStr() });
 
   useEffect(() => {
     performance.mark('dashboard-enter');

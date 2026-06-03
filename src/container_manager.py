@@ -48,6 +48,31 @@ CONTAINER_IMAGE = "web-agent-user:latest"
 CONTAINER_PORT = 8000
 CONTAINER_IDLE_TTL = int(os.getenv("CONTAINER_IDLE_TTL", "1800"))  # 30 min default
 IDLE_CHECK_INTERVAL = 60  # seconds between idle checks
+CONTAINER_NAME_PREFIX = "web-agent-"
+
+
+def _list_user_containers(
+    client: docker.DockerClient,
+    *,
+    all: bool = False,
+    status: str | None = None,
+) -> list:
+    """Return containers matching CONTAINER_IMAGE, optionally filtered by status."""
+    filters: dict = {"ancestor": CONTAINER_IMAGE}
+    if status:
+        filters["status"] = status
+    try:
+        return client.containers.list(all=all, filters=filters)
+    except docker.errors.DockerException:
+        logger.exception("Failed to list containers (all=%s, status=%s)", all, status)
+        return []
+
+
+def user_id_from_container_name(name: str) -> str:
+    """Extract user_id from a container name like 'web-agent-alice'."""
+    if name.startswith(CONTAINER_NAME_PREFIX):
+        return name[len(CONTAINER_NAME_PREFIX):]
+    return name
 
 
 def _running_in_docker() -> bool:
@@ -194,7 +219,7 @@ def get_user_env(user_id: str, mcp_config: dict | None = None) -> dict[str, str]
 
 
 def container_name(user_id: str) -> str:
-    return f"web-agent-{user_id}"
+    return f"{CONTAINER_NAME_PREFIX}{user_id}"
 
 
 def wait_for_container_ready(container_url: str, timeout: float = 30.0) -> None:
@@ -328,6 +353,25 @@ def ensure_container(user_id: str, mcp_config: dict | None = None) -> str:
     return url
 
 
+def destroy_all_containers() -> int:
+    """Destroy all user containers from a previous run.
+
+    Called at startup to clean up orphaned containers left by a crash or
+    ungraceful shutdown.  ``ensure_container`` recreates them on demand.
+    """
+    containers = _list_user_containers(get_client(), all=True)
+    count = 0
+    for c in containers:
+        try:
+            c.remove(force=True)
+            count += 1
+        except docker.errors.DockerException:
+            logger.exception("Failed to destroy container %s", c.name)
+    if count > 0:
+        logger.info("Destroyed %d orphaned container(s) from previous run", count)
+    return count
+
+
 def pause_container(user_id: str) -> None:
     client = get_client()
     try:
@@ -369,24 +413,37 @@ def touch_user(user_id: str) -> None:
 
 
 def stop_idle_containers() -> int:
-    """Stop containers for users who have been idle beyond CONTAINER_IDLE_TTL.
+    """Stop containers idle beyond CONTAINER_IDLE_TTL.
 
-    Returns the number of containers stopped.
+    Enumerates containers from Docker so orphaned containers from a
+    previous-crash recovery window are also discovered.  Uses
+    ``_last_activity`` only for timestamps; a missing entry means the
+    container was never touched by this process and is treated as idle.
     """
     now = time.time()
     stopped = 0
-    for user_id, last_ts in list(_last_activity.items()):
-        if now - last_ts < CONTAINER_IDLE_TTL:
+    containers = _list_user_containers(get_client(), status="running")
+    known_ids: set[str] = set()
+    for c in containers:
+        name = c.name
+        if not name.startswith(CONTAINER_NAME_PREFIX):
+            continue
+        uid = user_id_from_container_name(name)
+        known_ids.add(uid)
+        if now - _last_activity.get(uid, 0) < CONTAINER_IDLE_TTL:
             continue
         try:
-            client = get_client()
-            container = client.containers.get(container_name(user_id))
-            if container.status in ("running", "paused"):
-                container.stop(timeout=30)
-                logger.info("Stopped idle container for user %s (idle %.0fs)", user_id, now - last_ts)
-                stopped += 1
+            c.stop(timeout=30)
+            logger.info("Stopped idle container for user %s (idle %.0fs)", uid, now - _last_activity.get(uid, 0))
+            stopped += 1
         except docker.errors.NotFound:
-            del _last_activity[user_id]
+            pass
+
+    # Prune _last_activity entries for users with no running container
+    for uid in list(_last_activity):
+        if uid not in known_ids:
+            del _last_activity[uid]
+
     return stopped
 
 
@@ -413,6 +470,8 @@ def start_idle_monitor() -> None:
 
 def list_active_containers() -> list[dict[str, str]]:
     """Return list of running user containers."""
-    client = get_client()
-    containers = client.containers.list(filters={"ancestor": CONTAINER_IMAGE})
-    return [{"name": c.name.replace("web-agent-", ""), "status": c.status} for c in containers]
+    containers = _list_user_containers(get_client())
+    return [
+        {"name": user_id_from_container_name(c.name), "status": c.status}
+        for c in containers
+    ]

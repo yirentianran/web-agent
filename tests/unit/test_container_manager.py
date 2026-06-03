@@ -335,10 +335,12 @@ class TestIdleTracking:
 
         mock_container_a = MagicMock()
         mock_container_a.status = "running"
+        mock_container_a.name = "web-agent-alice"
+        mock_container_b = MagicMock()
+        mock_container_b.status = "running"
+        mock_container_b.name = "web-agent-bob"
         mock_client = MagicMock()
-        mock_client.containers.get.side_effect = lambda name: {
-            "web-agent-alice": mock_container_a,
-        }.get(name, MagicMock(status="running"))
+        mock_client.containers.list.return_value = [mock_container_a, mock_container_b]
         mock_get_client.return_value = mock_client
 
         # Temporarily reduce TTL to ensure alice is detected as idle
@@ -348,6 +350,7 @@ class TestIdleTracking:
             stopped = cm.stop_idle_containers()
             assert stopped == 1
             mock_container_a.stop.assert_called_once()
+            mock_container_b.stop.assert_not_called()
         finally:
             cm.CONTAINER_IDLE_TTL = original_ttl
 
@@ -357,18 +360,28 @@ class TestIdleTracking:
         cm._last_activity["alice"] = now
         cm._last_activity["bob"] = now
 
+        mock_container_a = MagicMock()
+        mock_container_a.status = "running"
+        mock_container_a.name = "web-agent-alice"
+        mock_container_b = MagicMock()
+        mock_container_b.status = "running"
+        mock_container_b.name = "web-agent-bob"
         mock_client = MagicMock()
+        mock_client.containers.list.return_value = [mock_container_a, mock_container_b]
         mock_get_client.return_value = mock_client
 
         stopped = cm.stop_idle_containers()
         assert stopped == 0
-        mock_client.containers.get.assert_not_called()
+        mock_container_a.stop.assert_not_called()
+        mock_container_b.stop.assert_not_called()
 
     @patch("src.container_manager.get_client")
-    def test_stop_idle_containers_cleans_missing(self, mock_get_client: MagicMock) -> None:
-        cm._last_activity["alice"] = 0.0  # very old
+    def test_stop_idle_containers_ignores_missing_containers(self, mock_get_client: MagicMock) -> None:
+        """Container not found via list() is simply not stopped — no error."""
+        cm._last_activity["alice"] = 0.0  # very old, but no matching container
+
         mock_client = MagicMock()
-        mock_client.containers.get.side_effect = docker.errors.NotFound("not found")
+        mock_client.containers.list.return_value = []  # no running containers
         mock_get_client.return_value = mock_client
 
         original_ttl = cm.CONTAINER_IDLE_TTL
@@ -376,7 +389,6 @@ class TestIdleTracking:
         try:
             stopped = cm.stop_idle_containers()
             assert stopped == 0
-            assert "alice" not in cm._last_activity
         finally:
             cm.CONTAINER_IDLE_TTL = original_ttl
 

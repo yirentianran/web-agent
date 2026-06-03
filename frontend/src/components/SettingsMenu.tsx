@@ -43,26 +43,26 @@ export default function SettingsMenu({ onOpenSkills, onOpenEvolution, onOpenMCP,
       </button>
       {open && (
         <div className="settings-menu-dropdown" role="menu">
-          <button className="settings-menu-item" role="menuitem" onClick={() => handleAction(onOpenSkills)} type="button">
-            <span className="settings-menu-item-icon">🧩</span>
-            {t('header.skillsManagement')}
-          </button>
           {isAdmin && (
             <button className="settings-menu-item" role="menuitem" onClick={() => handleAction(onOpenDashboard)} type="button">
               <span className="settings-menu-item-icon">📊</span>
               {t('header.usageDashboard')}
             </button>
           )}
-          {isAdmin && (
-            <button className="settings-menu-item" role="menuitem" onClick={() => handleAction(onOpenUsers)} type="button">
-              <span className="settings-menu-item-icon">👥</span>
-              {t('users.title')}
-            </button>
-          )}
+          <button className="settings-menu-item" role="menuitem" onClick={() => handleAction(onOpenSkills)} type="button">
+            <span className="settings-menu-item-icon">🧩</span>
+            {t('header.skillsManagement')}
+          </button>
           {isAdmin && (
             <button className="settings-menu-item" role="menuitem" onClick={() => handleAction(onOpenMCP)} type="button">
               <span className="settings-menu-item-icon">⚡</span>
               {t('header.mcpServers')}
+            </button>
+          )}
+          {isAdmin && (
+            <button className="settings-menu-item" role="menuitem" onClick={() => handleAction(onOpenUsers)} type="button">
+              <span className="settings-menu-item-icon">👥</span>
+              {t('users.title')}
             </button>
           )}
           {isAdmin && (

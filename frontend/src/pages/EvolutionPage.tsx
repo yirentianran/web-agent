@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { StatsCards } from './evolution/StatsCards';
@@ -25,9 +25,7 @@ export default function EvolutionPage() {
   const api = useEvolutionApi();
   const [activeTab, setActiveTab] = useState<TabId>('evolutions');
   const [detailId, setDetailId] = useState<number | null>(null);
-  const [timeRange, setTimeRange] = useState(0);
-  const refreshRef = useRef<ReturnType<typeof setInterval> | null>(null);
-
+  const [timeRange, setTimeRange] = useState(7);
   const loadData = useCallback((days: number) => {
     api.fetchStats(days);
     api.fetchInstincts({});
@@ -37,24 +35,6 @@ export default function EvolutionPage() {
   useEffect(() => {
     loadData(timeRange);
   }, [timeRange]);
-
-  // Auto-refresh every 30s when not viewing detail
-  useEffect(() => {
-    if (detailId !== null) {
-      if (refreshRef.current) {
-        clearInterval(refreshRef.current);
-        refreshRef.current = null;
-      }
-      return;
-    }
-    refreshRef.current = setInterval(() => loadData(timeRange), 30000);
-    return () => {
-      if (refreshRef.current) {
-        clearInterval(refreshRef.current);
-        refreshRef.current = null;
-      }
-    };
-  }, [detailId, timeRange, loadData]);
 
   const handleInstinctFilter = useCallback(
     (filters: { domain?: string; scope?: string }) => {
@@ -122,9 +102,6 @@ export default function EvolutionPage() {
             {t(labelKey)}
           </button>
         ))}
-        <span className="auto-refresh-indicator" title={t('evolutionMonitor.autoRefresh')}>
-          {t('evolutionMonitor.autoRefresh')}
-        </span>
       </div>
 
       <StatsCards stats={api.stats.data ?? null} loading={api.stats.loading} />

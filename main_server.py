@@ -1431,6 +1431,12 @@ async def build_sdk_options(
         user_data_dir_override=user_dir,
     )
 
+    # Point SDK CLI at the user workspace skills dir so it creates and
+    # discovers skills there, not at the project-root .claude/skills/.
+    # Container mode sets this in get_user_env() instead.
+    if cfg["sdk_env"] is not None:
+        cfg["sdk_env"]["CLAUDE_SKILLS_DIRS"] = str(workspace / ".claude" / "skills")
+
     # PreToolUse hooks — intercept Write and Bash to prevent external file writes.
     # Hooks run regardless of permission_mode (unlike can_use_tool which is skipped
     # by acceptEdits/bypassPermissions).
@@ -6396,15 +6402,22 @@ async def startup() -> None:
 
     asyncio.create_task(_cleanup_loop())
 
-    # Start container idle monitor when CONTAINER_MODE is enabled
-    logger.info("DEBUG CONTAINER_MODE=%s", CONTAINER_MODE)
+    # Start container idle monitor when CONTAINER_MODE is enabled.
+    # Also destroy any orphaned containers from a previous run first.
     if CONTAINER_MODE:
         _cm = _get_container_manager()
-        logger.info("DEBUG _get_container_manager returned=%s", _cm)
         if _cm:
-            logger.info("About to call start_idle_monitor")
+            _cm.destroy_all_containers()
             _cm.start_idle_monitor()
-            logger.info("Called start_idle_monitor")
+
+
+@app.on_event("shutdown")
+async def shutdown() -> None:
+    """Clean up all user containers on graceful exit."""
+    if CONTAINER_MODE:
+        _cm = _get_container_manager()
+        if _cm:
+            _cm.destroy_all_containers()
 
 
 async def _cleanup_loop() -> None:

@@ -23,7 +23,7 @@ interface TimeRangeSelectorProps {
 
 export default function TimeRangeSelector({ from, to, onChange }: TimeRangeSelectorProps) {
   const { t } = useTranslation();
-  const [activePreset, setActivePreset] = useState<TimePreset>("30d");
+  const [activePreset, setActivePreset] = useState<TimePreset>("7d");
   const [showCustom, setShowCustom] = useState(false);
   const [customFrom, setCustomFrom] = useState(from);
   const [customTo, setCustomTo] = useState(to);
