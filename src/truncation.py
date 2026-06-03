@@ -5,7 +5,18 @@ Prevents context window overflow and cost explosion from oversized tool results.
 
 from __future__ import annotations
 
-MAX_TOOL_OUTPUT_CHARS = int(__import__("os").getenv("MAX_TOOL_OUTPUT_CHARS", "10000"))
+MAX_TOOL_OUTPUT_CHARS = int(__import__("os").getenv("MAX_TOOL_OUTPUT_CHARS", "50000"))
+_TRUNCATION_THRESHOLD = 1000  # only inspect strings longer than this
+
+
+def maybe_truncate_tool_result_content(content: str | list | None) -> str | list | None:
+    """Truncate a single tool_result content value if it is an oversized string.
+
+    Returns the truncated content or the original value unchanged.
+    """
+    if isinstance(content, str) and len(content) > _TRUNCATION_THRESHOLD:
+        return truncate_tool_output(content)
+    return content
 
 
 def truncate_tool_output(raw: str, max_chars: int = MAX_TOOL_OUTPUT_CHARS) -> str:

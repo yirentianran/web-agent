@@ -182,6 +182,8 @@ class MessageBuffer:
         """Write one message to SQLite via the async connection."""
         if self.db is None:
             return
+        if message.get("type") == "stream_event":
+            return
 
         async with self.db.connection() as conn:
             cursor = await conn.execute(

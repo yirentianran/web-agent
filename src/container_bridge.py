@@ -198,9 +198,13 @@ class ContainerBridge:
                     pass
 
                 if msg_type == "stream_event":
-                    await self.buffer.add_message(self.session_id, data, self.user_id)
-                    # Accumulate text from content_block_delta events
+                    # Truncate oversized tool results before buffering
                     event = data.get("event", {})
+                    if isinstance(event, dict) and event.get("type") == "tool_result":
+                        from src.truncation import maybe_truncate_tool_result_content
+
+                        event["content"] = maybe_truncate_tool_result_content(event.get("content", ""))
+                    await self.buffer.add_message(self.session_id, data, self.user_id)
                     if isinstance(event, dict) and event.get("type") == "content_block_delta":
                         delta = event.get("delta", {})
                         if isinstance(delta, dict) and delta.get("type") == "text_delta":

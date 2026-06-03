@@ -278,6 +278,7 @@ class _CliRunner:
                 "PreToolUse": [
                     {"matcher": "Write", "hookCallbackIds": ["__hook_write__"]},
                     {"matcher": "Bash", "hookCallbackIds": ["__hook_bash__"]},
+                    {"matcher": "Read", "hookCallbackIds": ["__hook_read__"]},
                 ],
             }
             init_req = {
@@ -340,7 +341,7 @@ class _CliRunner:
             logger.info("CLI: sent user message session=%s", self._session_id)
 
             # ── Phase 4: read & bridge messages ──────────────────
-            hook_callbacks = {"__hook_write__": "Write", "__hook_bash__": "Bash"}
+            hook_callbacks = {"__hook_write__": "Write", "__hook_bash__": "Bash", "__hook_read__": "Read"}
 
             while not self._cancel_event.is_set():
                 line = await process.stdout.readline()
@@ -431,6 +432,7 @@ class _CliRunner:
                             )
                         elif tool_name == "Read":
                             from src.security_filter import FileAccessFilter
+                            from src.constants import MAX_READ_FILE_BYTES
                             file_path = tool_input.get("file_path", "")
                             allowed, reason = FileAccessFilter.check(file_path)
                             if not allowed:
@@ -451,6 +453,45 @@ class _CliRunner:
                                 process.stdin.write(resp_line.encode())
                                 await process.stdin.drain()
                                 continue
+                            # Enforce file size limit
+                            if file_path and MAX_READ_FILE_BYTES > 0:
+                                resolved = Path(file_path)
+                                if not resolved.is_absolute():
+                                    resolved = self._cwd / file_path
+                                try:
+                                    file_size = resolved.stat().st_size
+                                    if file_size > MAX_READ_FILE_BYTES:
+                                        size_mb = file_size / (1024 * 1024)
+                                        limit_mb = MAX_READ_FILE_BYTES / (1024 * 1024)
+                                        logger.warning(
+                                            "PreToolUse[Read]: blocked oversized file '%s' (%.1fMB > %.1fMB)",
+                                            file_path, size_mb, limit_mb,
+                                        )
+                                        result = {
+                                            "subtype": "success",
+                                            "request_id": req_id,
+                                            "response": {
+                                                "continue_": True,
+                                                "hookSpecificOutput": {
+                                                    "hookEventName": "PreToolUse",
+                                                    "permissionDecision": "deny",
+                                                    "permissionDecisionReason": (
+                                                        f"File is {size_mb:.1f}MB. "
+                                                        f"The maximum allowed size for reading "
+                                                        f"is {limit_mb:.0f}MB. Please use Bash "
+                                                        f"commands like 'head' or 'split' to "
+                                                        f"process the file in smaller chunks."
+                                                    ),
+                                                },
+                                            },
+                                        }
+                                        resp = {"type": "control_response", "response": result}
+                                        resp_line = json.dumps(resp, ensure_ascii=False) + "\n"
+                                        process.stdin.write(resp_line.encode())
+                                        await process.stdin.drain()
+                                        continue
+                                except OSError:
+                                    pass  # file doesn't exist — let CLI handle it
                             new_input = tool_input
                         else:
                             new_input = tool_input

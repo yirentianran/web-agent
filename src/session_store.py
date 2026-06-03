@@ -278,6 +278,9 @@ class SessionStore:
 
     async def add_message(self, user_id: str, session_id: str, message: dict) -> None:
         """Append a message to a session. Verifies session belongs to user_id and is not deleted."""
+        if message.get("type") == "stream_event":
+            return
+
         async def _do():
             async with self.db.connection() as conn:
                 # Verify session ownership and not deleted

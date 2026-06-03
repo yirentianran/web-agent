@@ -1523,10 +1523,67 @@ async def build_sdk_options(
             },
         }
 
+    async def read_path_hook(
+        hook_input: HookInput,
+        _tool_use_id: str | None,
+        _context: HookContext,
+    ) -> dict:
+        from src.security_filter import FileAccessFilter
+
+        tool_inp = hook_input.get("tool_input", {})
+        file_path = str(tool_inp.get("file_path", ""))
+        if not file_path:
+            return {"sync": True, "continue_": True}
+        allowed, reason = FileAccessFilter.check(file_path)
+        if not allowed:
+            logger.debug("PreToolUse[Read]: blocked sensitive file '%s'", file_path)
+            return {
+                "sync": True,
+                "continue_": True,
+                "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "decision": "reject",
+                    "reason": "This operation is not permitted.",
+                },
+            }
+        # Enforce file size limit — resolve relative paths against workspace
+        from src.constants import MAX_READ_FILE_BYTES
+
+        if file_path and MAX_READ_FILE_BYTES > 0:
+            resolved = Path(file_path)
+            if not resolved.is_absolute():
+                resolved = workspace / file_path
+            try:
+                file_size = resolved.stat().st_size
+                if file_size > MAX_READ_FILE_BYTES:
+                    size_mb = file_size / (1024 * 1024)
+                    limit_mb = MAX_READ_FILE_BYTES / (1024 * 1024)
+                    logger.warning(
+                        "PreToolUse[Read]: blocked oversized file '%s' (%.1fMB > %.1fMB)",
+                        file_path, size_mb, limit_mb,
+                    )
+                    return {
+                        "sync": True,
+                        "continue_": True,
+                        "hookSpecificOutput": {
+                            "hookEventName": "PreToolUse",
+                            "decision": "reject",
+                            "reason": (
+                                f"File is {size_mb:.1f}MB. The maximum allowed size for reading "
+                                f"is {limit_mb:.0f}MB. Please use Bash commands like 'head' or "
+                                f"'split' to process the file in smaller chunks."
+                            ),
+                        },
+                    }
+            except OSError:
+                pass  # file doesn't exist yet — let CLI handle the error
+        return {"sync": True, "continue_": True}
+
     hooks: dict[str, list[HookMatcher]] = {
         "PreToolUse": [
             HookMatcher(matcher="Write", hooks=[write_path_hook]),
             HookMatcher(matcher="Bash", hooks=[bash_path_hook]),
+            HookMatcher(matcher="Read", hooks=[read_path_hook]),
         ],
     }
 
@@ -2253,11 +2310,9 @@ async def run_agent_task(
                     )
                 # Truncate oversized tool results
                 if event.get("type") == "tool_result":
-                    from src.truncation import truncate_tool_output
+                    from src.truncation import maybe_truncate_tool_result_content
 
-                    content = event.get("content", "")
-                    if content and len(content) > 1000:
-                        event["content"] = truncate_tool_output(content)
+                    event["content"] = maybe_truncate_tool_result_content(event.get("content", ""))
                     # Record tool_call_end for observation
                     await tool_observer.on_tool_result(
                         event.get("tool_use_id", ""),
