@@ -38,7 +38,7 @@ from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from slowapi import Limiter
 from slowapi.middleware import SlowAPIMiddleware
 from slowapi.util import get_remote_address
@@ -3707,7 +3707,7 @@ async def delete_session(
 
 
 class TitleUpdate(BaseModel):
-    title: str
+    title: str = Field(..., min_length=1, max_length=500)
 
 
 @app.patch("/api/users/{user_id}/sessions/{session_id}/title", dependencies=[Depends(verify_csrf)])
@@ -4687,18 +4687,18 @@ async def update_user_language(
 
 
 class TaskCreateRequest(BaseModel):
-    subject: str
-    description: str = ""
-    active_form: str = ""
+    subject: str = Field(..., min_length=1, max_length=200)
+    description: str = Field("", max_length=10000)
+    active_form: str = Field("", max_length=200)
     blocked_by: list[str] = []
     parent_task_id: str | None = None
 
 
 class TaskUpdateRequest(BaseModel):
     status: str | None = None
-    subject: str | None = None
-    active_form: str | None = None
-    description: str | None = None
+    subject: str | None = Field(None, min_length=1, max_length=200)
+    active_form: str | None = Field(None, max_length=200)
+    description: str | None = Field(None, max_length=10000)
     blocked_by: list[str] | None = None
 
 
@@ -4797,12 +4797,12 @@ async def delete_task_endpoint(
 
 
 class SkillFeedbackRequest(BaseModel):
-    rating: int
-    comment: str = ""
-    user_edits: str = ""
+    rating: int = Field(..., ge=1, le=5)
+    comment: str = Field("", max_length=5000)
+    user_edits: str = Field("", max_length=10000)
     session_id: str | None = None
     skill_version: str | None = None
-    conversation_snippet: str = ""
+    conversation_snippet: str = Field("", max_length=10000)
 
 
 @app.post("/api/skills/{skill_name}/feedback")
@@ -5141,7 +5141,7 @@ async def get_skill_suggestions(
 
 
 class SkillActivateRequest(BaseModel):
-    version_number: int
+    version_number: int = Field(..., ge=1)
 
 
 @app.post("/api/skills/{skill_name}/activate-version")
@@ -5852,8 +5852,8 @@ async def get_user_feedback(
 
 
 class TokenRequest(BaseModel):
-    user_id: str
-    password: str = ""
+    user_id: str = Field(..., min_length=1, max_length=64)
+    password: str = Field("", max_length=128)
 
 
 @app.get("/api/auth/config")
