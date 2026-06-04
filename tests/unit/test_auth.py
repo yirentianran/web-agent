@@ -12,7 +12,6 @@ import pytest
 from fastapi import HTTPException, Request
 
 from src.auth import (
-    ACCESS_TOKEN_COOKIE,
     ALGORITHM,
     CSRF_HEADER,
     CSRF_TOKEN_COOKIE,
