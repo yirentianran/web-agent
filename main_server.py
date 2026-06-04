@@ -2827,7 +2827,16 @@ async def handle_ws(websocket: WebSocket) -> None:
             while True:
                 raw = await websocket.receive_text()
                 data = json.loads(raw)
+                # Read the user_id from the incoming message
+                msg_user_id = data.get("user_id", "")
                 if ENFORCE_AUTH and _verified_user_id:
+                    if msg_user_id and msg_user_id != _verified_user_id:
+                        # Reject: user_id in message doesn't match token
+                        await websocket.send_json({
+                            "type": "error",
+                            "error": "User ID mismatch — message rejected",
+                        })
+                        continue  # Skip this message entirely
                     incoming_user_id = _verified_user_id
                 elif not ENFORCE_AUTH:
                     incoming_user_id = data.get("user_id", "")
