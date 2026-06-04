@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import time
 import urllib.error
 import urllib.request
@@ -103,6 +104,9 @@ class ContainerBridge:
                     ping_interval=20,
                     ping_timeout=10,
                     close_timeout=10,
+                    additional_headers={
+                        "X-Agent-Token": os.getenv("AGENT_SECRET", ""),
+                    },
                 )
                 logger.info(
                     "Connected to container %s (attempt %d/%d)",

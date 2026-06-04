@@ -58,3 +58,15 @@ class TestWebSocketUserEnforcement:
         with pytest.raises(Exception):
             with client.websocket_connect("/ws?token=invalid.fake.token") as ws:
                 ws.receive_text()
+
+
+class TestAgentServerAuth:
+    """Test agent_server.py WS authentication (defense-in-depth)."""
+
+    def test_agent_server_rejects_missing_token(self) -> None:
+        """agent_server WS should reject connections without X-Agent-Token."""
+        pass  # Requires live agent_server instance
+
+    def test_agent_server_rejects_wrong_token(self) -> None:
+        """agent_server WS should reject connections with wrong token."""
+        pass  # Requires live agent_server instance

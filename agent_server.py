@@ -553,8 +553,18 @@ class _CliRunner:
 # ── WebSocket endpoint ──────────────────────────────────────────────
 
 
+AGENT_SECRET = os.getenv("AGENT_SECRET", "")
+
+
 @app.websocket("/ws")
 async def agent_ws(websocket: WebSocket) -> None:
+    # Validate internal auth token for defense-in-depth
+    secret = websocket.headers.get("X-Agent-Token", "")
+    if AGENT_SECRET and (not secret or secret != AGENT_SECRET):
+        await websocket.close(code=4001, reason="Unauthorized")
+        logger.warning("Agent WS connection rejected: invalid or missing token")
+        return
+
     await websocket.accept()
     logger.info("Agent WS connected")
 

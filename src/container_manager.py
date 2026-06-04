@@ -14,6 +14,7 @@ import asyncio
 import json
 import logging
 import os
+import secrets
 import time
 import urllib.error
 import urllib.request
@@ -43,6 +44,9 @@ if _HOST_DATA_ROOT:
     HOST_DATA_ROOT = Path(_HOST_DATA_ROOT)
 else:
     HOST_DATA_ROOT = DATA_ROOT.resolve()
+
+# Module-level: generate once per process for defense-in-depth
+_agent_secret = os.getenv("AGENT_SECRET") or secrets.token_hex(32)
 
 CONTAINER_IMAGE = "web-agent-user:latest"
 CONTAINER_PORT = 8000
@@ -205,6 +209,7 @@ def get_user_env(user_id: str, mcp_config: dict | None = None) -> dict[str, str]
         "CLAUDE_SKILLS_DIRS": (f"{HOST_DATA_ROOT}/shared-skills,{base}/workspace/.claude/skills"),
         "UV_CACHE_DIR": str(base / ".cache" / "uv"),
         "LOG_DIR": str(base / "logs"),
+        "AGENT_SECRET": _agent_secret,
         # UID/GID for entrypoint.sh to adapt the agent user at container startup
         "CONTAINER_UID": str(os.getuid()),
         "CONTAINER_GID": str(os.getgid()),
