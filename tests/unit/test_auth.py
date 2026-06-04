@@ -3,21 +3,100 @@
 from __future__ import annotations
 
 import os
+import secrets
 from datetime import datetime, timedelta, timezone
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import jwt
 import pytest
-from fastapi import HTTPException
+from fastapi import HTTPException, Request
 
 from src.auth import (
+    ACCESS_TOKEN_COOKIE,
     ALGORITHM,
+    CSRF_HEADER,
+    CSRF_TOKEN_COOKIE,
     JWT_SECRET,
+    SAFE_METHODS,
+    create_csrf_token,
     create_token,
     get_current_user,
     require_user_match,
+    verify_csrf,
     verify_token,
 )
+
+
+# ── create_csrf_token ─────────────────────────────────────────────
+
+
+class TestCreateCsrfToken:
+    def test_token_is_hex_string(self) -> None:
+        token = create_csrf_token()
+        assert len(token) == 64  # 32 bytes hex = 64 chars
+        assert all(c in "0123456789abcdef" for c in token)
+
+    def test_tokens_are_unique(self) -> None:
+        tokens = {create_csrf_token() for _ in range(100)}
+        assert len(tokens) == 100
+
+
+# ── verify_csrf ───────────────────────────────────────────────────
+
+
+class TestVerifyCsrf:
+    def _make_request(self, method: str, cookie_value: str = "", header_value: str = "") -> MagicMock:
+        """Helper to build a mock Request with given CSRF state."""
+        req = MagicMock(spec=Request)
+        req.method = method
+        req.cookies = {CSRF_TOKEN_COOKIE: cookie_value}
+        req.headers = {CSRF_HEADER: header_value}
+        return req
+
+    @patch("src.auth.ENFORCE_AUTH", True)
+    def test_safe_methods_are_skipped(self) -> None:
+        for method in ("GET", "HEAD", "OPTIONS"):
+            req = self._make_request(method)
+            verify_csrf(req)  # Should not raise
+
+    @patch("src.auth.ENFORCE_AUTH", True)
+    def test_post_without_csrf_header_raises_403(self) -> None:
+        req = self._make_request("POST", cookie_value="abc")
+        with pytest.raises(HTTPException) as exc:
+            verify_csrf(req)
+        assert exc.value.status_code == 403
+        assert "CSRF" in exc.value.detail
+
+    @patch("src.auth.ENFORCE_AUTH", True)
+    def test_post_without_csrf_cookie_raises_403(self) -> None:
+        req = self._make_request("POST", header_value="abc")
+        with pytest.raises(HTTPException) as exc:
+            verify_csrf(req)
+        assert exc.value.status_code == 403
+
+    @patch("src.auth.ENFORCE_AUTH", True)
+    def test_post_with_mismatched_csrf_raises_403(self) -> None:
+        req = self._make_request("POST", cookie_value="token_a", header_value="token_b")
+        with pytest.raises(HTTPException) as exc:
+            verify_csrf(req)
+        assert exc.value.status_code == 403
+
+    @patch("src.auth.ENFORCE_AUTH", True)
+    def test_post_with_matching_csrf_passes(self) -> None:
+        token = create_csrf_token()
+        req = self._make_request("POST", cookie_value=token, header_value=token)
+        verify_csrf(req)  # Should not raise
+
+    @patch("src.auth.ENFORCE_AUTH", True)
+    def test_delete_with_matching_csrf_passes(self) -> None:
+        token = create_csrf_token()
+        req = self._make_request("DELETE", cookie_value=token, header_value=token)
+        verify_csrf(req)  # Should not raise
+
+    @patch("src.auth.ENFORCE_AUTH", False)
+    def test_skipped_when_auth_disabled(self) -> None:
+        req = self._make_request("POST")  # No cookie, no header
+        verify_csrf(req)  # Should not raise when auth disabled
 
 
 # ── create_token ──────────────────────────────────────────────────
