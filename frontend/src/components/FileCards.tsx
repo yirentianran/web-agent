@@ -10,11 +10,8 @@ interface FileCardProps {
   status?: 'uploaded' | 'result' | 'error'
 }
 
-async function downloadViaFetch(downloadUrl: string, basename: string, authToken: string | null): Promise<void> {
-  const headers: Record<string, string> = {}
-  if (authToken) headers['Authorization'] = `Bearer ${authToken}`
-
-  const response = await fetch(downloadUrl, { headers })
+async function downloadViaFetch(downloadUrl: string, basename: string, _authToken: string | null): Promise<void> {
+  const response = await fetch(downloadUrl, { credentials: 'same-origin' })
   if (!response.ok) {
     if (response.status === 401 || response.status === 403) {
       throw new Error('Session expired, please re-login')

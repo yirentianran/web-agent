@@ -1,9 +1,10 @@
 import { useMemo, useRef, useCallback } from 'react'
 import type { Skill } from '../lib/types'
+import { csrfHeaders } from '../lib/api'
 
-export function useSkillsApi(authToken: string | null, userId: string) {
+export function useSkillsApi(userId: string) {
   const headersRef = useRef<HeadersInit>({})
-  headersRef.current = authToken ? { Authorization: `Bearer ${authToken}` } : {}
+  headersRef.current = csrfHeaders()
 
   const fetchJSON = useCallback(async (url: string, options?: RequestInit) => {
     const resp = await fetch(url, { ...options, headers: { ...headersRef.current, 'Content-Type': 'application/json', ...options?.headers } })

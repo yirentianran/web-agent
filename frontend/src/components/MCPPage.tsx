@@ -142,9 +142,9 @@ function getPreviewLines(text: string): string[] | null {
   }
 }
 
-export default function MCPPage({ userId: _userId, authToken, onBack }: MCPPageProps) {
+export default function MCPPage({ userId: _userId, authToken: _authToken, onBack }: MCPPageProps) {
   const { t } = useTranslation()
-  const api = useMCPServers(authToken ?? null)
+  const api = useMCPServers()
   const [servers, setServers] = useState<McpServer[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')

@@ -34,15 +34,26 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import httpx
-from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+from slowapi import Limiter
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
 
 from src.admin_auth import require_admin
-from src.auth import create_token, get_current_user, verify_path_user, verify_token
-from src.security_filter import BashCommandFilter, FileAccessFilter
+from src.auth import (
+    create_token,
+    get_current_user,
+    verify_path_user,
+    verify_token,
+    set_auth_cookies,
+    clear_auth_cookies,
+)
+from src.security_filter import BashCommandFilter, FileAccessFilter, tool_call_rate_limiter
+from src.security_headers import SecurityHeadersMiddleware
 from src.workspace_enforcement import (
     HostPaths,
     check_bash_command_for_external_writes as _ws_check_bash,
@@ -148,6 +159,20 @@ if not PROD:
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
+    )
+
+app.add_middleware(SecurityHeadersMiddleware)
+
+# ── Rate limiting ─────────────────────────────────────────────────
+limiter = Limiter(key_func=get_remote_address)
+app.state.limiter = limiter
+
+
+@app.exception_handler(RateLimitExceeded)
+async def _rate_limit_exceeded_handler(request: Any, exc: RateLimitExceeded) -> JSONResponse:
+    return JSONResponse(
+        status_code=429,
+        content={"detail": "请求过于频繁，请稍后再试。Too many requests, please try again later."},
     )
 
 # Global state
@@ -2137,6 +2162,12 @@ async def run_agent_task(
         tool_input: dict[str, Any],
         ctx: ToolPermissionContext,
     ) -> PermissionResult:
+        # Rate-limit tool calls per session (30/min sliding window)
+        if not tool_call_rate_limiter.allow(session_id):
+            return PermissionResultDeny(
+                message="Tool call rate limit exceeded. Please wait before making more tool calls.",
+            )
+
         # Block disabled tools — MCP fetch servers handle web content
         if tool_name in DISABLED_TOOLS:
             return PermissionResultDeny(
@@ -2761,9 +2792,10 @@ async def _safe_ws_send(websocket: WebSocket, data: dict) -> bool:
 @app.websocket("/ws")
 async def handle_ws(websocket: WebSocket) -> None:
     """Browser ↔ Agent WebSocket. Direct SDK integration (Phase 1)."""
-    from src.auth import ENFORCE_AUTH
+    from src.auth import ENFORCE_AUTH, ACCESS_TOKEN_COOKIE
 
-    token = websocket.query_params.get("token")
+    # Read token from httpOnly cookie (primary) or query param (fallback)
+    token = websocket.cookies.get(ACCESS_TOKEN_COOKIE) or websocket.query_params.get("token")
     _verified_user_id: str | None = None
     _locked_user_id: str | None = None
     if ENFORCE_AUTH and token:
@@ -3351,7 +3383,6 @@ async def handle_ws(websocket: WebSocket) -> None:
                         last_seen, ok = await _emit_synthetic_state_change_if_missing(websocket, session_id, last_seen)
                         if not ok:
                             break
-                        break
 
                         # After is_done handling, check for orphaned
                         # "running" sessions (server restart while agent
@@ -3360,6 +3391,7 @@ async def handle_ws(websocket: WebSocket) -> None:
                         last_seen, ok = await _handle_orphaned_running(websocket, session_id, last_seen)
                         if not ok:
                             break
+                        break
 
                     ws_msg = await _wait_for_ws_or_buffer(event, pending_ws_msgs, HEARTBEAT_INTERVAL)
                     if ws_msg:
@@ -5821,7 +5853,8 @@ async def get_auth_config() -> dict[str, bool]:
 
 
 @app.post("/api/auth/token")
-async def get_auth_token(req: TokenRequest) -> dict[str, str]:
+@limiter.limit("5/minute")
+async def get_auth_token(req: TokenRequest, request: Request) -> dict[str, str]:
     """Generate a JWT access token. Verifies password when ENFORCE_AUTH is true."""
     from src.auth import ENFORCE_AUTH, verify_password
 
@@ -5844,6 +5877,7 @@ async def get_auth_token(req: TokenRequest) -> dict[str, str]:
         role = row[2]
         token = create_token(req.user_id, role=role)
     else:
+        role = "user"
         token = create_token(req.user_id)
 
     if _audit_logger is not None:
@@ -5852,11 +5886,14 @@ async def get_auth_token(req: TokenRequest) -> dict[str, str]:
             {"user_id": req.user_id, "action": "token_create", "result": "ok"},
         )
 
-    return {"token": token, "user_id": req.user_id}
+    response = JSONResponse({"user_id": req.user_id, "role": role})
+    set_auth_cookies(response, token)
+    return response
 
 
 @app.post("/api/auth/register")
-async def register_user(req: TokenRequest) -> dict[str, str]:
+@limiter.limit("3/minute")
+async def register_user(req: TokenRequest, request: Request) -> dict[str, str]:
     """Register a new user. Requires password when ENFORCE_AUTH is true."""
     from src.auth import hash_password
 
@@ -5877,7 +5914,9 @@ async def register_user(req: TokenRequest) -> dict[str, str]:
             raise HTTPException(status_code=409, detail="User already exists")
 
     token = create_token(req.user_id)
-    return {"token": token, "user_id": req.user_id}
+    response = JSONResponse({"user_id": req.user_id, "role": "user"})
+    set_auth_cookies(response, token)
+    return response
 
 
 # ── Container Management ──────────────────────────────────────────

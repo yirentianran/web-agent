@@ -6,11 +6,12 @@ Provides token creation, verification, password hashing, and FastAPI dependency 
 from __future__ import annotations
 
 import os
+import secrets
 from datetime import datetime, timedelta, timezone
 
 import bcrypt
 import jwt
-from fastapi import HTTPException, Query, Header, status
+from fastapi import HTTPException, Request, status
 
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24  # 24 hours
@@ -88,37 +89,21 @@ def verify_token(token: str) -> str:
     return user_id
 
 
-def get_current_user(
-    authorization: str | None = Header(None),
-    token: str | None = Query(None, description="JWT access token (fallback)"),
-) -> str:
-    """FastAPI dependency: extract and verify user from JWT token.
-
-    Accepts tokens from two sources, checked in priority order:
-    1. Authorization: Bearer <token> header (primary)
-    2. ?token=<jwt> query parameter (fallback, for WebSocket)
+def get_current_user(request: Request) -> str:
+    """FastAPI dependency: extract and verify user from httpOnly JWT cookie.
 
     When ENFORCE_AUTH is False, tries to validate a token if present,
     returning empty string when no token is provided.
     """
+    raw_token: str | None = request.cookies.get(ACCESS_TOKEN_COOKIE)
+
     if not ENFORCE_AUTH:
-        raw_token: str | None = None
-        if authorization and authorization.startswith("Bearer "):
-            raw_token = authorization.split(" ", 1)[1]
-        elif token:
-            raw_token = token
         if raw_token is not None:
             try:
                 return verify_token(raw_token)
             except HTTPException:
                 pass
         return ""
-
-    raw_token = None
-    if authorization and authorization.startswith("Bearer "):
-        raw_token = authorization.split(" ", 1)[1]
-    elif token:
-        raw_token = token
 
     if raw_token is None:
         raise HTTPException(
@@ -153,3 +138,103 @@ def verify_path_user(path_user_id: str, current_user: str) -> str:
     In dev mode (ENFORCE_AUTH=false), returns path_user_id.
     """
     return require_user_match(path_user_id, current_user)
+
+
+# ── CSRF Protection ───────────────────────────────────────────────────
+
+ACCESS_TOKEN_COOKIE = "access_token"
+CSRF_TOKEN_COOKIE = "csrf_token"
+CSRF_HEADER = "X-CSRF-Token"
+SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
+
+
+def create_csrf_token() -> str:
+    """Generate a cryptographically random CSRF token."""
+    return secrets.token_hex(32)
+
+
+def set_auth_cookies(response, access_token: str) -> str:
+    """Set httpOnly access_token cookie and readable csrf_token cookie.
+
+    Returns the new CSRF token value (also set as a cookie).
+    Callers can include it in the response body if needed.
+    """
+    csrf_token = create_csrf_token()
+    response.set_cookie(
+        key=ACCESS_TOKEN_COOKIE,
+        value=access_token,
+        httponly=True,
+        secure=True,
+        samesite="strict",
+        max_age=ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+        path="/",
+    )
+    response.set_cookie(
+        key=CSRF_TOKEN_COOKIE,
+        value=csrf_token,
+        httponly=False,  # readable by JS to include in X-CSRF-Token header
+        secure=True,
+        samesite="strict",
+        max_age=ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+        path="/",
+    )
+    return csrf_token
+
+
+def clear_auth_cookies(response) -> None:
+    """Delete both auth cookies (used on logout)."""
+    response.delete_cookie(ACCESS_TOKEN_COOKIE, path="/")
+    response.delete_cookie(CSRF_TOKEN_COOKIE, path="/")
+
+
+def verify_csrf(request: Request) -> None:
+    """Verify the X-CSRF-Token header matches the csrf_token cookie.
+
+    Skipped for safe methods (GET, HEAD, OPTIONS) and when ENFORCE_AUTH is False.
+    Raises HTTPException(403) on mismatch.
+    """
+    if not ENFORCE_AUTH:
+        return
+    if request.method.upper() in SAFE_METHODS:
+        return
+
+    cookie_csrf = request.cookies.get(CSRF_TOKEN_COOKIE, "")
+    header_csrf = request.headers.get(CSRF_HEADER, "")
+
+    if not cookie_csrf or not header_csrf or cookie_csrf != header_csrf:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="CSRF token missing or invalid",
+        )
+
+
+def get_current_user_from_cookie(request: Request) -> str:
+    """FastAPI dependency: extract user from httpOnly access_token cookie.
+
+    Falls back to Bearer header for backward compatibility.
+    When ENFORCE_AUTH is False, returns empty string when no token is present.
+    """
+    raw_token: str | None = request.cookies.get(ACCESS_TOKEN_COOKIE)
+
+    # Fallback: Authorization header
+    if not raw_token:
+        auth_header = request.headers.get("Authorization", "")
+        if auth_header.startswith("Bearer "):
+            raw_token = auth_header.split(" ", 1)[1]
+
+    if not ENFORCE_AUTH:
+        if raw_token:
+            try:
+                return verify_token(raw_token)
+            except HTTPException:
+                pass
+        return ""
+
+    if raw_token is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Missing authentication token",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    return verify_token(raw_token)

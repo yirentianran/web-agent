@@ -111,31 +111,70 @@ def normalize_write_path(file_path: str, session_id: str) -> str:
     return f"outputs/{session_id}/{file_path}"
 
 
+_PATH_TRAVERSAL_PATTERN = re.compile(r"\.\.[/\\]")
+
+
+def _reject_path_traversal(target: str, paths: PathContext) -> str | None:
+    """Return an error message if the target path escapes the workspace via ../ traversal."""
+    if not _PATH_TRAVERSAL_PATTERN.search(target):
+        return None
+    try:
+        resolved = (paths.workspace / target).resolve()
+        if not str(resolved).startswith(str(paths.workspace.resolve())):
+            return (
+                f"Path '{target}' resolves outside the workspace. "
+                "Save all files within the workspace directory."
+            )
+    except (ValueError, OSError):
+        return f"Path '{target}' is invalid."
+    return None
+
+
+_REDIRECT_TARGET_PATTERN = re.compile(
+    r"(?:[12&]?>|>>|\s-o\s+|\s--output\s+)\s*([^\s;|&'\"]+)"
+)
+
+# cp/mv: last non-flag argument is the destination
+_CP_MV_DEST_PATTERN = re.compile(r"""\b(cp|mv)\s+(?:-[a-zA-Z]+\s+)*.*\s+(/[^\s;|&'\"]+)""")
+
+# tee: arguments after 'tee' are output file paths
+_TEE_TARGET_PATTERN = re.compile(r"""\btee\s+(?:-[a-zA-Z]+\s+)*([^\s;|&'\"]+)""")
+
+
 def check_bash_command_for_external_writes(cmd: str, paths: PathContext) -> str | None:
     """Return an error message if the command writes outside workspace, or None if safe."""
-    outside_patterns = [
-        r"(?:>\s*|\w+\s+)(/Users/[^\s'\"]+)",
-        r"(?:>\s*|\w+\s+)(/tmp/[^\s'\"]+)",
-        r"(?:>\s*|\w+\s+)(/home/[^\s'\"]+)",
-        r"(?:>\s*|\w+\s+)(/var/[^\s'\"]+)",
-        r"(?:>\s*|\w+\s+)(/etc/[^\s'\"]+)",
-        r"(?:>\s*|\w+\s+)(/root/[^\s'\"]+)",
-    ]
     _user_dir = str(paths.user_dir.resolve())
-    for pat in outside_patterns:
-        match = re.search(pat, cmd)
-        if match:
-            target = match.group(1) if match.lastindex else match.group(0)
-            target_path = Path(target)
-            # Allow writes inside the user's isolated data directory,
-            # even if the path matches a pattern (e.g., /home/... when
-            # HOST_DATA_ROOT is under /home/ in docker-compose deployment).
-            if target_path.is_absolute() and str(target_path.resolve()).startswith(_user_dir):
-                continue
+
+    def _block_if_outside(target: str) -> str | None:
+        traversal_err = _reject_path_traversal(target, paths)
+        if traversal_err:
+            return traversal_err
+        target_path = Path(target)
+        if target_path.is_absolute() and not str(target_path.resolve()).startswith(_user_dir):
             return (
                 f"Command writes to '{target}' which is outside the workspace. "
                 "Save all files within the workspace directory (use outputs/ for generated files)."
             )
+        return None
+
+    # Check redirect patterns
+    for match in _REDIRECT_TARGET_PATTERN.finditer(cmd):
+        err = _block_if_outside(match.group(1))
+        if err:
+            return err
+
+    # Check cp/mv destination
+    for match in _CP_MV_DEST_PATTERN.finditer(cmd):
+        err = _block_if_outside(match.group(2))
+        if err:
+            return err
+
+    # Check tee targets
+    for match in _TEE_TARGET_PATTERN.finditer(cmd):
+        err = _block_if_outside(match.group(1))
+        if err:
+            return err
+
     return None
 
 
@@ -143,23 +182,69 @@ def _rewrite_bash_command(cmd: str, paths: PathContext) -> str:
     """Rewrite a bash command so that output redirections point inside workspace."""
     ws = str(paths.workspace.resolve())
 
+    def _make_safe(external_path: str) -> str:
+        return f"outputs/{Path(external_path).name}"
+
     def replace_external_path(match: re.Match) -> str:
-        target = match.group(2)
+        target = match.group(1) if match.lastindex else match.group(0)
         target_path = Path(target)
         if target_path.is_absolute() and not str(target_path.resolve()).startswith(ws):
-            replacement = f"outputs/{target_path.name}"
-            return match.group(0).replace(target, replacement, 1)
+            return match.group(0).replace(target, _make_safe(target), 1)
         return match.group(0)
 
-    patterns = [
-        r"(>\s*)(/[^\s'\"]+)",
-        r"(>>\s*)(/[^\s'\"]+)",
-        r"(-o\s+)(/[^\s'\"]+)",
-        r"(--output\s+)(/[^\s'\"]+)",
-        r">\s*\'(/[^\']+)\'",
-        r'>\s*"(/[^"]+)"',
+    # fd redirects: >, >>, 1>, 2>, &>, 1>>, 2>>, &>>
+    redirect_patterns = [
+        r"(?:[12&]?>\s*)([^\s;|&'\"]+)",
+        r"(?:[12&]?>>\s*)([^\s;|&'\"]+)",
+        r"(-o\s+)(\S+)",
+        r"(--output\s+)(\S+)",
+        r"(?:[12&]?>\s*)'([^']+)'",
+        r'(?:[12&]?>\s*)"([^"]+)"',
     ]
     result = cmd
-    for pat in patterns:
+    for pat in redirect_patterns:
         result = re.sub(pat, replace_external_path, result)
+
+    # tee: rewrite file arguments (not the piped content)
+    result = _rewrite_tee_targets(result, ws, _make_safe)
+
+    # cp / mv: rewrite destination (last argument)
+    result = _rewrite_cp_mv_dest(result, ws, _make_safe)
+
     return result
+
+
+def _rewrite_tee_targets(cmd: str, ws: str, make_safe) -> str:
+    """Rewrite file arguments to 'tee' that point outside the workspace."""
+    # Match 'tee' followed by one or more file paths
+    tee_pat = re.compile(r"\btee\s+(.+)$")
+    m = tee_pat.search(cmd)
+    if not m:
+        return cmd
+    args = m.group(1)
+    parts = args.split()
+    rewritten = []
+    for part in parts:
+        # Skip flags like -a, --append
+        if part.startswith("-"):
+            rewritten.append(part)
+            continue
+        p = Path(part)
+        if p.is_absolute() and not str(p.resolve()).startswith(ws):
+            rewritten.append(make_safe(part))
+        else:
+            rewritten.append(part)
+    return cmd[: m.start(1)] + " ".join(rewritten)
+
+
+def _rewrite_cp_mv_dest(cmd: str, ws: str, make_safe) -> str:
+    """Rewrite destination of cp/mv commands that point outside workspace."""
+    cp_mv_pat = re.compile(r"""\b(cp|mv)\s+.*\s+(/[^\s'\"]+)\s*$""")
+    m = cp_mv_pat.search(cmd)
+    if not m:
+        return cmd
+    target = m.group(2)
+    p = Path(target)
+    if p.is_absolute() and not str(p.resolve()).startswith(ws):
+        return cmd[: m.start(2)] + make_safe(target) + cmd[m.end(2) :]
+    return cmd

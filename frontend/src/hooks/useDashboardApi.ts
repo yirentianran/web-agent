@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { daysAgoStr, todayStr } from '../lib/dates'
+import { fetchJson } from '../lib/api'
 
 export interface OverviewData {
   active_users: number
@@ -64,21 +65,6 @@ export interface DashboardApi {
 
 const API_BASE = '/api/admin/dashboard'
 
-async function fetchJson<T>(url: string, token: string): Promise<T> {
-  const headers: Record<string, string> = token
-    ? { Authorization: `Bearer ${token}` }
-    : {}
-  const resp = await fetch(url, { headers })
-  if (!resp.ok) {
-    const detail = await resp
-      .json()
-      .then((b) => b.detail)
-      .catch(() => resp.statusText)
-    throw new Error(typeof detail === 'string' ? detail : resp.statusText)
-  }
-  return resp.json() as Promise<T>
-}
-
 function autoInterval(from: string, to: string): string {
   const days = Math.round(
     (new Date(to).getTime() - new Date(from).getTime()) / (1000 * 60 * 60 * 24),
@@ -92,7 +78,6 @@ export function useDashboardApi(
   initialFrom?: string,
   initialTo?: string,
 ): DashboardApi {
-  const authToken = useMemo(() => localStorage.getItem('authToken') || '', [])
   const initialFromRef = useRef(initialFrom || daysAgoStr(30))
   const initialToRef = useRef(initialTo || todayStr())
 
@@ -127,7 +112,7 @@ export function useDashboardApi(
 
       const timedFetch = <T,>(label: string, url: string): Promise<T> => {
         const t0 = performance.now()
-        return fetchJson<T>(url, authToken).then((data) => {
+        return fetchJson<T>(url).then((data) => {
           console.log(`[Dashboard] ${label} done in ${(performance.now() - t0).toFixed(0)}ms`, data)
           return data
         })
@@ -167,7 +152,7 @@ export function useDashboardApi(
         console.log(`[Dashboard] All 3 API calls settled in ${(performance.now() - tStart).toFixed(0)}ms`)
       })
     },
-    [authToken],
+    [],
   )
 
   useEffect(() => {

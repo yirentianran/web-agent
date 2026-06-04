@@ -27,7 +27,7 @@ export interface InputBarHandle {
 let fileCounter = 0
 
 const InputBar = forwardRef<InputBarHandle, InputBarProps>(
-  function InputBar({ onSend, onEnsureSession, onStop, disabled, isRunning, userId, authToken, sessionId }: InputBarProps, ref) {
+  function InputBar({ onSend, onEnsureSession, onStop, disabled, isRunning, userId, sessionId }: InputBarProps, ref) {
     const { t } = useTranslation()
     const [input, setInput] = useState('')
     const [attachedFiles, setAttachedFiles] = useState<AttachedFile[]>([])
@@ -111,9 +111,7 @@ const InputBar = forwardRef<InputBarHandle, InputBarProps>(
       formData.append('file', af.file)
       if (sessionId) formData.append('session_id', sessionId)
       try {
-        const headers: Record<string, string> = {}
-        if (authToken) headers["Authorization"] = `Bearer ${authToken}`
-        const resp = await fetch(`/api/users/${userId}/upload`, { method: 'POST', headers, body: formData })
+        const resp = await fetch(`/api/users/${userId}/upload`, { method: 'POST', credentials: 'same-origin', body: formData })
         if (resp.ok) {
           const data = await resp.json()
           if (data.filename) {
@@ -201,9 +199,7 @@ const InputBar = forwardRef<InputBarHandle, InputBarProps>(
         formData.append('file', af.file)
         formData.append('session_id', uploadSessionId)
         try {
-          const headers: Record<string, string> = {}
-          if (authToken) headers['Authorization'] = `Bearer ${authToken}`
-          const resp = await fetch(`/api/users/${userId}/upload`, { method: 'POST', headers, body: formData })
+          const resp = await fetch(`/api/users/${userId}/upload`, { method: 'POST', credentials: 'same-origin', body: formData })
           if (resp.ok) {
             setAttachedFiles(prev => prev.map(f =>
               f.id === af.id ? { ...f, status: 'uploaded' as const } : f,

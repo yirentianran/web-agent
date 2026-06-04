@@ -1,9 +1,10 @@
 import { useMemo, useRef, useCallback } from 'react'
 import type { McpServer } from '../lib/types'
+import { csrfHeaders } from '../lib/api'
 
-export function useMCPServers(authToken: string | null) {
+export function useMCPServers() {
   const headersRef = useRef<HeadersInit>({})
-  headersRef.current = authToken ? { Authorization: `Bearer ${authToken}` } : {}
+  headersRef.current = csrfHeaders()
 
   const fetchJSON = useCallback(async (url: string, options?: RequestInit) => {
     const resp = await fetch(url, {

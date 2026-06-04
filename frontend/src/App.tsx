@@ -38,6 +38,9 @@ import {
   savePendingMessage,
   clearPendingMessage,
   loadPendingMessage,
+  resolveSessionState,
+  resolveBufferState,
+  TERMINAL_STATES,
 } from "./lib/session-state";
 import { createLogger } from "./utils/logger";
 
@@ -46,11 +49,12 @@ const logger = createLogger("[App]");
 // Valid session state transitions — used by setSessionStateFor to
 // warn on unexpected transitions (soft check, no transition is blocked).
 const VALID_TRANSITIONS: Record<string, SessionStatus[]> = {
-  idle: ["running"],
-  running: ["completed", "error", "cancelled", "idle"],
+  idle: ["running", "cancelled", "waiting_user"],
+  running: ["completed", "error", "cancelled", "idle", "waiting_user"],
   completed: ["running"],
   error: ["running", "idle"],
   cancelled: ["running", "idle"],
+  waiting_user: ["running", "completed", "error", "cancelled"],
 };
 
 // Persist scroll position to localStorage so it survives page refresh
@@ -70,7 +74,7 @@ function loadScrollPositions(): Map<string, number> {
 const sessionScrollPositions = loadScrollPositions();
 
 interface LoginScreenProps {
-  onLogin: (userId: string) => void;
+  onLogin: (userId: string, role: string) => void;
 }
 
 const ACCOUNT_DISABLED = 'ACCOUNT_DISABLED';
@@ -121,9 +125,9 @@ function LoginScreen({ onLogin }: LoginScreenProps) {
       }
 
       const data = await resp.json();
-      localStorage.setItem("authToken", data.token);
+      // Token is now in httpOnly cookie (set by backend). Store non-sensitive state.
       localStorage.setItem("userId", data.user_id);
-      onLogin(trimmed);
+      onLogin(trimmed, data.role || "user");
     } catch (err) {
       const msg = err instanceof Error ? err.message : '';
       if (msg === ACCOUNT_DISABLED) {
@@ -396,19 +400,8 @@ function MainApp() {
   const [userId, setUserId] = useState<string>(() => {
     return localStorage.getItem("userId") || "";
   });
-  const [authToken, setAuthToken] = useState<string | null>(() => {
-    return localStorage.getItem("authToken");
-  });
-  const [userRole, setUserRole] = useState<string>(() => {
-    const token = localStorage.getItem("authToken");
-    if (!token) return "user";
-    try {
-      const payload = JSON.parse(atob(token.split(".")[1]));
-      return payload.role || "user";
-    } catch {
-      return "user";
-    }
-  });
+  const [authToken, setAuthToken] = useState<string | null>(null);
+  const [userRole, setUserRole] = useState<string>("user");
   const [messages, setMessages] = useState<Message[]>([]);
   const [sessions, setSessions] = useState<SessionItem[]>([]);
   // urlSessionId is the single source of truth for the active session,
@@ -472,6 +465,7 @@ function MainApp() {
   // Use MAX_SAFE_INTEGER so only replay messages trigger the first-turn path.
   // Live messages (index < MAX) fall through to normal append logic.
   const clearThresholdRef = useRef<number>(Number.MAX_SAFE_INTEGER);
+  const sendFailStatusTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Tracks whether replay has started for the current turn.
   // If replay sends messages, we don't clear (replay already handles ordering).
   const replayStartedRef = useRef(false);
@@ -563,12 +557,9 @@ function MainApp() {
         setSessionStateFor(urlSessionId, "running");
       }
 
-      // Load historical messages from backend
-      const headers: Record<string, string> = {};
-      const token = authTokenRef.current;
-      if (token) headers["Authorization"] = `Bearer ${token}`;
+      // Load historical messages from backend (cookies sent automatically)
       fetch(`/api/users/${userId}/sessions/${urlSessionId}/history`, {
-        headers,
+        credentials: "same-origin",
       })
         .then((resp) => {
           logger.debug(
@@ -590,11 +581,27 @@ function MainApp() {
           // Guard against stale fetch: if user switched sessions,
           // the ref will point to a different session
           if (urlSessionIdRef.current !== urlSessionId) return;
-          const msgs = (data as any[]).map((m: any) => ({
-            ...m,
-            index: m.index ?? -1,
-            session_id: urlSessionId,
-          }));
+          const msgs = (data as any[]).map((m: any) => {
+            const normalized = { ...m, index: m.index ?? -1, session_id: urlSessionId };
+            // Backend sends client_msg_id; frontend dedup needs clientMsgId
+            if (m.client_msg_id && !normalized.clientMsgId) {
+              normalized.clientMsgId = m.client_msg_id;
+            }
+            return normalized;
+          });
+          // Confirm user messages found in REST history (subscribe loop may skip
+          // the user echo for new sessions due to last_seen threshold).
+          for (const m of msgs) {
+            if (m.type === "user" && m.clientMsgId) {
+              updateSendState(m.clientMsgId, "sent");
+              confirmSendRef.current(m.clientMsgId);
+              // Clear pending message — backend has confirmed receipt
+              if (m.session_id) {
+                pendingUserMsgsRef.current.delete(m.session_id);
+                clearPendingMessage(m.session_id, userId);
+              }
+            }
+          }
           setMessages((prev) => {
             logger.debug(
               "[setMessages] prev=%d msgs (prev[0].session=%s) new=%d msgs (session=%s)",
@@ -644,14 +651,20 @@ function MainApp() {
             }
           }
           const currentState = sessionStatesRef.current.get(urlSessionId) ?? "idle";
-          if (currentState === "running" && derivedState !== "running") {
-            // Preserve live "running" — don't downgrade to "idle"/"completed"
-            // from stale history. The WebSocket will deliver the correct state.
-          } else {
-            setSessionStateFor(urlSessionId, derivedState);
+          const { state: resolvedFromHistory, shouldRecover: shouldRecoverFromHistory } =
+            resolveSessionState(currentState, derivedState);
+          if (shouldRecoverFromHistory) {
+            sendRecover(
+              urlSessionId!,
+              msgs.length > 0
+                ? computeRecoverIndex(msgs as unknown as Message[])
+                : 0,
+            );
+            didRecoverRef.current = true;
           }
+          setSessionStateFor(urlSessionId, resolvedFromHistory as SessionStatus);
           fetch(`/api/users/${userId}/sessions/${urlSessionId}/status`, {
-            headers,
+            credentials: "same-origin",
           })
             .then((resp) => {
               if (resp.status === 403 || resp.status === 404) {
@@ -662,12 +675,10 @@ function MainApp() {
             })
             .then((status) => {
               if (urlSessionIdRef.current !== urlSessionId) return;
-              if (status.state === "running" && (status.buffer_age ?? 0) < 30) {
-                setSessionStateFor(urlSessionId, "running");
-              } else if (
-                status.state === "running" &&
-                (status.buffer_age ?? 0) >= 30
-              ) {
+              const currentState2 = sessionStatesRef.current.get(urlSessionId) ?? "idle";
+              const { state: resolvedFromStatus, shouldRecover } =
+                resolveBufferState(currentState2, status.state, status.buffer_age ?? 0);
+              if (shouldRecover) {
                 sendRecover(
                   urlSessionId!,
                   msgs.length > 0
@@ -675,6 +686,9 @@ function MainApp() {
                     : 0,
                 );
                 didRecoverRef.current = true;
+              }
+              if (resolvedFromStatus !== currentState2) {
+                setSessionStateFor(urlSessionId, resolvedFromStatus as SessionStatus);
               }
             })
             .catch(() => {})
@@ -690,9 +704,7 @@ function MainApp() {
   const loadSessions = async () => {
     if (!userId) return;
     try {
-      const headers: Record<string, string> = {};
-      if (authToken) headers["Authorization"] = `Bearer ${authToken}`;
-      const resp = await fetch(`/api/users/${userId}/sessions`, { headers });
+      const resp = await fetch(`/api/users/${userId}/sessions`, { credentials: "same-origin" });
       if (resp.status === 403) {
         window.location.href = window.location.origin;
         return;
@@ -715,9 +727,17 @@ function MainApp() {
   // Reset heartbeat ref on session switch to prevent false staleness
   // (old heartbeat from previous session could be >60s ago)
   // Also clear streaming text to avoid showing previous session's content.
+  // Reset dedup refs: stale thresholds from prior session corrupt new dedup logic.
   useEffect(() => {
     lastHeartbeatRef.current = Date.now();
     setStreamingTextState(useStreamingText.createInitialState());
+    replayStartedRef.current = false;
+    clearThresholdRef.current = Number.MAX_SAFE_INTEGER;
+    highestUserMsgIndexRef.current = -1;
+    if (sendFailStatusTimerRef.current) {
+      clearTimeout(sendFailStatusTimerRef.current);
+      sendFailStatusTimerRef.current = null;
+    }
   }, [urlSessionId]);
 
   // Helper: update send state for a message by clientMsgId
@@ -753,15 +773,12 @@ function MainApp() {
         msg.clientMsgId = raw.client_msg_id as string;
       }
 
-      // Handle auth failure — clear token and force re-login
+      // Handle auth failure — clear session and force re-login
       if (msg.type === "auth_error") {
-        localStorage.removeItem("authToken");
         localStorage.removeItem("userId");
         setAuthToken(null);
         return;
       }
-
-      const TERMINAL_STATES = new Set(["completed", "error", "cancelled"]);
 
       // Track heartbeat for staleness detection
       if (msg.type === "heartbeat") {
@@ -1136,10 +1153,29 @@ function MainApp() {
         const currentState = sessionStatesRef.current.get(activeId);
         if (currentState === "running") {
           setSessionStateFor(activeId, "idle");
+          if (sendFailStatusTimerRef.current) clearTimeout(sendFailStatusTimerRef.current);
+          sendFailStatusTimerRef.current = setTimeout(() => {
+            if (urlSessionIdRef.current !== activeId) return;
+            fetch(`/api/users/${userId}/sessions/${activeId}/status`, {
+              credentials: "same-origin",
+            })
+              .then((r) => r.json())
+              .then((status) => {
+                if (urlSessionIdRef.current !== activeId) return;
+                const currentState2 = sessionStatesRef.current.get(activeId) ?? "idle";
+                const { state: resolved } = resolveBufferState(
+                  currentState2, status.state, status.buffer_age ?? 0,
+                );
+                if (resolved !== currentState2) {
+                  setSessionStateFor(activeId, resolved as SessionStatus);
+                }
+              })
+              .catch(() => {});
+          }, 5000);
         }
       }
     },
-    [updateSendState, setSessionStateFor],
+    [updateSendState, setSessionStateFor, userId],
   );
 
   const {
@@ -1169,7 +1205,7 @@ function MainApp() {
         "[WebSocket] Pending queue full. Messages will be dropped until connection restores.",
       );
     },
-    token: authToken ?? undefined,
+    token: undefined,
   });
 
   // Sync confirmSend to ref (so handleIncomingMessage can use it)
@@ -1301,11 +1337,9 @@ function MainApp() {
 
   const ensureSession = useCallback(async (): Promise<string | undefined> => {
     try {
-      const headers: Record<string, string> = {};
-      if (authToken) headers["Authorization"] = `Bearer ${authToken}`;
       const resp = await fetch(`/api/users/${userId}/sessions`, {
         method: "POST",
-        headers,
+        credentials: "same-origin",
       });
       const data = await resp.json();
       const sessionId: string = data.session_id;
@@ -1317,7 +1351,7 @@ function MainApp() {
       logger.error("Session creation failed", errorMsg);
       return undefined;
     }
-  }, [authToken, userId, navigate, loadSessions]);
+  }, [userId, navigate, loadSessions]);
 
   const handleSend = useCallback(
     async (message: string, fileMeta?: Array<{filename: string; size: number}>) => {
@@ -1386,7 +1420,7 @@ function MainApp() {
         language: currentLanguage,
       });
     },
-    [messagesRef, sendMessage, authToken, userId, navigate],
+    [messagesRef, sendMessage, userId, navigate],
   );
 
   const [newSessionKey, setNewSessionKey] = useState(0);
@@ -1412,11 +1446,9 @@ function MainApp() {
     async (id: string) => {
       if (!confirm(t('sidebar.deleteSession'))) return;
       try {
-        const headers: Record<string, string> = {};
-        if (authToken) headers["Authorization"] = `Bearer ${authToken}`;
         const resp = await fetch(`/api/users/${userId}/sessions/${id}`, {
           method: "DELETE",
-          headers,
+          credentials: "same-origin",
         });
         if (!resp.ok) {
           throw new Error(`Failed to delete session (HTTP ${resp.status})`);
@@ -1448,20 +1480,18 @@ function MainApp() {
         alert(err instanceof Error ? err.message : "Failed to delete session");
       }
     },
-    [userId, authToken, urlSessionId, navigate, t],
+    [userId, urlSessionId, navigate, t],
   );
 
   const handleRenameSession = useCallback(
     async (sessionId: string, title: string) => {
       try {
-        const headers: Record<string, string> = {};
-        if (authToken) headers["Authorization"] = `Bearer ${authToken}`;
-        headers["Content-Type"] = "application/json";
         await fetch(
           `/api/users/${userId}/sessions/${sessionId}/title`,
           {
             method: "PATCH",
-            headers,
+            credentials: "same-origin",
+            headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ title }),
           },
         );
@@ -1475,11 +1505,10 @@ function MainApp() {
         logger.error("Failed to rename session", err);
       }
     },
-    [userId, authToken],
+    [userId],
   );
 
   const handleLogout = useCallback(() => {
-    localStorage.removeItem("authToken");
     localStorage.removeItem("userId");
     setAuthToken(null);
     setUserId("");
@@ -1491,39 +1520,30 @@ function MainApp() {
   const stopSession = useCallback(async () => {
     if (!urlSessionId) return;
     try {
-      const headers: Record<string, string> = {};
-      if (authToken) headers["Authorization"] = `Bearer ${authToken}`;
       const resp = await fetch(
         `/api/users/${userId}/sessions/${urlSessionId}/cancel`,
         {
           method: "POST",
-          headers,
+          credentials: "same-origin",
         },
       );
       if (resp.ok) {
-        setSessionStateFor(urlSessionId, "idle");
+        setSessionStateFor(urlSessionId, "cancelled");
       }
     } catch (err) {
       logger.error("Failed to stop session", err);
     }
-  }, [urlSessionId, userId, authToken]);
+  }, [urlSessionId, userId]);
 
-  // If no auth token, show login screen
-  if (!authToken) {
+  // If no auth token and no existing session, show login screen.
+  // On initial load authToken is null, but cookies may exist from a previous login.
+  if (!authToken && !localStorage.getItem("userId")) {
     return (
       <LoginScreen
-        onLogin={(uid) => {
+        onLogin={(uid, role) => {
           setUserId(uid);
-          const token = localStorage.getItem("authToken");
-          setAuthToken(token);
-          if (token) {
-            try {
-              const payload = JSON.parse(atob(token.split(".")[1]));
-              setUserRole(payload.role || "user");
-            } catch {
-              setUserRole("user");
-            }
-          }
+          setUserRole(role);
+          setAuthToken("authenticated");
         }}
       />
     );

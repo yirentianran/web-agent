@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { mergeSessionStates, computeRecoverIndex, STATE_ORDER, saveLastKnownIndex, loadLastKnownIndex, clearLastKnownIndex, isFreshRunningState, isStaleRunningState, STALE_BUFFER_THRESHOLD } from '../lib/session-state'
+import { mergeSessionStates, computeRecoverIndex, STATE_ORDER, saveLastKnownIndex, loadLastKnownIndex, clearLastKnownIndex, isFreshRunningState, isStaleRunningState, STALE_BUFFER_THRESHOLD, resolveSessionState, resolveBufferState, TERMINAL_STATES } from '../lib/session-state'
 
 describe('mergeSessionStates', () => {
   it('prefers running over idle', () => {
@@ -220,5 +220,147 @@ describe('isStaleRunningState', () => {
 describe('STALE_BUFFER_THRESHOLD', () => {
   it('is 30 seconds', () => {
     expect(STALE_BUFFER_THRESHOLD).toBe(30)
+  })
+})
+
+// ── resolveSessionState ──────────────────────────────────────
+
+describe('resolveSessionState', () => {
+  it('accepts terminal derived state over stale running (case 1)', () => {
+    const result = resolveSessionState('running', 'completed')
+    expect(result.state).toBe('completed')
+    expect(result.shouldRecover).toBe(false)
+  })
+
+  it('accepts terminal derived state error over stale running (case 1)', () => {
+    const result = resolveSessionState('running', 'error')
+    expect(result.state).toBe('error')
+    expect(result.shouldRecover).toBe(false)
+  })
+
+  it('accepts terminal derived state cancelled over stale running (case 1)', () => {
+    const result = resolveSessionState('running', 'cancelled')
+    expect(result.state).toBe('cancelled')
+    expect(result.shouldRecover).toBe(false)
+  })
+
+  it('accepts waiting_user derived state over stale running (case 1 extended)', () => {
+    // waiting_user means the agent has paused for user input — it's no
+    // longer actively running, so it should override stale frontend "running"
+    const result = resolveSessionState('running', 'waiting_user')
+    expect(result.state).toBe('waiting_user')
+    expect(result.shouldRecover).toBe(false)
+  })
+
+  it('preserves live running over derived idle (case 2)', () => {
+    const result = resolveSessionState('running', 'idle')
+    expect(result.state).toBe('running')
+    expect(result.shouldRecover).toBe(false)
+  })
+
+  it('accepts derived state when current is not running (case 3)', () => {
+    expect(resolveSessionState('idle', 'running').state).toBe('running')
+    expect(resolveSessionState('idle', 'completed').state).toBe('completed')
+    expect(resolveSessionState('completed', 'idle').state).toBe('idle')
+    expect(resolveSessionState('error', 'idle').state).toBe('idle')
+  })
+
+  it('overrides stale running with terminal from /status (case 4)', () => {
+    const result = resolveSessionState('running', 'running', 'completed', 5)
+    expect(result.state).toBe('completed')
+    expect(result.shouldRecover).toBe(false)
+  })
+
+  it('overrides stale running with error from /status (case 4)', () => {
+    const result = resolveSessionState('running', 'running', 'error', 10)
+    expect(result.state).toBe('error')
+    expect(result.shouldRecover).toBe(false)
+  })
+
+  it('triggers recovery for stale running from /status (case 5)', () => {
+    const result = resolveSessionState('idle', 'idle', 'running', 35)
+    expect(result.shouldRecover).toBe(true)
+    // State from history derivation is returned, stale buffer state not accepted
+    expect(result.state).toBe('idle')
+  })
+
+  it('accepts fresh running from /status (case 6)', () => {
+    const result = resolveSessionState('idle', 'idle', 'running', 5)
+    expect(result.state).toBe('running')
+    expect(result.shouldRecover).toBe(false)
+  })
+
+  it('accepts fresh running from /status when history was stale idle', () => {
+    // History says idle (DB lag), buffer says fresh running
+    const result = resolveSessionState('idle', 'idle', 'running', 10)
+    expect(result.state).toBe('running')
+    expect(result.shouldRecover).toBe(false)
+  })
+
+  it('no buffer state — pure history derivation (cases 1-3)', () => {
+    // running + terminal derived → accept terminal
+    expect(resolveSessionState('running', 'completed').state).toBe('completed')
+    // running + idle derived → preserve running
+    expect(resolveSessionState('running', 'idle').state).toBe('running')
+    // non-running + derived → accept derived
+    expect(resolveSessionState('idle', 'running').state).toBe('running')
+  })
+
+  it('waiting_user from /status is accepted as non-terminal', () => {
+    const result = resolveSessionState('idle', 'idle', 'waiting_user', 5)
+    expect(result.state).toBe('waiting_user')
+    expect(result.shouldRecover).toBe(false)
+  })
+})
+
+// ── resolveBufferState ──────────────────────────────────────
+
+describe('resolveBufferState', () => {
+  it('accepts fresh running from buffer', () => {
+    const result = resolveBufferState('idle', 'running', 5)
+    expect(result.state).toBe('running')
+    expect(result.shouldRecover).toBe(false)
+  })
+
+  it('triggers recovery for stale running from buffer', () => {
+    const result = resolveBufferState('idle', 'running', 35)
+    expect(result.state).toBe('idle')
+    expect(result.shouldRecover).toBe(true)
+  })
+
+  it('overrides stale running with terminal from buffer', () => {
+    const result = resolveBufferState('running', 'completed', 5)
+    expect(result.state).toBe('completed')
+    expect(result.shouldRecover).toBe(false)
+  })
+
+  it('overrides stale running with error from buffer', () => {
+    const result = resolveBufferState('running', 'error', 10)
+    expect(result.state).toBe('error')
+    expect(result.shouldRecover).toBe(false)
+  })
+
+  it('returns unchanged state when buffer is idle', () => {
+    const result = resolveBufferState('running', 'idle', 5)
+    expect(result.state).toBe('running')
+    expect(result.shouldRecover).toBe(false)
+  })
+
+  it('upgrades to waiting_user from buffer when more active', () => {
+    const result = resolveBufferState('idle', 'waiting_user', 5)
+    expect(result.state).toBe('waiting_user')
+    expect(result.shouldRecover).toBe(false)
+  })
+})
+
+// ── TERMINAL_STATES export ──────────────────────────────────────
+
+describe('TERMINAL_STATES', () => {
+  it('contains completed, error, cancelled', () => {
+    expect(TERMINAL_STATES.has('completed')).toBe(true)
+    expect(TERMINAL_STATES.has('error')).toBe(true)
+    expect(TERMINAL_STATES.has('cancelled')).toBe(true)
+    expect(TERMINAL_STATES.has('idle')).toBe(false)
+    expect(TERMINAL_STATES.has('running')).toBe(false)
   })
 })

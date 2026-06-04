@@ -38,6 +38,12 @@ export const STATE_ORDER: Record<string, number> = {
  * @param dbState - State derived from DB history messages
  * @returns The merged state (more active wins)
  */
+/**
+ * @deprecated Use `resolveSessionState` instead — this function has
+ * different semantics (prefers more "active" state, including stale
+ * "running" over terminal). `resolveSessionState` correctly handles
+ * terminal overrides and stale buffer detection.
+ */
 export function mergeSessionStates(
   bufferState: string | undefined,
   dbState: string,
@@ -55,6 +61,17 @@ export function mergeSessionStates(
  * this long, a "running" state is likely stale (agent already exited).
  */
 export const STALE_BUFFER_THRESHOLD = 30
+
+/**
+ * Terminal session states — once reached, the agent is no longer running.
+ */
+export const TERMINAL_STATES = new Set(["completed", "error", "cancelled"])
+
+/**
+ * States that represent a real transition away from "running".
+ * Includes terminal states plus "waiting_user" (agent paused for input).
+ */
+export const NON_RUNNING_STATES = new Set(["completed", "error", "cancelled", "waiting_user"])
 
 /**
  * Check whether a "running" buffer state should be trusted.
@@ -85,6 +102,109 @@ export function isStaleRunningState(
   bufferAge: number,
 ): boolean {
   return state === 'running' && bufferAge >= STALE_BUFFER_THRESHOLD
+}
+
+/**
+ * Resolve session state from multiple authoritative sources.
+ *
+ * Used when loading a session via REST history + /status endpoint.
+ * Handles race conditions between stale frontend state, DB-derived state,
+ * and live buffer state.
+ *
+ * @param currentState - Current frontend state from sessionStatesRef
+ * @param derivedState - State derived from REST history messages
+ * @param bufferState - State from /status endpoint (live buffer)
+ * @param bufferAge - Seconds since buffer was last active
+ * @returns The resolved state and whether recovery should be triggered
+ */
+export function resolveSessionState(
+  currentState: string,
+  derivedState: string,
+  bufferState?: string,
+  bufferAge?: number,
+): { state: string; shouldRecover: boolean } {
+
+  // Step 1: Resolve history-derived state against current frontend state
+  let resolvedState: string;
+
+  if (currentState === "running" && derivedState !== "running") {
+    if (NON_RUNNING_STATES.has(derivedState)) {
+      // Accept non-running derived state over stale frontend "running" —
+      // the session has completed, errored, been cancelled, or is waiting
+      // for user input while the user was on a different session.
+      resolvedState = derivedState;
+    } else {
+      // Preserve live "running" — don't downgrade to "idle" from stale history
+      resolvedState = currentState;
+    }
+  } else {
+    resolvedState = derivedState;
+  }
+
+  // Step 2: Apply /status endpoint correction
+  if (bufferState) {
+    const age = bufferAge ?? 0;
+
+    if (bufferState === "running" && age < STALE_BUFFER_THRESHOLD) {
+      // Fresh "running" from buffer — accept it
+      resolvedState = "running";
+    } else if (bufferState === "running" && age >= STALE_BUFFER_THRESHOLD) {
+      // Stale "running" from buffer — trigger recovery, don't accept stale state
+      return { state: resolvedState, shouldRecover: true };
+    } else if (TERMINAL_STATES.has(bufferState) && resolvedState === "running") {
+      // Buffer confirms terminal — override stale frontend "running"
+      resolvedState = bufferState;
+    }
+    // For other buffer states (idle, waiting_user), accept if the buffer
+    // reports a more active state than what we resolved from history.
+    // This handles the case where DB hasn't flushed "waiting_user" yet
+    // but the live buffer has it.
+    else if (bufferState !== "idle" && bufferState !== resolvedState) {
+      const bufferOrder = STATE_ORDER[bufferState] ?? -1;
+      const resolvedOrder = STATE_ORDER[resolvedState] ?? 0;
+      if (bufferOrder > resolvedOrder) {
+        resolvedState = bufferState;
+      }
+    }
+  }
+
+  return { state: resolvedState, shouldRecover: false };
+}
+
+/**
+ * Apply /status endpoint correction to an already-resolved session state.
+ *
+ * Used after `resolveSessionState` has handled the history-derived merge.
+ * This skips Step 1 (history vs current) since that was already processed,
+ * and only applies the /status buffer correction (Step 2).
+ *
+ * @param currentState - Already-resolved state (from history merge)
+ * @param bufferState - State from /status endpoint (live buffer)
+ * @param bufferAge - Seconds since buffer was last active
+ * @returns The resolved state and whether recovery should be triggered
+ */
+export function resolveBufferState(
+  currentState: string,
+  bufferState: string,
+  bufferAge: number,
+): { state: string; shouldRecover: boolean } {
+  if (bufferState === "running" && bufferAge < STALE_BUFFER_THRESHOLD) {
+    return { state: "running", shouldRecover: false };
+  }
+  if (bufferState === "running" && bufferAge >= STALE_BUFFER_THRESHOLD) {
+    return { state: currentState, shouldRecover: true };
+  }
+  if (TERMINAL_STATES.has(bufferState) && currentState === "running") {
+    return { state: bufferState, shouldRecover: false };
+  }
+  if (bufferState !== "idle" && bufferState !== currentState) {
+    const bufferOrder = STATE_ORDER[bufferState] ?? -1;
+    const currentOrder = STATE_ORDER[currentState] ?? 0;
+    if (bufferOrder > currentOrder) {
+      return { state: bufferState, shouldRecover: false };
+    }
+  }
+  return { state: currentState, shouldRecover: false };
 }
 
 /**

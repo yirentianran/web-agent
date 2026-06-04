@@ -1,4 +1,5 @@
-import { useState, useEffect, useCallback, useMemo } from 'react'
+import { useState, useEffect, useCallback } from 'react'
+import { fetchJson, postJson } from '../lib/api'
 
 export interface UserItem {
   user_id: string
@@ -35,38 +36,7 @@ export interface UsersFilters {
 
 const API_BASE = '/api/admin/users'
 
-async function fetchJson<T>(url: string, token: string): Promise<T> {
-  const headers: Record<string, string> = token
-    ? { Authorization: `Bearer ${token}` }
-    : {}
-  const resp = await fetch(url, { headers })
-  if (!resp.ok) {
-    const detail = await resp
-      .json()
-      .then((b) => b.detail)
-      .catch(() => resp.statusText)
-    throw new Error(typeof detail === 'string' ? detail : resp.statusText)
-  }
-  return resp.json() as Promise<T>
-}
-
-async function postJson(url: string, token: string): Promise<UserItem> {
-  const headers: Record<string, string> = {}
-  if (token) headers['Authorization'] = `Bearer ${token}`
-  const resp = await fetch(url, { method: 'POST', headers })
-  if (!resp.ok) {
-    const detail = await resp
-      .json()
-      .then((b) => b.detail)
-      .catch(() => resp.statusText)
-    throw new Error(typeof detail === 'string' ? detail : resp.statusText)
-  }
-  const body = await resp.json()
-  return body.data as UserItem
-}
-
 export function useUsersApi(filters: UsersFilters, page: number) {
-  const authToken = useMemo(() => localStorage.getItem('authToken') || '', [])
   const [refreshKey, setRefreshKey] = useState(0)
 
   const [list, setList] = useState<AsyncState<UsersListData>>({
@@ -88,7 +58,6 @@ export function useUsersApi(filters: UsersFilters, page: number) {
 
     fetchJson<{ success: boolean; data: UsersListData }>(
       `${API_BASE}?${params}`,
-      authToken,
     )
       .then((res) => setList({ data: res.data, loading: false, error: null }))
       .catch((e: unknown) =>
@@ -98,7 +67,7 @@ export function useUsersApi(filters: UsersFilters, page: number) {
           error: e instanceof Error ? e.message : 'Unknown error',
         }),
       )
-  }, [authToken, filters.q, filters.role, filters.status, filters.sort, filters.order, page, refreshKey])
+  }, [filters.q, filters.role, filters.status, filters.sort, filters.order, page, refreshKey])
 
   useEffect(() => {
     fetchList()
@@ -106,26 +75,26 @@ export function useUsersApi(filters: UsersFilters, page: number) {
 
   const disableUser = useCallback(
     (userId: string): Promise<UserItem> =>
-      postJson(`${API_BASE}/${encodeURIComponent(userId)}/disable`, authToken),
-    [authToken],
+      postJson<UserItem>(`${API_BASE}/${encodeURIComponent(userId)}/disable`),
+    [],
   )
 
   const enableUser = useCallback(
     (userId: string): Promise<UserItem> =>
-      postJson(`${API_BASE}/${encodeURIComponent(userId)}/enable`, authToken),
-    [authToken],
+      postJson<UserItem>(`${API_BASE}/${encodeURIComponent(userId)}/enable`),
+    [],
   )
 
   const promoteUser = useCallback(
     (userId: string): Promise<UserItem> =>
-      postJson(`${API_BASE}/${encodeURIComponent(userId)}/promote`, authToken),
-    [authToken],
+      postJson<UserItem>(`${API_BASE}/${encodeURIComponent(userId)}/promote`),
+    [],
   )
 
   const demoteUser = useCallback(
     (userId: string): Promise<UserItem> =>
-      postJson(`${API_BASE}/${encodeURIComponent(userId)}/demote`, authToken),
-    [authToken],
+      postJson<UserItem>(`${API_BASE}/${encodeURIComponent(userId)}/demote`),
+    [],
   )
 
   const refetch = useCallback(() => {

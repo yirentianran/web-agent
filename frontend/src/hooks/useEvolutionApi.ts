@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useMemo } from 'react'
+import { fetchJson, csrfHeaders } from '../lib/api'
 
 export interface EvolutionItem {
   id: number
@@ -109,21 +110,6 @@ interface AsyncState<T> {
 
 const API_BASE = '/api/admin/evolution'
 
-async function fetchJson<T>(url: string, token: string): Promise<T> {
-  const headers: Record<string, string> = token
-    ? { Authorization: `Bearer ${token}` }
-    : {}
-  const resp = await fetch(url, { headers })
-  if (!resp.ok) {
-    const detail = await resp
-      .json()
-      .then((b) => b.detail)
-      .catch(() => resp.statusText)
-    throw new Error(typeof detail === 'string' ? detail : resp.statusText)
-  }
-  return resp.json() as Promise<T>
-}
-
 export interface EvolutionApi {
   overview: AsyncState<{ items: EvolutionItem[]; total: number; page: number }>
   stats: AsyncState<EvolutionStats | null>
@@ -140,7 +126,6 @@ export interface EvolutionApi {
 }
 
 export function useEvolutionApi(statusFilter?: string, page: number = 1) {
-  const authToken = useMemo(() => localStorage.getItem('authToken') || '', [])
   const [refreshKey, setRefreshKey] = useState(0)
 
   const [overview, setOverview] = useState<
@@ -155,7 +140,6 @@ export function useEvolutionApi(statusFilter?: string, page: number = 1) {
     params.set('page_size', '20')
     fetchJson<{ items: EvolutionItem[]; total: number; page: number }>(
       `${API_BASE}/overview?${params}`,
-      authToken,
     )
       .then((data) => setOverview({ data, loading: false, error: null }))
       .catch((e: unknown) =>
@@ -165,7 +149,7 @@ export function useEvolutionApi(statusFilter?: string, page: number = 1) {
           error: e instanceof Error ? e.message : 'Unknown error',
         }),
       )
-  }, [authToken, statusFilter, page, refreshKey])
+  }, [statusFilter, page, refreshKey])
 
   useEffect(() => {
     fetchOverview()
@@ -173,26 +157,27 @@ export function useEvolutionApi(statusFilter?: string, page: number = 1) {
 
   const fetchDetail = useCallback(
     (id: number): Promise<EvolutionDetail> =>
-      fetchJson<EvolutionDetail>(`${API_BASE}/${id}`, authToken),
-    [authToken],
+      fetchJson<EvolutionDetail>(`${API_BASE}/${id}`),
+    [],
   )
 
   const fetchDiff = useCallback(
     (id: number): Promise<EvolutionDiff> =>
-      fetchJson<EvolutionDiff>(`${API_BASE}/${id}/diff`, authToken),
-    [authToken],
+      fetchJson<EvolutionDiff>(`${API_BASE}/${id}/diff`),
+    [],
   )
 
   const review = useCallback(
     async (id: number, decision: 'keep' | 'rollback' | 'discard') => {
       const headers: Record<string, string> = {
         'Content-Type': 'application/json',
+        ...csrfHeaders(),
       }
-      if (authToken) headers['Authorization'] = `Bearer ${authToken}`
       const resp = await fetch(`${API_BASE}/${id}/review`, {
         method: 'POST',
         headers,
         body: JSON.stringify({ decision }),
+        credentials: 'same-origin',
       })
       if (!resp.ok) {
         const detail = await resp
@@ -203,7 +188,7 @@ export function useEvolutionApi(statusFilter?: string, page: number = 1) {
       }
       setRefreshKey((k) => k + 1)
     },
-    [authToken],
+    [],
   )
 
   // --- NEW: stats state ---
@@ -219,7 +204,6 @@ export function useEvolutionApi(statusFilter?: string, page: number = 1) {
       const qs = days > 0 ? `?days=${days}` : ''
       const data = await fetchJson<EvolutionStats>(
         `${API_BASE}/stats${qs}`,
-        authToken,
       )
       setStats({ data, loading: false, error: null })
     } catch (e: unknown) {
@@ -229,7 +213,7 @@ export function useEvolutionApi(statusFilter?: string, page: number = 1) {
         error: e instanceof Error ? e.message : 'Unknown error',
       })
     }
-  }, [authToken])
+  }, [])
 
   // --- NEW: instincts state ---
   const [instincts, setInstincts] = useState<
@@ -246,7 +230,6 @@ export function useEvolutionApi(statusFilter?: string, page: number = 1) {
         if (params?.page) qs.set('page', String(params.page))
         const data = await fetchJson<{ items: InstinctItem[]; total: number; page: number }>(
           `/api/admin/instincts?${qs.toString()}`,
-          authToken,
         )
         setInstincts({ data, loading: false, error: null })
       } catch (e: unknown) {
@@ -257,7 +240,7 @@ export function useEvolutionApi(statusFilter?: string, page: number = 1) {
         })
       }
     },
-    [authToken],
+    [],
   )
 
   // --- NEW: observations state ---
@@ -275,7 +258,6 @@ export function useEvolutionApi(statusFilter?: string, page: number = 1) {
         if (params?.page) qs.set('page', String(params.page))
         const data = await fetchJson<{ items: ObservationItem[]; total: number; page: number }>(
           `/api/admin/observations?${qs.toString()}`,
-          authToken,
         )
         setObservations({ data, loading: false, error: null })
       } catch (e: unknown) {
@@ -286,16 +268,15 @@ export function useEvolutionApi(statusFilter?: string, page: number = 1) {
         })
       }
     },
-    [authToken],
+    [],
   )
 
   const fetchSessionMessages = useCallback(
     (sessionId: string): Promise<SessionMessage[]> =>
       fetchJson<SessionMessage[]>(
         `/api/admin/sessions/${sessionId}/messages`,
-        authToken,
       ),
-    [authToken],
+    [],
   )
 
   const refetch = useCallback(() => {

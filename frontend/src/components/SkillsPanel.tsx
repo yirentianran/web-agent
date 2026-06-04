@@ -13,9 +13,9 @@ interface SkillsPanelProps {
 
 type Tab = 'shared' | 'personal'
 
-export default function SkillsPanel({ authToken, userId, userRole, onClose, embedded }: SkillsPanelProps) {
+export default function SkillsPanel({ authToken: _authToken, userId, userRole, onClose, embedded }: SkillsPanelProps) {
   const { t } = useTranslation()
-  const api = useSkillsApi(authToken, userId)
+  const api = useSkillsApi(userId)
   const isAdmin = userRole === 'admin'
   const [tab, setTab] = useState<Tab>('personal')
   const [sharedSkills, setSharedSkills] = useState<Skill[]>([])

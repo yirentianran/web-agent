@@ -147,8 +147,11 @@ class SessionStore:
                 # so the frontend receives them in the expected format.
                 if msg.get("type") == "file_result" and "data" in parsed:
                     msg["data"] = parsed["data"]
-                if msg.get("type") == "user" and "data" in parsed:
-                    msg["data"] = parsed["data"]
+                if msg.get("type") == "user":
+                    if "data" in parsed:
+                        msg["data"] = parsed["data"]
+                    if "client_msg_id" in parsed:
+                        msg["client_msg_id"] = parsed["client_msg_id"]
                 if msg.get("type") == "tool_use":
                     if "id" in parsed:
                         msg["id"] = parsed["id"]

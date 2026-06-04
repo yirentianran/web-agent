@@ -166,11 +166,11 @@ export function useWebSocket({
 
     setStatus(reconnectAttempts.current === 0 ? "connecting" : "reconnecting");
 
-    const wsPath = tokenRef.current
-      ? `/ws?token=${encodeURIComponent(tokenRef.current)}`
-      : "/ws";
-    const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-    const ws = new WebSocket(`${protocol}//${window.location.host}${wsPath}`);
+    // Cookies (including httpOnly access_token) are sent automatically on the
+    // WebSocket handshake. No need for a ?token= query parameter.
+    const ws = new WebSocket(
+      `${window.location.protocol === "https:" ? "wss:" : "ws:"}//${window.location.host}/ws`,
+    );
     wsRef.current = ws;
 
     // Per-WebSocket intentional close flag — each WS has its own closure flag.
@@ -237,7 +237,7 @@ export function useWebSocket({
     ws.onerror = () => {
       logger.error(
         'WebSocket onerror fired — connection attempt failed. ' +
-        'URL: ' + wsPath + ' Reconnect attempt: ' + reconnectAttempts.current,
+        'Reconnect attempt: ' + reconnectAttempts.current,
       );
       // onclose fires right after — let onclose handle it.
     };

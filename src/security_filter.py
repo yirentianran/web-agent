@@ -4,9 +4,11 @@ Three layers:
 - OutputFilter: scans agent output and redacts sensitive content
 - BashCommandFilter: blocks dangerous shell commands before execution
 - FileAccessFilter: blocks reads of sensitive files before execution
+- ToolCallRateLimiter: per-session sliding-window rate limiter for tool calls
 """
 
 import re
+import time
 from typing import Final
 
 
@@ -38,6 +40,8 @@ class OutputFilter:
         re.compile(r"/proc/"),
         # Environment variable assignments (env-dump output)
         re.compile(r"^[A-Z_]{3,}[A-Z0-9]\s*[=:]\s*\S+", re.MULTILINE),
+        # Markdown table rows with env var names (e.g. | MODEL | value |)
+        re.compile(r"^\|\s*[A-Z_]{3,}[A-Z0-9]{0,20}\s*\|"),
     ]
 
     _BLOCKED_MARKER: Final[str] = "[Content blocked]"
@@ -81,11 +85,14 @@ class BashCommandFilter:
     """
 
     _DENY_COMMANDS: Final[set[str]] = {
+        # System probing
         "env",
         "printenv",
         "compgen",
         "set",
         "export",
+        "declare",
+        "typeset",
         "uname",
         "hostname",
         "whoami",
@@ -99,6 +106,21 @@ class BashCommandFilter:
         "lsblk",
         "lshw",
         "dmidecode",
+        # Network egress
+        "curl",
+        "wget",
+        "nc",
+        "ncat",
+        "netcat",
+        "ssh",
+        "scp",
+        "sftp",
+        "rsync",
+        "telnet",
+        "ftp",
+        "tftp",
+        "socat",
+        "nmap",
     }
 
     _DENY_PATTERNS: Final[list[re.Pattern[str]]] = [
@@ -115,8 +137,25 @@ class BashCommandFilter:
         re.compile(r"""^\s*(python3?|ruby|perl|node)\s+--.*-[ce]\b""", re.IGNORECASE),
         # os.environ / process.env / ENV / %ENV access via interpreter flags
         re.compile(r"""os\.environ|process\.environ|process\.env\b|["']ENV["']|["']%ENV["']"""),
-        # Shell variable expansion that could leak secrets
-        re.compile(r"""\$\{?(?:PATH|HOME|USER|ANTHROPIC|API_KEY|SECRET|TOKEN|PASSWORD)"""),
+        # Python HTTP, socket, subprocess network
+        re.compile(
+            r"""\b(urllib\.request|urllib\.urlopen|requests\.(get|post|put|delete|head|patch)"""
+            r"""|httpx\.(get|post)|http\.client|socket\.(socket|connect|create_connection))\b"""
+        ),
+        # Python subprocess calling external tools
+        re.compile(r"""\bsubprocess\.(call|run|Popen|check_output)\b"""),
+        # Node.js HTTP / fetch / net
+        re.compile(r"""\b(fetch\s*\(|require\s*\(\s*['"](?:https?|net)['"]|\.createConnection\s*\()"""),
+        # Ruby Net::HTTP, open-uri, REST clients
+        re.compile(r"""\b(Net::HTTP|open-uri|RestClient|Faraday)\b"""),
+        # Reverse shell and network tunneling patterns
+        re.compile(
+            r"""(?:bash|sh|python|perl|ruby|php)\s+.*(?:/dev/tcp|/dev/udp|socket\(|connect\()""",
+            re.IGNORECASE,
+        ),
+        # Block ALL shell variable expansion — agent has no need for env vars.
+        # Use pwd/ls/which instead of $PWD/$HOME/$PATH.
+        re.compile(r"""\$\{?[A-Z_][A-Z_0-9]*"""),
     ]
 
     @classmethod
@@ -157,6 +196,35 @@ class BashCommandFilter:
         return True, ""
 
 
+class ToolCallRateLimiter:
+    """Per-session sliding-window rate limiter for tool calls.
+
+    Default: 30 calls per 60-second window.
+    """
+
+    def __init__(self, max_calls: int = 30, window: float = 60.0) -> None:
+        self._max_calls = max_calls
+        self._window = window
+        self._buckets: dict[str, list[float]] = {}
+
+    def allow(self, session_id: str) -> bool:
+        now = time.time()
+        bucket = self._buckets.setdefault(session_id, [])
+        cutoff = now - self._window
+        bucket[:] = [t for t in bucket if t > cutoff]
+        if len(bucket) >= self._max_calls:
+            return False
+        bucket.append(now)
+        return True
+
+    def clear(self, session_id: str) -> None:
+        self._buckets.pop(session_id, None)
+
+
+# Module-level singleton for use across the app
+tool_call_rate_limiter = ToolCallRateLimiter()
+
+
 class FileAccessFilter:
     """Pre-execute check for sensitive file reads.
 
@@ -178,6 +246,7 @@ class FileAccessFilter:
         re.compile(r"package(-lock)?\.json$"),
         re.compile(r"uv\.lock$"),
         re.compile(r"\.(pem|key|crt)$"),
+        re.compile(r"^/(proc|sys)/"),
     ]
 
     @classmethod

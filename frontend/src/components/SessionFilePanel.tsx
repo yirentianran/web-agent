@@ -40,7 +40,7 @@ function formatBytes(bytes: number): string {
 
 export default function SessionFilePanel({
   userId,
-  authToken,
+  authToken: _authToken,
   activeSessionId,
   onFileClick,
   refreshKey,
@@ -52,9 +52,6 @@ export default function SessionFilePanel({
   const [error, setError] = useState('')
   const [deleting, setDeleting] = useState<string | null>(null)
 
-  const headers: Record<string, string> = {}
-  if (authToken) headers['Authorization'] = `Bearer ${authToken}`
-
   const fetchFiles = useCallback(async () => {
     setLoading(true)
     setError('')
@@ -64,7 +61,7 @@ export default function SessionFilePanel({
       // fall through to 'all' files when the session is unknown (this
       // prevents showing previous-session files during a session switch).
       if (scope === 'session' && activeSessionId) {
-        const resp = await fetch(`/api/users/${userId}/sessions/${activeSessionId}/files`, { headers })
+        const resp = await fetch(`/api/users/${userId}/sessions/${activeSessionId}/files`, { credentials: 'same-origin' })
         if (resp.status === 403 || resp.status === 404) {
           window.location.href = window.location.origin
           return
@@ -105,7 +102,7 @@ export default function SessionFilePanel({
         // files from a previous session during a session switch.
         data = []
       } else if (scope === 'all') {
-        const resp = await fetch(`/api/users/${userId}/files`, { headers })
+        const resp = await fetch(`/api/users/${userId}/files`, { credentials: 'same-origin' })
         if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
         const raw = await resp.json()
         data = raw.map((f: Record<string, unknown>) => {
@@ -163,7 +160,7 @@ export default function SessionFilePanel({
     try {
       const resp = await fetch(`/api/users/${userId}/files/${encodeURIComponent(file.path)}`, {
         method: 'DELETE',
-        headers,
+        credentials: 'same-origin',
       })
       if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
       await fetchFiles()
@@ -206,7 +203,6 @@ export default function SessionFilePanel({
             title={t('filePanel.uploadsGroup')}
             files={uploadFiles}
             userId={userId}
-            authToken={authToken}
             onFileClick={onFileClick}
             onDelete={handleDelete}
             deleting={deleting}
@@ -215,7 +211,6 @@ export default function SessionFilePanel({
             title={t('filePanel.generatedGroup')}
             files={generatedFiles}
             userId={userId}
-            authToken={authToken}
             onFileClick={onFileClick}
             onDelete={handleDelete}
             deleting={deleting}
@@ -230,7 +225,6 @@ function FileGroup({
   title,
   files,
   userId,
-  authToken,
   onFileClick,
   onDelete,
   deleting,
@@ -238,7 +232,6 @@ function FileGroup({
   title: string
   files: FileInfo[]
   userId: string
-  authToken?: string | null
   onFileClick: (filename: string) => void
   onDelete: (file: FileInfo) => void
   deleting: string | null
@@ -283,9 +276,7 @@ function FileGroup({
                   onClick={async () => {
                     try {
                       const dlUrl = f.download_url || `/api/users/${userId}/download/${encodeURIComponent(f.path)}`
-                      const fetchHeaders: Record<string, string> = {}
-                      if (authToken) fetchHeaders['Authorization'] = `Bearer ${authToken}`
-                      const response = await fetch(dlUrl, { headers: fetchHeaders })
+                      const response = await fetch(dlUrl, { credentials: 'same-origin' })
                       if (!response.ok) throw new Error(`HTTP ${response.status}`)
                       const blob = await response.blob()
                       const url = window.URL.createObjectURL(blob)

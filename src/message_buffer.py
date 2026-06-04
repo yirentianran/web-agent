@@ -156,8 +156,11 @@ class MessageBuffer:
                 parsed = json.loads(row[4])
                 if msg["type"] == "file_result" and "data" in parsed:
                     msg["data"] = parsed["data"]
-                if msg["type"] == "user" and "data" in parsed:
-                    msg["data"] = parsed["data"]
+                if msg["type"] == "user":
+                    if "data" in parsed:
+                        msg["data"] = parsed["data"]
+                    if "client_msg_id" in parsed:
+                        msg["client_msg_id"] = parsed["client_msg_id"]
                 if msg["type"] == "tool_use":
                     if "id" in parsed:
                         msg["id"] = parsed["id"]

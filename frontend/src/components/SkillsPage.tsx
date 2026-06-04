@@ -12,9 +12,9 @@ interface SkillsPageProps {
 
 type Tab = 'shared' | 'personal'
 
-export default function SkillsPage({ authToken, userId, userRole, onBack }: SkillsPageProps) {
+export default function SkillsPage({ authToken: _authToken, userId, userRole, onBack }: SkillsPageProps) {
   const { t } = useTranslation()
-  const api = useSkillsApi(authToken, userId)
+  const api = useSkillsApi(userId)
   const isAdmin = userRole === 'admin'
   const [tab, setTab] = useState<Tab>('personal')
   const [sharedSkills, setSharedSkills] = useState<Skill[]>([])
