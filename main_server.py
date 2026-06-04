@@ -47,6 +47,7 @@ from src.admin_auth import require_admin
 from src.auth import (
     create_token,
     get_current_user,
+    verify_csrf,
     verify_path_user,
     verify_token,
     set_auth_cookies,
@@ -3497,7 +3498,7 @@ def user_workspace_dir(user_id: str) -> Path:
 # ── Session Management API ───────────────────────────────────────
 
 
-@app.post("/api/users/{user_id}/sessions")
+@app.post("/api/users/{user_id}/sessions", dependencies=[Depends(verify_csrf)])
 async def create_session(
     user_id: str,
     current_user: str = Depends(get_current_user),
@@ -3671,7 +3672,7 @@ async def get_all_generated_files(
     return generated
 
 
-@app.delete("/api/users/{user_id}/sessions/{session_id}")
+@app.delete("/api/users/{user_id}/sessions/{session_id}", dependencies=[Depends(verify_csrf)])
 async def delete_session(
     user_id: str,
     session_id: str,
@@ -3698,7 +3699,7 @@ class TitleUpdate(BaseModel):
     title: str
 
 
-@app.patch("/api/users/{user_id}/sessions/{session_id}/title")
+@app.patch("/api/users/{user_id}/sessions/{session_id}/title", dependencies=[Depends(verify_csrf)])
 async def update_session_title(
     user_id: str,
     session_id: str,
@@ -3716,7 +3717,7 @@ async def update_session_title(
     return {"status": "ok", "title": req.title}
 
 
-@app.post("/api/users/{user_id}/sessions/{session_id}/cancel")
+@app.post("/api/users/{user_id}/sessions/{session_id}/cancel", dependencies=[Depends(verify_csrf)])
 async def cancel_session(
     user_id: str,
     session_id: str,
@@ -3758,7 +3759,7 @@ async def cancel_session(
     return {"status": "ok"}
 
 
-@app.post("/api/users/{user_id}/sessions/{session_id}/fork")
+@app.post("/api/users/{user_id}/sessions/{session_id}/fork", dependencies=[Depends(verify_csrf)])
 async def fork_session(
     user_id: str,
     session_id: str,
@@ -3818,7 +3819,7 @@ async def get_session_status(
 # ── File Management API ──────────────────────────────────────────
 
 
-@app.post("/api/users/{user_id}/upload")
+@app.post("/api/users/{user_id}/upload", dependencies=[Depends(verify_csrf)])
 async def upload_file(
     user_id: str,
     file: UploadFile = File(...),
@@ -3950,7 +3951,7 @@ async def download_file(
     return FileResponse(str(full_path), filename=full_path.name)
 
 
-@app.delete("/api/users/{user_id}/files/{file_path:path}")
+@app.delete("/api/users/{user_id}/files/{file_path:path}", dependencies=[Depends(verify_csrf)])
 async def delete_file(
     user_id: str,
     file_path: str,
@@ -4319,7 +4320,7 @@ def _write_skill_meta(skill_dir: Path, owner: str, zip_filename: str) -> None:
 # ── Skill upload endpoints
 
 
-@app.post("/api/users/{user_id}/skills/upload")
+@app.post("/api/users/{user_id}/skills/upload", dependencies=[Depends(verify_csrf)])
 async def upload_skill_files(
     user_id: str,
     file: UploadFile = File(...),
@@ -4507,7 +4508,7 @@ async def delete_shared_skill(
     return {"status": "ok"}
 
 
-@app.delete("/api/users/{user_id}/skills/{skill_name}")
+@app.delete("/api/users/{user_id}/skills/{skill_name}", dependencies=[Depends(verify_csrf)])
 async def delete_skill(
     user_id: str,
     skill_name: str,
@@ -4649,7 +4650,7 @@ async def promote_skill_to_shared(
 # ── User Language Preference ─────────────────────────────────────
 
 
-@app.put("/api/users/{user_id}/language")
+@app.put("/api/users/{user_id}/language", dependencies=[Depends(verify_csrf)])
 async def update_user_language(
     user_id: str,
     req: dict[str, str],
@@ -4690,7 +4691,7 @@ class TaskUpdateRequest(BaseModel):
     blocked_by: list[str] | None = None
 
 
-@app.post("/api/users/{user_id}/tasks")
+@app.post("/api/users/{user_id}/tasks", dependencies=[Depends(verify_csrf)])
 async def create_task(
     user_id: str,
     req: TaskCreateRequest,
@@ -4740,7 +4741,7 @@ async def get_task(
     return JSONResponse(task)
 
 
-@app.patch("/api/users/{user_id}/tasks/{task_id}")
+@app.patch("/api/users/{user_id}/tasks/{task_id}", dependencies=[Depends(verify_csrf)])
 async def update_task(
     user_id: str,
     task_id: str,
@@ -4765,7 +4766,7 @@ async def update_task(
     return JSONResponse(updated)
 
 
-@app.delete("/api/users/{user_id}/tasks/{task_id}")
+@app.delete("/api/users/{user_id}/tasks/{task_id}", dependencies=[Depends(verify_csrf)])
 async def delete_task_endpoint(
     user_id: str,
     task_id: str,
@@ -5934,7 +5935,7 @@ async def list_containers(
     return JSONResponse({"containers": containers})
 
 
-@app.post("/api/users/{user_id}/containers/start")
+@app.post("/api/users/{user_id}/containers/start", dependencies=[Depends(verify_csrf)])
 async def start_container(
     user_id: str,
     current_user: str = Depends(get_current_user),
@@ -5952,7 +5953,7 @@ async def start_container(
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
-@app.post("/api/users/{user_id}/containers/pause")
+@app.post("/api/users/{user_id}/containers/pause", dependencies=[Depends(verify_csrf)])
 async def pause_container_endpoint(
     user_id: str,
     current_user: str = Depends(get_current_user),
@@ -5966,7 +5967,7 @@ async def pause_container_endpoint(
     return JSONResponse({"status": "ok"})
 
 
-@app.delete("/api/users/{user_id}/containers")
+@app.delete("/api/users/{user_id}/containers", dependencies=[Depends(verify_csrf)])
 async def destroy_container_endpoint(
     user_id: str,
     current_user: str = Depends(get_current_user),
