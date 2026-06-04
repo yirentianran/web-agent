@@ -14,12 +14,68 @@ Usage:
 
 from __future__ import annotations
 
+import base64
 import json
+import logging
+import os
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from src.database import Database
+
+logger = logging.getLogger(__name__)
+
+# --- MCP Credential Encryption ---
+_MCP_ENCRYPTION_KEY = os.getenv("MCP_ENCRYPTION_KEY", "")
+_encryption_available = False
+_cipher = None
+
+if _MCP_ENCRYPTION_KEY:
+    try:
+        from cryptography.fernet import Fernet
+
+        # Derive a 32-byte key and encode as url-safe base64 for Fernet
+        key_bytes = _MCP_ENCRYPTION_KEY.encode("utf-8").ljust(32, b"\x00")[:32]
+        fernet_key = base64.urlsafe_b64encode(key_bytes)
+        _cipher = Fernet(fernet_key)
+        _encryption_available = True
+    except Exception as e:
+        logger.warning("Failed to initialize MCP credential encryption: %s", e)
+else:
+    logger.warning("MCP_ENCRYPTION_KEY not set — MCP credentials stored as plaintext")
+
+_SENSITIVE_FIELDS = {"headers", "env"}
+
+
+def _encrypt_sensitive_fields(data: dict) -> dict:
+    """Encrypt headers and env fields. Returns a new dict (does not mutate input)."""
+    if not _encryption_available or _cipher is None:
+        return data
+    result = dict(data)
+    for field in _SENSITIVE_FIELDS:
+        if field in result and result[field]:
+            json_str = json.dumps(result[field])
+            encrypted = _cipher.encrypt(json_str.encode("utf-8"))
+            result[field] = base64.urlsafe_b64encode(encrypted).decode("ascii")
+    return result
+
+
+def _decrypt_sensitive_fields(data: dict) -> dict:
+    """Decrypt headers and env fields. Handles plaintext gracefully."""
+    if not _encryption_available or _cipher is None:
+        return data
+    result = dict(data)
+    for field in _SENSITIVE_FIELDS:
+        if field in result and result[field] and isinstance(result[field], str):
+            try:
+                encrypted = base64.urlsafe_b64decode(result[field].encode("ascii"))
+                decrypted_json = _cipher.decrypt(encrypted)
+                result[field] = json.loads(decrypted_json)
+            except Exception:
+                # Already plaintext — backward compatible, leave as-is
+                pass
+    return result
 
 
 class MCPServerStore:
@@ -59,6 +115,9 @@ class MCPServerStore:
         if existing is not None:
             raise ValueError(f"MCP server '{server['name']}' already exists")
 
+        # Encrypt sensitive fields before storing
+        server_to_store = _encrypt_sensitive_fields(dict(server))
+
         now = _now()
         async with self.db.connection() as conn:
             await conn.execute(
@@ -67,19 +126,19 @@ class MCPServerStore:
                     resources, prompts, description, enabled, access, created_at, updated_at)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
-                    server["name"],
-                    server.get("type", "stdio"),
-                    server.get("command"),
-                    json.dumps(server.get("args", [])),
-                    server.get("url"),
-                    json.dumps(server.get("headers", {})),
-                    json.dumps(server.get("env", {})),
-                    json.dumps(server.get("tools", [])),
-                    json.dumps(server.get("resources", [])),
-                    json.dumps(server.get("prompts", [])),
-                    server.get("description", ""),
-                    1 if server.get("enabled", True) else 0,
-                    server.get("access", "all"),
+                    server_to_store["name"],
+                    server_to_store.get("type", "stdio"),
+                    server_to_store.get("command"),
+                    json.dumps(server_to_store.get("args", [])),
+                    server_to_store.get("url"),
+                    json.dumps(server_to_store.get("headers", {})),
+                    json.dumps(server_to_store.get("env", {})),
+                    json.dumps(server_to_store.get("tools", [])),
+                    json.dumps(server_to_store.get("resources", [])),
+                    json.dumps(server_to_store.get("prompts", [])),
+                    server_to_store.get("description", ""),
+                    1 if server_to_store.get("enabled", True) else 0,
+                    server_to_store.get("access", "all"),
                     now,
                     now,
                 ),
@@ -109,6 +168,8 @@ class MCPServerStore:
 
         # Merge patch
         updated_data = {**existing, **patch}
+        # Encrypt sensitive fields before storing
+        updated_data = _encrypt_sensitive_fields(updated_data)
         now = _now()
 
         async with self.db.connection() as conn:
@@ -166,7 +227,7 @@ class MCPServerStore:
     def _row_to_dict(self, row: Any) -> dict[str, Any]:
         """Convert a database row (dict-like) to a Python dict."""
         data = dict(row) if not isinstance(row, dict) else row
-        return {
+        result = {
             "id": data["id"],
             "name": data["name"],
             "type": data["type"],
@@ -184,6 +245,7 @@ class MCPServerStore:
             "created_at": data["created_at"],
             "updated_at": data["updated_at"],
         }
+        return _decrypt_sensitive_fields(result)
 
 
 def _now() -> float:

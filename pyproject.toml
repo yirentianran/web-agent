@@ -21,6 +21,7 @@ dependencies = [
     "pandas>=3.0.2",
     "numpy>=2.4.4",
     "slowapi>=0.1.9",
+    "cryptography>=46.0.7",
 ]
 
 [project.optional-dependencies]
