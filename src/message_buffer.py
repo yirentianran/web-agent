@@ -120,7 +120,9 @@ class MessageBuffer:
     async def _read_db_messages(
         self, session_id: str, after_index: int = 0, user_id: str | None = None
     ) -> list[dict]:
-        """Read messages from SQLite via the async Database connection."""
+        """Read messages from SQLite via the async Database connection.
+        Includes ``seq`` for consistent index numbering with REST history.
+        """
         if self.db is None:
             return []
 
@@ -128,14 +130,14 @@ class MessageBuffer:
             async with self.db.connection() as conn:
                 if user_id is not None:
                     cursor = await conn.execute(
-                        "SELECT m.type, m.subtype, m.name, m.content, m.payload, m.usage "
+                        "SELECT m.seq, m.type, m.subtype, m.name, m.content, m.payload, m.usage "
                         "FROM messages m JOIN sessions s ON m.session_id = s.session_id "
                         "WHERE m.session_id = ? AND s.user_id = ? AND m.seq >= ? ORDER BY m.seq",
                         (session_id, user_id, after_index),
                     )
                 else:
                     cursor = await conn.execute(
-                        "SELECT type, subtype, name, content, payload, usage "
+                        "SELECT seq, type, subtype, name, content, payload, usage "
                         "FROM messages WHERE session_id = ? AND seq >= ? ORDER BY seq",
                         (session_id, after_index),
                     )
@@ -145,15 +147,15 @@ class MessageBuffer:
 
         result: list[dict] = []
         for row in rows:
-            msg: dict[str, Any] = {"type": row[0]}
-            if row[1] is not None:
-                msg["subtype"] = row[1]
+            msg: dict[str, Any] = {"seq": row[0], "type": row[1]}
             if row[2] is not None:
-                msg["name"] = row[2]
+                msg["subtype"] = row[2]
             if row[3] is not None:
-                msg["content"] = row[3]
+                msg["name"] = row[3]
             if row[4] is not None:
-                parsed = json.loads(row[4])
+                msg["content"] = row[4]
+            if row[5] is not None:
+                parsed = json.loads(row[5])
                 if msg["type"] == "file_result" and "data" in parsed:
                     msg["data"] = parsed["data"]
                 if msg["type"] == "user":
@@ -176,17 +178,17 @@ class MessageBuffer:
                     and "state" in parsed
                 ):
                     msg["state"] = parsed["state"]
-            if row[5] is not None:
-                msg["usage"] = json.loads(row[5])
+            if row[6] is not None:
+                msg["usage"] = json.loads(row[6])
             result.append(msg)
         return result
 
-    async def _write_db(self, session_id: str, message: dict) -> None:
-        """Write one message to SQLite via the async connection."""
+    async def _write_db(self, session_id: str, message: dict) -> int:
+        """Write one message to SQLite and return its seq number."""
         if self.db is None:
-            return
+            return -1
         if message.get("type") == "stream_event":
-            return
+            return -1
 
         async with self.db.connection() as conn:
             cursor = await conn.execute(
@@ -234,6 +236,7 @@ class MessageBuffer:
                 ),
             )
             await conn.commit()
+            return next_seq
 
     async def _delete_db_by_type(self, session_id: str, msg_type: str) -> None:
         """Delete messages of a given type from SQLite."""
@@ -321,8 +324,13 @@ class MessageBuffer:
         self._evict_old(session_id)
         buf["last_active"] = time.time()
 
-        # Persist to DB directly via the shared aiosqlite connection
-        await self._write_db(session_id, message)
+        # Persist to DB — returns the seq number assigned by SQLite
+        seq = await self._write_db(session_id, message)
+        if seq >= 0:
+            message["seq"] = seq
+            # Align base_index with the seq of the first message
+            if buf["base_index"] == 0 and len(buf["messages"]) == 1:
+                buf["base_index"] = seq
 
         # Update session state based on message type
         msg_type = message.get("type", "")

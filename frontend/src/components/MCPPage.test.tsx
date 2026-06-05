@@ -42,7 +42,7 @@ describe('MCPPage - styling', () => {
     await waitFor(() => {
       expect(container.querySelector('.mcp-empty')).not.toBeNull()
     })
-    const header = container.querySelector('.mcp-header')
+    const header = container.querySelector('.skills-header')
     expect(header?.classList.contains('detail-header')).toBe(true)
   })
 
@@ -51,7 +51,7 @@ describe('MCPPage - styling', () => {
     await waitFor(() => {
       expect(container.querySelector('.mcp-empty')).not.toBeNull()
     })
-    const backBtn = container.querySelector('.mcp-back-btn')
+    const backBtn = container.querySelector('.skills-back-btn')
     expect(backBtn?.classList.contains('detail-back-btn')).toBe(true)
   })
 
@@ -68,7 +68,7 @@ describe('MCPPage - styling', () => {
     await waitFor(() => {
       expect(container.querySelector('.mcp-empty')).not.toBeNull()
     })
-    const header = container.querySelector('.mcp-header')
+    const header = container.querySelector('.skills-header')
     const addBtn = header?.querySelector('.mcp-add-btn')
     expect(addBtn).not.toBeNull()
     expect(addBtn).toHaveTextContent('+ Add Server')

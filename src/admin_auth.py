@@ -1,11 +1,7 @@
 """Admin auth — JWT role-based admin verification.
 
-Usage:
-    from src.admin_auth import require_admin
-
-    @app.get("/admin/endpoint")
-    async def admin_endpoint(current_user: str = Depends(require_admin)):
-        ...
+Supports both Authorization header (Bearer token) and httpOnly cookie
+(access_token) for admin authentication.
 """
 
 from __future__ import annotations
@@ -13,32 +9,16 @@ from __future__ import annotations
 import os
 
 import jwt
-from fastapi import Depends, Header, HTTPException, status
+from fastapi import Cookie, Header, HTTPException, status
 
 ALGORITHM = "HS256"
 JWT_SECRET = os.getenv("JWT_SECRET", "dev-secret-change-in-production-use-at-least-32-chars")
 ENFORCE_AUTH = os.getenv("ENFORCE_AUTH", "false").lower() == "true"
+ACCESS_TOKEN_COOKIE = "access_token"
 
 
-def require_admin(authorization: str | None = Header(None)) -> str:
-    """Verify the request has a valid admin JWT token.
-
-    Returns the user_id from the token if admin role is confirmed.
-    Raises 401 if token is missing/invalid, 403 if user is not admin.
-
-    When ENFORCE_AUTH is False, returns "default" (dev mode passthrough).
-    """
-    if not ENFORCE_AUTH:
-        return "default"
-
-    if not authorization or not authorization.startswith("Bearer "):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Missing admin authentication token",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-
-    token = authorization.split(" ", 1)[1]
+def _verify_admin_token(token: str) -> str:
+    """Decode a JWT and verify the admin role. Returns user_id."""
     try:
         payload = jwt.decode(token, JWT_SECRET, algorithms=[ALGORITHM])
     except jwt.ExpiredSignatureError as e:
@@ -71,15 +51,70 @@ def require_admin(authorization: str | None = Header(None)) -> str:
     return user_id
 
 
-def is_admin_request(authorization: str | None = None) -> bool:
+def require_admin(
+    authorization: str | None = Header(None),
+    access_token: str | None = Cookie(None, alias=ACCESS_TOKEN_COOKIE),
+) -> str:
+    """FastAPI dependency: verify the request has a valid admin JWT token.
+
+    Checks the ``Authorization: Bearer <token>`` header first, then falls
+    back to the ``access_token`` httpOnly cookie.  Raises 401 if the token
+    is missing / invalid, or 403 if the user is not an admin.
+
+    When ``ENFORCE_AUTH`` is False returns ``"default"`` (dev passthrough).
+    """
+    if not ENFORCE_AUTH:
+        return "default"
+
+    # Collect candidate tokens — cookie first (always fresh), then header
+    candidates: list[str] = []
+    if access_token:
+        candidates.append(access_token)
+    if authorization and authorization.startswith("Bearer "):
+        hdr_token = authorization.split(" ", 1)[1]
+        if hdr_token not in candidates:
+            candidates.append(hdr_token)
+
+    if not candidates:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Missing admin authentication token",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    # Try each candidate — the first valid admin token wins
+    last_error = None
+    for token in candidates:
+        try:
+            return _verify_admin_token(token)
+        except HTTPException as e:
+            last_error = e
+    raise last_error  # type: ignore[misc]
+
+
+def is_admin_request(
+    authorization: str | None = None,
+    access_token: str | None = None,
+) -> bool:
     """Return True if the request carries a valid admin JWT. Never raises."""
     if not ENFORCE_AUTH:
         return True
-    if not authorization or not authorization.startswith("Bearer "):
+
+    # Cookie first (httpOnly, always fresh), then header fallback
+    candidates: list[str] = []
+    if access_token:
+        candidates.append(access_token)
+    if authorization and authorization.startswith("Bearer "):
+        hdr_token = authorization.split(" ", 1)[1]
+        if hdr_token not in candidates:
+            candidates.append(hdr_token)
+    if not candidates:
         return False
-    token = authorization.split(" ", 1)[1]
-    try:
-        payload = jwt.decode(token, JWT_SECRET, algorithms=[ALGORITHM])
-        return payload.get("role") == "admin"
-    except Exception:
-        return False
+
+    for token in candidates:
+        try:
+            payload = jwt.decode(token, JWT_SECRET, algorithms=[ALGORITHM])
+            return payload.get("role") == "admin"
+        except Exception:
+            continue
+    return False

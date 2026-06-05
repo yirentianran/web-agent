@@ -159,12 +159,13 @@ def set_auth_cookies(response, access_token: str) -> str:
     Returns the new CSRF token value (also set as a cookie).
     Callers can include it in the response body if needed.
     """
+    secure = ENFORCE_AUTH  # only require HTTPS when auth is enforced (prod)
     csrf_token = create_csrf_token()
     response.set_cookie(
         key=ACCESS_TOKEN_COOKIE,
         value=access_token,
         httponly=True,
-        secure=True,
+        secure=secure,
         samesite="strict",
         max_age=ACCESS_TOKEN_EXPIRE_MINUTES * 60,
         path="/",
@@ -173,7 +174,7 @@ def set_auth_cookies(response, access_token: str) -> str:
         key=CSRF_TOKEN_COOKIE,
         value=csrf_token,
         httponly=False,  # readable by JS to include in X-CSRF-Token header
-        secure=True,
+        secure=secure,
         samesite="strict",
         max_age=ACCESS_TOKEN_EXPIRE_MINUTES * 60,
         path="/",

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -61,3 +61,16 @@ def client() -> TestClient:
 def mock_sdk() -> MagicMock:
     """Return the mocked SDK module for configuring responses."""
     return _mock_sdk
+
+
+@pytest.fixture()
+def _patch_auth():
+    """Simulate enforced auth with a valid token for all test methods.
+
+    Use ``@pytest.mark.usefixtures('_patch_auth')`` on classes that need it.
+    """
+    with (
+        patch("src.auth.ENFORCE_AUTH", True),
+        patch("src.auth.verify_token", return_value="alice"),
+    ):
+        yield

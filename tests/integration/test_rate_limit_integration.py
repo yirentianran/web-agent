@@ -1,75 +1,52 @@
 """Integration tests for API rate limiting.
 
-These tests verify that the global default rate limit (60/minute)
-applies to all endpoints via the SlowAPIMiddleware.
-
-Note: Rate limit response headers (Retry-After, X-RateLimit-*) are
-not injected by default because the Limiter is configured with
-``headers_enabled=False``.  Enabling ``headers_enabled=True`` would
-add these headers but also add a small per-request overhead.
+Verifies that the global default rate limit (60/minute) applies
+via the SlowAPIMiddleware.
 """
 
 from __future__ import annotations
 
 import time
-from unittest.mock import patch
 
 import pytest
 from fastapi.testclient import TestClient
 
 
+def _make_authed_post(
+    client: TestClient,
+    url: str,
+    csrf_token: str = "rate-test-csrf",
+    **kwargs,
+):
+    """Make a POST request with valid auth cookies and CSRF header."""
+    client.cookies.clear()
+    client.cookies.set("access_token", "valid-token")
+    client.cookies.set("csrf_token", csrf_token)
+    headers = kwargs.pop("headers", {})
+    headers["X-CSRF-Token"] = csrf_token
+    return client.post(url, headers=headers, **kwargs)
+
+
+@pytest.mark.usefixtures("_patch_auth")
 class TestGlobalRateLimiting:
     """Verify that non-auth endpoints are rate-limited."""
 
     @pytest.fixture(autouse=True)
-    def _patch_auth(self):
-        """Simulate enforced auth with a valid token for all test methods."""
-        with (
-            patch("src.auth.ENFORCE_AUTH", True),
-            patch("src.auth.verify_token", return_value="alice"),
-        ):
-            yield
-
-    @pytest.fixture(autouse=True)
     def _reset_limiter(self):
-        """Clear the in-memory rate limiter storage between tests.
-
-        The TestClient shares the same app instance across tests, so
-        the limiter's in-memory storage accumulates hit counters.
-        We reset before each test to ensure isolation.
-        """
+        """Clear the in-memory rate limiter storage between tests."""
         from main_server import limiter
 
         limiter.reset()
         yield
         limiter.reset()
 
-    def _make_authed_post(
-        self,
-        client: TestClient,
-        url: str,
-        csrf_token: str = "rate-test-csrf",
-        **kwargs,
-    ):
-        """Make a POST request with valid auth cookies and CSRF header."""
-        client.cookies.clear()
-        client.cookies.set("access_token", "valid-token")
-        client.cookies.set("csrf_token", csrf_token)
-        headers = kwargs.pop("headers", {})
-        headers["X-CSRF-Token"] = csrf_token
-        return client.post(url, headers=headers, **kwargs)
-
     def test_session_creation_rate_limited(
         self, client: TestClient
     ) -> None:
-        """Creating many sessions quickly should eventually hit rate limit.
-
-        The default global limit is 60/minute.  We fire 65 rapid requests
-        and expect to see at least one 429 response.
-        """
+        """Creating many sessions quickly should eventually hit rate limit."""
         responses = []
         for _ in range(65):
-            resp = self._make_authed_post(client, "/api/users/alice/sessions")
+            resp = _make_authed_post(client, "/api/users/alice/sessions")
             responses.append(resp.status_code)
 
         status_set = set(responses)
@@ -83,7 +60,7 @@ class TestGlobalRateLimiting:
         """Uploading files quickly should eventually hit rate limit."""
         responses = []
         for _ in range(65):
-            resp = self._make_authed_post(
+            resp = _make_authed_post(
                 client,
                 "/api/users/alice/upload",
                 files={"file": ("test.txt", b"data", "text/plain")},
@@ -116,12 +93,7 @@ class TestGlobalRateLimiting:
     def test_auth_endpoints_not_rate_limited_by_default(
         self, client: TestClient
     ) -> None:
-        """Auth endpoints with their own @limiter.limit() should use their
-        specific limits (5/min or 3/min), not the 60/min default.
-
-        The 5/min limit on /api/auth/token is stricter than 60/min,
-        so it should trigger first.
-        """
+        """Auth endpoints with specific @limiter.limit() use their own limits."""
         responses = []
         for _ in range(10):
             resp = client.post(
@@ -131,66 +103,31 @@ class TestGlobalRateLimiting:
             responses.append(resp.status_code)
 
         status_set = set(responses)
-        # With @limiter.limit("5/minute"), 10 rapid requests should trigger 429
         assert (
             429 in status_set
         ), f"Expected 429 for auth endpoint, got: {sorted(status_set)}"
 
 
 @pytest.mark.slowapi
+@pytest.mark.usefixtures("_patch_auth")
 class TestRateLimitCleanup:
     """Verify that the rate limit counter resets after enough time."""
 
     @pytest.fixture(autouse=True)
-    def _patch_auth(self):
-        """Simulate enforced auth with a valid token for all test methods."""
-        with (
-            patch("src.auth.ENFORCE_AUTH", True),
-            patch("src.auth.verify_token", return_value="alice"),
-        ):
-            yield
-
-    @pytest.fixture(autouse=True)
     def _reset_limiter(self):
-        """Clear the in-memory rate limiter storage between tests to avoid
-        cross-test contamination.
-
-        Since the TestClient shares the same app instance across tests,
-        the limiter's in-memory storage accumulates hit counters. We
-        reset it after each test method to ensure isolation.
-        """
+        """Clear the in-memory rate limiter storage between tests."""
         yield
         from main_server import limiter
 
         limiter.reset()
 
-    def _make_authed_post(
-        self,
-        client: TestClient,
-        url: str,
-        csrf_token: str = "rate-test-csrf",
-        **kwargs,
-    ):
-        """Make a POST request with valid auth cookies and CSRF header."""
-        client.cookies.clear()
-        client.cookies.set("access_token", "valid-token")
-        client.cookies.set("csrf_token", csrf_token)
-        headers = kwargs.pop("headers", {})
-        headers["X-CSRF-Token"] = csrf_token
-        return client.post(url, headers=headers, **kwargs)
-
     def test_rate_limit_window_resets(
         self, client: TestClient
     ) -> None:
-        """After the rate window passes, requests should succeed again.
-
-        This test waits for the rate window (60 seconds) to pass and
-        then verifies that a fresh request gets a 200 instead of 429.
-        """
-        # Burst: hit the limit
+        """After the rate window passes, requests should succeed again."""
         hit_429 = False
         for _ in range(65):
-            resp = self._make_authed_post(
+            resp = _make_authed_post(
                 client, "/api/users/alice/sessions"
             )
             if resp.status_code == 429:
@@ -200,11 +137,9 @@ class TestRateLimitCleanup:
         if not hit_429:
             pytest.skip("Rate limit not triggered in initial burst")
 
-        # Wait for the rate window to pass
         time.sleep(62)
 
-        # Fresh request should succeed
-        resp = self._make_authed_post(client, "/api/users/alice/sessions")
+        resp = _make_authed_post(client, "/api/users/alice/sessions")
         assert resp.status_code == 200, (
             f"Expected 200 after rate window reset, got {resp.status_code}"
         )

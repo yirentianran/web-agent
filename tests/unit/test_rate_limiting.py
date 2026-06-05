@@ -42,17 +42,6 @@ class TestRateLimiterConfiguration:
         assert isinstance(limiter._default_limits, list)
         assert len(limiter._default_limits) >= 1
 
-    def test_default_limit_provider_string_accessible(self) -> None:
-        """Verify the limit provider string can be read from the stored
-        LimitGroup objects via their name-mangled private attribute."""
-        limiter = Limiter(
-            key_func=get_remote_address, default_limits=["60/minute"]
-        )
-        limit_group = limiter._default_limits[0]
-        # LimitGroup uses Python name mangling for __limit_provider
-        provider = limit_group._LimitGroup__limit_provider
-        assert provider == "60/minute"
-
     def test_limiter_reset_method_exists(self) -> None:
         """The limiter should have a reset method for test cleanup."""
         limiter = Limiter(

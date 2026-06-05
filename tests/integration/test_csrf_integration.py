@@ -1,43 +1,21 @@
-"""Integration tests for CSRF protection on state-changing endpoints.
-
-These tests are expected to FAIL initially because ``verify_csrf()`` is
-not yet wired into any route handler dependencies.  Once Task 3 wires the
-dependency, the tests should pass.
-"""
+"""Integration tests for CSRF protection on state-changing endpoints."""
 
 from __future__ import annotations
 
 import pytest
-from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
 
+@pytest.mark.usefixtures("_patch_auth")
 class TestCsrfProtection:
-    """Verify CSRF protection is enforced on state-changing endpoints.
-
-    These tests are expected to FAIL initially because verify_csrf() is
-    not yet wired into any route handler dependencies.
-    """
-
-    @pytest.fixture(autouse=True)
-    def _patch_auth(self):
-        """Simulate enforced auth with a valid token for all test methods."""
-        with (
-            patch("src.auth.ENFORCE_AUTH", True),
-            patch("src.auth.verify_token", return_value="alice"),
-        ):
-            yield
+    """Verify CSRF protection is enforced on state-changing endpoints."""
 
     def _create_session(
         self, client: TestClient, csrf_token: str = "test-csrf-token"
     ) -> str:
-        """Create a session and return its ID. Sends a valid CSRF token.
-
-        Once verify_csrf is wired, the X-CSRF-Token header will be required.
-        """
-        client.cookies.set("access_token", "valid-token")
-        client.cookies.set("csrf_token", csrf_token)
+        """Create a session and return its ID. Sends a valid CSRF token."""
+        self._set_cookies(client, csrf_token)
         resp = client.post(
             "/api/users/alice/sessions",
             headers={"X-CSRF-Token": csrf_token},
@@ -51,8 +29,6 @@ class TestCsrfProtection:
         """Set both auth cookies on the test client."""
         client.cookies.set("access_token", "valid-token")
         client.cookies.set("csrf_token", csrf_token)
-
-    # ── Tests that should FAIL (CSRF not wired) ──
 
     def test_create_session_without_csrf_header_returns_403(
         self, client: TestClient
@@ -93,8 +69,6 @@ class TestCsrfProtection:
             json={"title": "new title"},
         )
         assert resp.status_code == 403
-
-    # ── Tests that should PASS ──
 
     def test_state_change_with_valid_csrf_passes(
         self, client: TestClient

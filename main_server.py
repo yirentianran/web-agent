@@ -34,7 +34,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import httpx
-from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi import Cookie, Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -2829,11 +2829,9 @@ async def handle_ws(websocket: WebSocket) -> None:
             while True:
                 raw = await websocket.receive_text()
                 data = json.loads(raw)
-                # Read the user_id from the incoming message
                 msg_user_id = data.get("user_id", "")
                 if ENFORCE_AUTH and _verified_user_id:
                     if msg_user_id and msg_user_id != _verified_user_id:
-                        # Reject: user_id in message doesn't match token
                         await websocket.send_json({
                             "type": "error",
                             "error": "User ID mismatch — message rejected",
@@ -3012,7 +3010,7 @@ async def handle_ws(websocket: WebSocket) -> None:
                     websocket,
                     {
                         **h,
-                        "index": last_index + i,
+                        "index": h.get("seq", last_index + i),
                         "replay": True,
                         "session_id": session_id,
                     },
@@ -3079,7 +3077,7 @@ async def handle_ws(websocket: WebSocket) -> None:
                         new_messages = await buffer.get_history(session_id, after_index=last_seen)
                         sent_count = 0
                         for i, h in enumerate(new_messages):
-                            idx = last_seen + i
+                            idx = h.get("seq", last_seen + i)
                             if not await _safe_ws_send(
                                 websocket,
                                 {
@@ -3098,7 +3096,7 @@ async def handle_ws(websocket: WebSocket) -> None:
                             final_messages = await buffer.get_history(session_id, after_index=last_seen)
                             final_sent = 0
                             for i, h in enumerate(final_messages):
-                                idx = last_seen + i
+                                idx = h.get("seq", last_seen + i)
                                 if not await _safe_ws_send(
                                     websocket,
                                     {
@@ -3348,7 +3346,7 @@ async def handle_ws(websocket: WebSocket) -> None:
                     new_messages = await buffer.get_history(session_id, after_index=last_seen)
                     sent_count = 0
                     for i, h in enumerate(new_messages):
-                        idx = last_seen + i
+                        idx = h.get("seq", last_seen + i)
                         msg_type = h.get("type", "unknown")
                         msg_subtype = h.get("subtype", "")
                         if msg_type == "system" and msg_subtype == "session_state_changed":
@@ -3378,7 +3376,7 @@ async def handle_ws(websocket: WebSocket) -> None:
                         final_messages = await buffer.get_history(session_id, after_index=last_seen)
                         final_sent = 0
                         for i, h in enumerate(final_messages):
-                            idx = last_seen + i
+                            idx = h.get("seq", last_seen + i)
                             if not await _safe_ws_send(
                                 websocket,
                                 {
@@ -4064,6 +4062,7 @@ async def list_user_skills(
     user_id: str,
     current_user: str = Depends(get_current_user),
     authorization: str | None = Header(None),
+    access_token: str | None = Cookie(None, alias="access_token"),
 ) -> list[SkillInfo]:
     """List personal skills from the database.
 
@@ -4073,7 +4072,7 @@ async def list_user_skills(
 
     # When auth is disabled, default to non-admin so skills are filtered by owner.
     # Admin behavior is only meaningful when auth is actually enforced.
-    admin = is_admin_request(authorization) and ENFORCE_AUTH
+    admin = is_admin_request(authorization, access_token) and ENFORCE_AUTH
 
     # Cross-user access check: non-admin accessing another user's skills
     if not admin and current_user != user_id:
@@ -4403,6 +4402,7 @@ async def download_skill(
     skill_name: str,
     owner: str | None = None,
     authorization: str | None = Header(None),
+    access_token: str | None = Cookie(None, alias="access_token"),
     current_user: str = Depends(get_current_user),
 ):
     """Download a skill as a ZIP archive.
@@ -4417,7 +4417,7 @@ async def download_skill(
     if source not in ("shared", "personal"):
         return JSONResponse({"error": "invalid source, must be 'shared' or 'personal'"}, status_code=400)
 
-    admin = is_admin_request(authorization)
+    admin = is_admin_request(authorization, access_token)
 
     if source == "shared":
         if not admin:
@@ -5854,6 +5854,26 @@ async def get_user_feedback(
 class TokenRequest(BaseModel):
     user_id: str = Field(..., min_length=1, max_length=64)
     password: str = Field("", max_length=128)
+
+
+@app.get("/api/auth/me")
+async def get_current_user_info(request: Request) -> dict[str, str]:
+    """Return the current user's id and role from the httpOnly JWT cookie."""
+    from src.auth import ACCESS_TOKEN_COOKIE, JWT_SECRET, ALGORITHM, ENFORCE_AUTH
+    import jwt as _jwt
+
+    token = request.cookies.get(ACCESS_TOKEN_COOKIE)
+    if not token:
+        if not ENFORCE_AUTH:
+            return {"user_id": "default", "role": "user"}
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    try:
+        payload = _jwt.decode(token, JWT_SECRET, algorithms=[ALGORITHM])
+    except Exception:
+        raise HTTPException(status_code=401, detail="Invalid token")
+
+    return {"user_id": payload.get("sub", ""), "role": payload.get("role", "user")}
 
 
 @app.get("/api/auth/config")

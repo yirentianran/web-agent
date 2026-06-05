@@ -54,7 +54,7 @@ class TestVerifyCsrf:
 
     @patch("src.auth.ENFORCE_AUTH", True)
     def test_safe_methods_are_skipped(self) -> None:
-        for method in ("GET", "HEAD", "OPTIONS"):
+        for method in SAFE_METHODS:
             req = self._make_request(method)
             verify_csrf(req)  # Should not raise
 

@@ -19,15 +19,22 @@ Multi-user web agent built with FastAPI (backend) and React (frontend). Each use
 | `src/message_buffer.py` | In-memory message buffer with JSONL disk persistence |
 | `src/session_store.py` | DB-backed session CRUD and message storage |
 | `src/database.py` | SQLite via aiosqlite, WAL mode |
-| `src/auth.py` | JWT + bcrypt password authentication |
+| `src/auth.py` | JWT + bcrypt auth, CSRF protection, httpOnly cookies |
+| `src/admin_auth.py` | Admin role verification (cookie + header fallback) |
 | `src/cost.py` | Model name resolution (`MODEL` / `FLASH_MODEL` env vars) |
 | `src/observation.py` | ToolObserver — tool-call event recording |
 | `src/instinct_extractor.py` | Automatic pattern discovery from observations |
 | `src/container_bridge.py` | WebSocket bridge to per-user Docker containers |
+| `src/container_manager.py` | Per-user Docker container lifecycle |
+| `src/mcp_store.py` | MCP server registry with credential encryption |
+| `src/skill_manager.py` | Skill upload, download, promote, filesystem migration |
+| `src/security_filter.py` | Bash command and file access filtering |
 | `src/agent_logger.py` | L3 agent execution logging |
 | `src/semantic_search.py` | FTS5 search over sessions and wiki pages |
-| `frontend/src/App.tsx` | Main React app with session state management |
+| `frontend/src/App.tsx` | Main React app: session state, routing, auth |
 | `frontend/src/hooks/useWebSocket.ts` | WebSocket hook for real-time communication |
+| `frontend/src/lib/api.ts` | `apiFetch` wrapper (auto CSRF header, credentials) |
+| `frontend/src/components/SettingsMenu.tsx` | Admin menu: dashboard, users, MCP, evolution |
 
 ## Environment
 

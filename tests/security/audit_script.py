@@ -17,26 +17,33 @@ import urllib.request
 from dataclasses import dataclass, field
 
 
+class Severity:
+    HIGH = "HIGH"
+    MEDIUM = "MEDIUM"
+    LOW = "LOW"
+    INFO = "INFO"
+
+
 @dataclass
 class AuditResult:
     name: str
     passed: bool
     detail: str = ""
-    severity: str = "INFO"
+    severity: str = Severity.INFO
 
 
 @dataclass
 class AuditReport:
     results: list[AuditResult] = field(default_factory=list)
 
-    def add(self, name: str, passed: bool, detail: str = "", severity: str = "INFO") -> None:
+    def add(self, name: str, passed: bool, detail: str = "", severity: str = Severity.INFO) -> None:
         self.results.append(AuditResult(name, passed, detail, severity))
 
     def summary(self) -> str:
         total = len(self.results)
         passed = sum(1 for r in self.results if r.passed)
         failed = total - passed
-        critical_fails = [r for r in self.results if not r.passed and r.severity == "HIGH"]
+        critical_fails = [r for r in self.results if not r.passed and r.severity == Severity.HIGH]
         lines = [
             "=" * 60,
             "  SECURITY AUDIT REPORT",
@@ -77,14 +84,14 @@ def run_audit(base_url: str) -> AuditReport:
 
     # 1. Authentication / Authorization
     status, body = req("GET", "/health")
-    report.add("Health endpoint accessible", status == 200, f"Got {status}", "LOW")
+    report.add("Health endpoint accessible", status == 200, f"Got {status}", Severity.LOW)
 
     status, body = req("POST", "/api/users/alice/sessions")
     report.add(
         "Session creation requires authentication",
         status in (401, 403),
         f"Got {status} (expected 401 or 403)",
-        "HIGH",
+        Severity.HIGH,
     )
 
     status, body = req(
@@ -95,7 +102,7 @@ def run_audit(base_url: str) -> AuditReport:
         "Invalid token rejected",
         status in (401, 403),
         f"Got {status} (expected 401 or 403)",
-        "HIGH",
+        Severity.HIGH,
     )
 
     # 2. CSRF Protection
@@ -107,7 +114,7 @@ def run_audit(base_url: str) -> AuditReport:
         "CSRF: POST without X-CSRF-Token header rejected",
         status == 403,
         f"Got {status} (expected 403)",
-        "HIGH",
+        Severity.HIGH,
     )
 
     # 3. Rate Limiting
@@ -124,7 +131,7 @@ def run_audit(base_url: str) -> AuditReport:
         "Rate limiting: rapid requests trigger 429",
         rate_limited,
         "Never got 429 after 40 rapid requests",
-        "MEDIUM",
+        Severity.MEDIUM,
     )
 
     # 4. File Upload Security
@@ -137,7 +144,7 @@ def run_audit(base_url: str) -> AuditReport:
         "File upload: rejected without valid multipart",
         status != 200,
         f"Got {status}",
-        "MEDIUM",
+        Severity.MEDIUM,
     )
 
     # 5. Information Disclosure
@@ -146,7 +153,7 @@ def run_audit(base_url: str) -> AuditReport:
         "Info leak: 404 does not expose stack trace",
         "Traceback" not in body and "File \"" not in body,
         "Response may contain stack trace",
-        "MEDIUM",
+        Severity.MEDIUM,
     )
 
     return report

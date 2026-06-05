@@ -42,6 +42,7 @@ import {
   resolveBufferState,
   TERMINAL_STATES,
 } from "./lib/session-state";
+import { apiFetch } from "./lib/api";
 import { createLogger } from "./utils/logger";
 
 const logger = createLogger("[App]");
@@ -402,6 +403,7 @@ function MainApp() {
   });
   const [authToken, setAuthToken] = useState<string | null>(null);
   const [userRole, setUserRole] = useState<string>("user");
+  const [roleLoading, setRoleLoading] = useState<boolean>(!!localStorage.getItem("userId"));
   const [messages, setMessages] = useState<Message[]>([]);
   const [sessions, setSessions] = useState<SessionItem[]>([]);
   // urlSessionId is the single source of truth for the active session,
@@ -413,6 +415,24 @@ function MainApp() {
   useEffect(() => {
     urlSessionIdRef.current = urlSessionId;
   }, [urlSessionId]);
+
+  // Restore user role from httpOnly JWT cookie on page refresh.
+  // The role is stored in the cookie's JWT, not in localStorage.
+  useEffect(() => {
+    if (!userId) return;
+    fetch("/api/auth/me", { credentials: "same-origin" })
+      .then((resp) => {
+        if (resp.ok) return resp.json();
+        throw new Error(`HTTP ${resp.status}`);
+      })
+      .then((data: { user_id?: string; role?: string }) => {
+        if (data.role) setUserRole(data.role);
+      })
+      .catch(() => {
+        // Cookie may be expired — ignore
+      })
+      .finally(() => setRoleLoading(false));
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Sync InputBar key with active session, but skip auto-created sessions
   // so the InputBar state (files, input) survives the auto-create navigation.
@@ -970,15 +990,27 @@ function MainApp() {
               msg.clientMsgId &&
               prev.some((m) => m.clientMsgId === msg.clientMsgId)
             ) {
-              next = prev;
-              dedupResult = "skip:firstTurn-user-clientMsgIdDup";
+              // Update the optimistic insert with the backend's real index
+              // and confirm delivery. Skipping would leave stale indices in
+              // maxMsgIndexRef, causing misaligned last_index on next send.
+              next = prev.map((m) =>
+                m.clientMsgId === msg.clientMsgId
+                  ? { ...m, index: msg.index ?? m.index, sendState: "sent" as const }
+                  : m,
+              );
+              dedupResult = "update:firstTurn-user-clientMsgIdDup";
             } else if (
               prev.some(
                 (m) => m.type === "user" && m.content === msg.content,
               )
             ) {
-              next = prev;
-              dedupResult = "skip:firstTurn-user-contentDup";
+              // Content match — update index of the first matching message
+              next = prev.map((m) =>
+                m.type === "user" && m.content === msg.content && m.sendState === "sending"
+                  ? { ...m, index: msg.index ?? m.index, sendState: "sent" as const }
+                  : m,
+              );
+              dedupResult = "update:firstTurn-user-contentDup";
             } else {
               next = [...prev, msg];
               dedupResult = "append:firstTurn-user";
@@ -995,14 +1027,24 @@ function MainApp() {
             msg.clientMsgId &&
             prev.some((m) => m.clientMsgId === msg.clientMsgId)
           ) {
-            next = prev;
-            dedupResult = "skip:user-clientMsgIdDup";
+            // Update optimistic insert with backend's real index + confirm
+            next = prev.map((m) =>
+              m.clientMsgId === msg.clientMsgId
+                ? { ...m, index: msg.index ?? m.index, sendState: "sent" as const }
+                : m,
+            );
+            dedupResult = "update:user-clientMsgIdDup";
           } else if (
             !msg.clientMsgId &&
             prev.some((m) => m.type === "user" && m.content === msg.content)
           ) {
-            next = prev;
-            dedupResult = "skip:user-contentDup";
+            // Content match — update index of the matching optimistic message
+            next = prev.map((m) =>
+              m.type === "user" && m.content === msg.content && m.sendState === "sending"
+                ? { ...m, index: msg.index ?? m.index, sendState: "sent" as const }
+                : m,
+            );
+            dedupResult = "update:user-contentDup";
           } else {
             next = [...prev, msg];
             dedupResult = "append:user";
@@ -1337,12 +1379,18 @@ function MainApp() {
 
   const ensureSession = useCallback(async (): Promise<string | undefined> => {
     try {
-      const resp = await fetch(`/api/users/${userId}/sessions`, {
+      const resp = await apiFetch(`/api/users/${userId}/sessions`, {
         method: "POST",
-        credentials: "same-origin",
       });
+      if (!resp.ok) {
+        const detail = await resp.json().then((d: { detail?: string }) => d.detail).catch(() => "");
+        throw new Error(detail || `HTTP ${resp.status}`);
+      }
       const data = await resp.json();
       const sessionId: string = data.session_id;
+      if (!sessionId) {
+        throw new Error("No session_id in response");
+      }
       navigate("/chat/" + sessionId);
       await loadSessions();
       return sessionId;
@@ -1446,9 +1494,8 @@ function MainApp() {
     async (id: string) => {
       if (!confirm(t('sidebar.deleteSession'))) return;
       try {
-        const resp = await fetch(`/api/users/${userId}/sessions/${id}`, {
+        const resp = await apiFetch(`/api/users/${userId}/sessions/${id}`, {
           method: "DELETE",
-          credentials: "same-origin",
         });
         if (!resp.ok) {
           throw new Error(`Failed to delete session (HTTP ${resp.status})`);
@@ -1486,11 +1533,10 @@ function MainApp() {
   const handleRenameSession = useCallback(
     async (sessionId: string, title: string) => {
       try {
-        await fetch(
+        await apiFetch(
           `/api/users/${userId}/sessions/${sessionId}/title`,
           {
             method: "PATCH",
-            credentials: "same-origin",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ title }),
           },
@@ -1520,11 +1566,10 @@ function MainApp() {
   const stopSession = useCallback(async () => {
     if (!urlSessionId) return;
     try {
-      const resp = await fetch(
+      const resp = await apiFetch(
         `/api/users/${userId}/sessions/${urlSessionId}/cancel`,
         {
           method: "POST",
-          credentials: "same-origin",
         },
       );
       if (resp.ok) {
@@ -1575,7 +1620,7 @@ function MainApp() {
       <Route
         path="/dashboard"
         element={
-          userRole === "admin" ? (
+          roleLoading ? null : userRole === "admin" ? (
             <DashboardPage />
           ) : (
             <Navigate to="/" replace />
@@ -1585,7 +1630,7 @@ function MainApp() {
       <Route
         path="/evolution"
         element={
-          userRole === "admin" ? (
+          roleLoading ? null : userRole === "admin" ? (
             <EvolutionPage />
           ) : (
             <Navigate to="/" replace />
@@ -1595,7 +1640,7 @@ function MainApp() {
       <Route
         path="/users"
         element={
-          userRole === "admin" ? (
+          roleLoading ? null : userRole === "admin" ? (
             <UsersPage />
           ) : (
             <Navigate to="/" replace />

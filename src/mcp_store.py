@@ -115,8 +115,7 @@ class MCPServerStore:
         if existing is not None:
             raise ValueError(f"MCP server '{server['name']}' already exists")
 
-        # Encrypt sensitive fields before storing
-        server_to_store = _encrypt_sensitive_fields(dict(server))
+        server_to_store = _encrypt_sensitive_fields(server)
 
         now = _now()
         async with self.db.connection() as conn:
@@ -166,9 +165,7 @@ class MCPServerStore:
                     )
                     await conn.commit()
 
-        # Merge patch
         updated_data = {**existing, **patch}
-        # Encrypt sensitive fields before storing
         updated_data = _encrypt_sensitive_fields(updated_data)
         now = _now()
 

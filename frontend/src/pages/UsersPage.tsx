@@ -124,21 +124,14 @@ export default function UsersPage() {
     pending?.type === 'disable' || pending?.type === 'demote' ? 'danger' : 'primary'
 
   return (
-    <div className="detail-page">
-      <div className="detail-header">
-        <button className="detail-back-btn" onClick={() => navigate('/')}>
+    <div className="users-page detail-page">
+      <div className="evolution-header skills-header detail-header">
+        <button className="evolution-back-btn skills-back-btn detail-back-btn" onClick={() => navigate('/')}>
           {t('users.back')}
         </button>
-        <h2
-          style={{
-            fontSize: '1.25rem',
-            fontWeight: 600,
-            color: 'var(--color-text, #1a202c)',
-            margin: 0,
-          }}
-        >
-          {t('users.title')}
-        </h2>
+        <div className="evolution-header-title-group skills-header-title-group">
+          <h2>{t('users.title')}</h2>
+        </div>
       </div>
 
       {api.list.error && (

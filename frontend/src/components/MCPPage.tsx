@@ -283,9 +283,9 @@ export default function MCPPage({ userId: _userId, authToken: _authToken, onBack
   if (loading) {
     return (
       <div className="mcp-page detail-page">
-        <div className="mcp-header detail-header">
-          <button className="mcp-back-btn detail-back-btn" onClick={onBack} type="button">{t('common.back')}</button>
-          <div className="mcp-header-title-group">
+        <div className="skills-header detail-header">
+          <button className="skills-back-btn detail-back-btn" onClick={onBack} type="button">{t('common.back')}</button>
+          <div className="skills-header-title-group">
             <button className="mcp-add-btn" onClick={openAddModal} type="button">{t('mcp.addServer')}</button>
             <h2>{t('mcp.title')}</h2>
           </div>
@@ -297,9 +297,9 @@ export default function MCPPage({ userId: _userId, authToken: _authToken, onBack
 
   return (
     <div className="mcp-page detail-page">
-      <div className="mcp-header detail-header">
-        <button className="mcp-back-btn detail-back-btn" onClick={onBack} type="button">{t('common.back')}</button>
-        <div className="mcp-header-title-group">
+      <div className="skills-header detail-header">
+        <button className="skills-back-btn detail-back-btn" onClick={onBack} type="button">{t('common.back')}</button>
+        <div className="skills-header-title-group">
           <button className="mcp-add-btn" onClick={openAddModal} type="button">{t('mcp.addServer')}</button>
           <h2>{t('mcp.title')}</h2>
         </div>

@@ -1,208 +1,78 @@
 # Web Agent
 
-Multi-user web agent platform powered by Claude Agent SDK — isolated sessions, real-time WebSocket streaming, persistent memory, and private workspaces.
+Multi-user web agent platform — isolated sessions, real-time WebSocket streaming, persistent memory, and private workspaces.
 
-**Tech stack**: FastAPI + React + SQLite + AI Agent SDK (Anthropic-compatible API)
-
-## Features
-
-### Core
-- **Multi-user isolation** — independent sessions, files, and workspace per user
-- **Real-time streaming** — WebSocket chat with progressive text rendering and tool-call visualization
-- **Session management** — create, rename, fork, and delete sessions; auto-generated titles; full message history
-- **Sub-agent tasks** — TaskCreate / TaskUpdate / TaskList integration with lifecycle tracking
-
-### Auth & Security
-- **Password authentication** — register and login with bcrypt-hashed passwords; JWT tokens (24h expiry)
-- **Optional enforcement** — auth is opt-in via `ENFORCE_AUTH=true`; works without auth for local/dev use
-- **Per-user data isolation** — all sessions, files, and skills are scoped to the authenticated user
-
-### File & Workspace
-- **File upload** — provide files as agent context (PDF, Excel, CSV supported)
-- **Generated files** — browse and download agent outputs per session
-
-### Skills
-- **Skill sharing** — upload skills (ZIP), browse and install from the skill library
-- **Rating & feedback** — collect user ratings and comments per skill
-### Evolution System
-- **Instinct extraction** — automatic pattern discovery from tool-call observations
-- **Wiki knowledge base** — LLM-generated pages from skill feedback
-- **Semantic search** — FTS5 full-text search over sessions and wiki pages
-- **Observation pipeline** — tool-call event recording with success/failure tracking
-
-### MCP Registry
-- **Admin-managed MCP servers** — register and configure MCP tool servers per user
-
-### Container Isolation (optional)
-- **Per-user Docker containers** — fully isolated runtime with separate workspace, skills, and Claude data
-- **Idle TTL auto-stop** — containers stop after inactivity to save resources
-- **Resource monitoring** — CPU, memory, and disk usage tracking per container
-
-### UX
-- **Dark / light theme** — system-aware with manual toggle
-- **Internationalization** — English and Chinese, switchable in the header
-- **Stuck-agent recovery** — auto-detects stalled sessions and recovers state
+**Stack**: FastAPI + React + SQLite + AI Agent SDK (Anthropic-compatible API)
 
 ## Quick Start
 
-### Docker
-
 ```bash
-cp .env.example .env
-# Edit .env with your API key
-docker compose up -d --build
-```
-
-Open `http://localhost:8000`.
-
-> **Users in China**: Configure Docker registry and PyPI mirrors first — see [Troubleshooting](#troubleshooting).
-
-### Manual
-
-**Requirements**: Python 3.12+, Node.js 18+, npm 9+
-
-```bash
-# macOS / Linux
+cp .env.example .env   # set ANTHROPIC_AUTH_TOKEN and MODEL
 ./setup.sh
-cp .env.example .env   # edit with your API key
 ./start-dev.sh
-
-# Windows → use WSL2 (recommended) or Docker Desktop
 ```
 
-Backend at `http://127.0.0.1:8000`, frontend dev server at `http://127.0.0.1:3000`. Open the frontend URL in your browser.
+Backend at `http://127.0.0.1:8000`, frontend at `http://127.0.0.1:3000`. Open the frontend URL.
 
-> **Windows**: Use `127.0.0.1` — `localhost` resolves to IPv6 first and can break WebSocket connections.
+> **Windows**: Use WSL2 or Docker. Use `127.0.0.1` — `localhost` resolves IPv6-first and can break WebSocket.
+
+## Core Features
+
+- **Multi-user isolation** — independent sessions, files, workspace per user
+- **Real-time streaming** — WebSocket chat with progressive text rendering and tool-call visualization
+- **Session management** — create, rename, fork, cancel, delete; auto-generated titles; full message history
+- **Sub-agent tasks** — TaskCreate / TaskUpdate lifecycle with status tracking
+- **File workspace** — upload files as context, browse and download agent-generated outputs
+- **Skill library** — upload skills (ZIP), share, install, rate, feedback
+- **Evolution system** — automatic pattern discovery, wiki knowledge base, FTS5 semantic search
+- **Container isolation** (optional) — per-user Docker containers with idle auto-stop and resource monitoring
+
+### Auth & Security
+
+- Password authentication with bcrypt + JWT (httpOnly cookies), opt-in via `ENFORCE_AUTH=true`
+- CSRF protection via double-submit cookie pattern (`X-CSRF-Token` header)
+- Admin role with dedicated dashboard, user management, MCP registry, and evolution monitoring
+- Per-user data isolation — all sessions, files, skills scoped to authenticated user
+
+### UX
+
+- Dark / light theme toggle, system-aware default
+- Internationalization — English and Chinese
+- Stale-session auto-recovery
 
 ## Environment Variables
 
-| Variable | Required | Default | Description |
-|----------|----------|---------|-------------|
-| `ANTHROPIC_AUTH_TOKEN` | Yes | — | API key. Falls back to `ANTHROPIC_API_KEY`. Per-user override: `ANTHROPIC_AUTH_TOKEN_<USERID>` |
-| `ANTHROPIC_BASE_URL` | No | Anthropic default | Custom API endpoint (DeepSeek, Bailian, etc.) |
-| `MODEL` | Yes | — | Main agent model. No default — must be set (e.g., `deepseek-v4-pro`, `claude-sonnet-4-6`) |
-| `FLASH_MODEL` | No | `MODEL` | Lightweight tasks: title generation, instinct extraction, skill feedback |
-| `DATA_ROOT` | No | `./data` | Runtime data directory |
-| `DATA_DB_PATH` | No | `./data/web-agent.db` | SQLite database path |
-| `AGENT_TASK_TIMEOUT` | No | `300` | Max agent task duration (seconds) |
-| `MAX_TURNS` | No | `200` | Max conversation turns per task |
-| `LOG_LEVEL` | No | `INFO` | Logging level: `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL` (invalid values fall back to `INFO`) |
-| `PROD` | No | `false` | Production mode — serves frontend static files from backend |
-| `ENFORCE_AUTH` | No | `false` | Require JWT authentication for all endpoints |
-| `JWT_SECRET` | No | auto-generated | JWT signing secret (set in production) |
-| `CONTAINER_MODE` | No | `false` | Enable per-user Docker container isolation |
-| `CONTAINER_IDLE_TTL` | No | `1800` | Idle seconds before stopping a container |
-| `HOST_DATA_ROOT` | No | — | Absolute host path to `data/` (required for container volume mounts when main server runs in Docker) |
-| `MAX_UPLOAD_BYTES` | No | `209715200` | Max upload file size (200 MB) |
-| `TOOL_RESULT_MAX_CHARS` | No | `500` | Max chars per tool result in context |
-| `RESOURCE_MAX_CPU_PERCENT` | No | `100` | Per-container CPU limit |
-| `RESOURCE_MAX_MEMORY_MB` | No | `4096` | Per-container memory limit (MB) |
-| `RESOURCE_MAX_DISK_MB` | No | `1024` | Per-container disk limit (MB) |
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ANTHROPIC_AUTH_TOKEN` | — | API key (required). Per-user override: `ANTHROPIC_AUTH_TOKEN_<USERID>` |
+| `ANTHROPIC_BASE_URL` | — | Custom API endpoint (DeepSeek, Bailian, etc.) |
+| `MODEL` | — | Main agent model (required, e.g. `claude-sonnet-4-6`) |
+| `FLASH_MODEL` | `MODEL` | Lightweight tasks: title gen, instinct extraction |
+| `PROD` | `false` | Serve frontend static files from backend |
+| `ENFORCE_AUTH` | `false` | Require JWT auth for all endpoints |
+| `JWT_SECRET` | auto | JWT signing secret (set in production) |
+| `CONTAINER_MODE` | `false` | Enable per-user Docker container isolation |
+| `CONTAINER_IDLE_TTL` | `1800` | Idle seconds before stopping a container |
+| `HOST_DATA_ROOT` | — | Absolute host data path (required when main server runs in Docker) |
+| `DATA_ROOT` | `./data` | Runtime data directory |
+| `AGENT_TASK_TIMEOUT` | `600` | Max agent task duration (seconds) |
+| `MAX_TURNS` | `200` | Max conversation turns per task |
+| `MAX_UPLOAD_BYTES` | `200 MB` | Max upload file size |
+| `MCP_ENCRYPTION_KEY` | — | Key for encrypting MCP credentials at rest |
 
-> See `.env.example` for additional environment variables: log directories, sandbox mode, prompt length limits, and more.
+> See `.env.example` for all variables: logging, sandbox, prompt limits, resource quotas.
 
 ## Architecture
 
 ```
 Browser (React) ── REST / WebSocket ──► FastAPI (main_server.py)
                                            │
-                                           ├── Auth (JWT + bcrypt)
-                                           ├── Session Store (SQLite)
-                                           ├── Message Buffer (in-memory + JSONL disk)
-                                           ├── Collective Intelligence (Wiki, Patterns, Auto-Evolve)
-                                           ├── Skill Feedback & Evolution
-                                           ├── MCP Server Store (SQLite)
-                                           ├── Sub-Agent Task Manager
+                                           ├── Auth (JWT + bcrypt + CSRF)
+                                           ├── Session + Message Store (SQLite)
+                                           ├── Skills, MCP, Tasks, Evolution
                                            ├── Container Manager (Docker, optional)
-                                           └── Claude Agent SDK (subprocess)
-                                                 → tools, hooks, streaming
+                                           └── Agent SDK (subprocess)
 ```
-
-With container isolation enabled, the agent SDK runs inside per-user containers:
-
-```
-Browser ──► main_server ──► web-agent-alice (Docker)   ← isolated SDK
-                           └── web-agent-bob (Docker)   ← isolated SDK
-```
-
-## Project Structure
-
-```
-web-agent/
-├── main_server.py              # FastAPI entry point (REST + WebSocket)
-├── agent_server.py             # Agent endpoint (runs inside user containers)
-├── src/                        # Backend modules
-│   ├── auth.py                 # JWT + bcrypt password auth
-│   ├── cost.py                 # Model name resolution (MODEL / FLASH_MODEL)
-│   ├── database.py             # SQLite with aiosqlite, WAL mode
-│   ├── session_store.py        # Session CRUD and message persistence
-│   ├── message_buffer.py       # In-memory message buffer with JSONL disk persistence
-│   ├── container_bridge.py     # WebSocket bridge to user containers
-│   ├── observation.py          # ToolObserver — tool-call event recording
-│   ├── instinct_extractor.py   # Automatic pattern discovery from observations
-│   ├── evolution_signals.py    # Evolution signal detection
-│   ├── evolution_log.py        # Evolution history tracking
-│   ├── agent_logger.py         # L3 agent execution logging
-│   ├── semantic_search.py      # FTS5 search over sessions and wiki
-│   ├── collective_intelligence.py  # Wiki generation and pattern learning
-│   ├── skill_feedback.py       # Skill rating and aggregation
-│   ├── skill_manager.py        # Skill upload, download, promote
-│   ├── mcp_store.py            # MCP server registry
-│   ├── sub_agent.py            # Sub-agent task lifecycle
-│   ├── container_manager.py    # Per-user Docker container management
-│   ├── resource_manager.py     # Container resource monitoring
-│   ├── security_filter.py      # Bash command and file access filtering
-│   ├── workspace_enforcement.py # Path sandboxing and write isolation
-│   └── hooks/                  # PreToolUse, PostToolUse, Stop hooks
-├── frontend/src/               # React SPA (Vite)
-│   ├── components/             # ChatArea, MessageBubble, InputBar, Sidebar, etc.
-│   ├── hooks/                  # useWebSocket, useStreamingText, useSkillsApi, etc.
-│   ├── lib/                    # Types, session-state, todos, uuid
-│   └── utils/                  # Logger, helpers
-├── tests/                      # Backend pytest tests
-├── scripts/                    # build.sh, manage.sh, verify scripts, migrations
-├── data/                       # Runtime data (never committed)
-├── Dockerfile                  # Main server image
-├── Dockerfile.user             # Per-user agent container image
-└── docker-compose.yml
-```
-
-## Container Isolation
-
-When `CONTAINER_MODE=true`, each user gets an isolated Docker container running their own Claude Agent SDK instance. The main server bridges WebSocket connections to these containers.
-
-### Setup
-
-```bash
-# 1. Build the user container image
-docker build -t web-agent-user:latest -f Dockerfile.user .
-
-# 2. Enable in .env
-CONTAINER_MODE=true
-CONTAINER_IDLE_TTL=1800     # idle seconds before auto-stop (default 30 min)
-
-# 3. Start the main server
-docker compose up -d --build
-```
-
-### How it works
-
-- On first request, `container_manager.py` creates a container for the user (`web-agent-<user-id>`)
-- Volumes are mounted per-user: `/workspace`, `/home/agent/.claude` (sessions, skills)
-- A background idle monitor stops containers after `CONTAINER_IDLE_TTL` seconds of inactivity
-- When the user returns, the container is restarted automatically
-- Resource limits are configurable per container (CPU, memory, disk)
-
-### Container API
-
-| Method | Path | Description |
-|--------|------|-------------|
-| `GET` | `/api/admin/containers` | List all active containers |
-| `POST` | `/api/users/{uid}/containers/start` | Start or resume container |
-| `POST` | `/api/users/{uid}/containers/pause` | Pause container |
-| `DELETE` | `/api/users/{uid}/containers` | Destroy container |
-| `GET` | `/api/users/{uid}/resources` | View resource usage |
-| `GET` | `/api/admin/resources` | View all resource usage (admin) |
 
 ## API
 
@@ -210,132 +80,81 @@ docker compose up -d --build
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `POST` | `/api/auth/token` | Login — get JWT token |
-| `POST` | `/api/auth/register` | Register new user |
+| `GET` | `/api/auth/me` | Current user info (role) |
+| `GET` | `/api/auth/config` | Auth configuration |
+| `POST` | `/api/auth/token` | Login |
+| `POST` | `/api/auth/register` | Register |
 
-### Sessions
+### Sessions & Files
 
 | Method | Path | Description |
 |--------|------|-------------|
 | `POST` | `/api/users/{uid}/sessions` | Create session |
 | `GET` | `/api/users/{uid}/sessions` | List sessions |
 | `DELETE` | `/api/users/{uid}/sessions/{id}` | Delete session |
-| `GET` | `/api/users/{uid}/sessions/{id}/history` | Get message history |
-| `GET` | `/api/users/{uid}/sessions/{id}/status` | Get live session state |
-| `PATCH` | `/api/users/{uid}/sessions/{id}/title` | Set session title |
+| `PATCH` | `/api/users/{uid}/sessions/{id}/title` | Rename session |
 | `POST` | `/api/users/{uid}/sessions/{id}/cancel` | Cancel running session |
 | `POST` | `/api/users/{uid}/sessions/{id}/fork` | Fork session |
-
-### Files
-
-| Method | Path | Description |
-|--------|------|-------------|
 | `POST` | `/api/users/{uid}/upload` | Upload file |
-| `GET` | `/api/users/{uid}/generated-files` | List generated files |
+| `DELETE` | `/api/users/{uid}/files/{path}` | Delete file |
 | `GET` | `/api/users/{uid}/download/{path}` | Download file |
-
-### Skills
-
-| Method | Path | Description |
-|--------|------|-------------|
-| `POST` | `/api/users/{uid}/skills/upload` | Upload skill (ZIP) |
-| `GET` | `/api/users/{uid}/skills` | List available skills |
-| `POST` | `/api/skills/{name}/feedback` | Rate a skill |
-| `GET` | `/api/skills/{name}/evolution` | Get skill evolution data |
-
-### Language
-
-| Method | Path | Description |
-|--------|------|-------------|
-| `PUT` | `/api/users/{uid}/language` | Update user language preference |
-
-### MCP (admin)
-
-| Method | Path | Description |
-|--------|------|-------------|
-| `GET` | `/api/admin/mcp` | List MCP servers |
-| `POST` | `/api/admin/mcp` | Register MCP server |
-| `PUT` | `/api/admin/mcp/{name}` | Update MCP server |
-| `DELETE` | `/api/admin/mcp/{name}` | Remove MCP server |
 
 ### WebSocket
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `WS` | `/ws?token=<jwt>` | Real-time agent streaming |
-
-### Health
-
-| Method | Path | Description |
-|--------|------|-------------|
-| `GET` | `/api/health` | Server health check |
+| `WS` | `/ws` | Real-time streaming (auth via httpOnly cookie) |
 
 ## Development
 
 ```bash
 # Backend
-uv run pytest              # tests
-uv run ruff check src/     # lint
-uv run mypy src/           # type check
+uv run pytest                          # tests
+uv run ruff check src/ main_server.py  # lint
+uv run mypy src/                       # type check
 
 # Frontend
-cd frontend
-npm test                   # tests
-npx tsc --noEmit           # type check
+cd frontend && npm test                # tests
+npx tsc --noEmit                       # type check
 ```
 
 ## Deployment
 
 ```bash
-# Docker (recommended)
-docker compose up -d --build
-
-# Manual
-./scripts/build.sh           # build frontend assets
-./scripts/manage.sh start    # start server in background
-./scripts/manage.sh status   # check status
-./scripts/manage.sh logs     # view logs
-./scripts/manage.sh stop     # stop server
+docker compose up -d --build           # Docker (recommended)
+./scripts/build.sh && ./scripts/manage.sh start   # Manual
 ```
 
-The Docker image includes a health check at `/api/health`. Data persists in the `web-agent-data` volume. In production mode (`PROD=true`), the backend serves the built frontend assets directly — access at `http://<server-ip>:8000`.
+In production mode (`PROD=true`), the backend serves built frontend assets at port 8000.
+
+## Container Isolation
+
+When `CONTAINER_MODE=true`, each user gets a Docker container with isolated SDK, workspace, and skills.
+
+```bash
+docker build -t web-agent-user:latest -f Dockerfile.user .
+# Set CONTAINER_MODE=true in .env
+docker compose up -d --build
+```
+
+| Endpoint | Description |
+|----------|-------------|
+| `POST /api/users/{uid}/containers/start` | Start container |
+| `POST /api/users/{uid}/containers/pause` | Pause container |
+| `DELETE /api/users/{uid}/containers` | Destroy container |
+| `GET /api/admin/containers` | List all containers |
+| `GET /api/admin/resources` | Resource usage |
 
 ## Troubleshooting
 
-| Issue | Solution |
-|-------|----------|
-| Agent stuck on "working" | Timer recovery triggers automatically after 30s of stale buffer |
-| Port already in use | `./scripts/manage.sh stop` or `pkill -f uvicorn` |
-| Frontend can't connect | Verify backend is running on port 8000 |
-| SQLite locked | WAL mode handles most cases; remove stale `.lock` file only if no process holds the DB |
-| Container image not found | Run `docker build -t web-agent-user:latest -f Dockerfile.user .` |
-| PowerShell script blocked | `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` |
-
-### Docker issues in China
-
-1. **Registry mirror** — add to Docker Desktop Settings → Docker Engine (or `~/.docker/daemon.json` on Linux):
-   ```json
-   {
-     "registry-mirrors": [
-       "https://mirror.ccs.tencentyun.com"
-     ]
-   }
-   ```
-   Restart Docker Desktop after saving. For Alibaba Cloud, use your personal mirror: `https://<your-id>.mirror.aliyuncs.com`.
-
-2. **PyPI mirror** — both Dockerfiles use `pypi.tuna.tsinghua.edu.cn` by default. If the mirror is unreachable, you can switch to `https://mirrors.aliyun.com/pypi/simple/`.
-
-3. **npm mirror** — the Dockerfile uses `registry.npmmirror.com` (China CDN). No change needed.
-
-4. **apt mirror** — `Dockerfile.user` uses `mirrors.aliyun.com` for Debian packages. No change needed.
-
-5. **Build with host network** — if Docker bridge network has DNS issues, use `--network=host`:
-   ```bash
-   docker build --network=host -t web-agent .
-   docker build --network=host -t web-agent-user:latest -f Dockerfile.user .
-   ```
-
-6. **Clash/VPN interference** — TUN-mode proxies can block Docker outbound traffic. Temporarily disable them before building.
+| Issue | Fix |
+|-------|-----|
+| Port in use | `./scripts/manage.sh stop` or `pkill -f uvicorn` |
+| Frontend can't connect | Backend on port 8000? Check Vite proxy config |
+| Agent stuck | Auto-recovery triggers after 30s buffer stall |
+| SQLite locked | WAL mode handles most cases; remove stale `.lock` |
+| Docker build fails in China | Configure registry mirror + PyPI mirror (see `.env.example`) |
+| Container image not found | `docker build -t web-agent-user:latest -f Dockerfile.user .` |
 
 ## License
 
