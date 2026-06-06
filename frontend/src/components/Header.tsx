@@ -14,11 +14,12 @@ interface HeaderProps {
   onOpenMCP: () => void
   onOpenDashboard: () => void
   onOpenUsers: () => void
+  onOpenSessions: () => void
   onLogout: () => void
   userRole: string
 }
 
-export default function Header({ connectionStatus, userId, authToken, onOpenSkills, onOpenEvolution, onOpenMCP, onOpenDashboard, onOpenUsers, onLogout, userRole }: HeaderProps) {
+export default function Header({ connectionStatus, userId, authToken, onOpenSkills, onOpenEvolution, onOpenMCP, onOpenDashboard, onOpenUsers, onOpenSessions, onLogout, userRole }: HeaderProps) {
   const { t } = useTranslation()
 
   const statusKey: Record<ConnectionStatus, string> = {
@@ -48,6 +49,7 @@ export default function Header({ connectionStatus, userId, authToken, onOpenSkil
           onOpenMCP={onOpenMCP}
           onOpenDashboard={onOpenDashboard}
           onOpenUsers={onOpenUsers}
+          onOpenSessions={onOpenSessions}
           userRole={userRole}
         />
         <UserMenu userId={userId} onLogout={onLogout} />

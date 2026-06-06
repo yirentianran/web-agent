@@ -235,6 +235,11 @@ class MessageBuffer:
                     time.time(),
                 ),
             )
+            await conn.execute(
+                "UPDATE sessions SET message_count = message_count + 1, last_active_at = ? "
+                "WHERE session_id = ? AND deleted_at IS NULL",
+                (time.time(), session_id),
+            )
             await conn.commit()
             return next_seq
 
@@ -347,6 +352,23 @@ class MessageBuffer:
         elif msg_type == "result":
             buf["state"] = "completed"
             buf["done"] = True
+        elif msg_type == "system" and message.get("subtype") == "session_state_changed":
+            state_from_msg = message.get("state")
+            if state_from_msg:
+                buf["state"] = state_from_msg
+                if state_from_msg in ("completed", "error", "cancelled"):
+                    buf["done"] = True
+
+        # Persist state transition to sessions table
+        new_state = buf.get("state", "idle")
+        if new_state != prev_state and self.db is not None:
+            async with self.db.connection() as conn:
+                await conn.execute(
+                    "UPDATE sessions SET status = ?, last_active_at = ? "
+                    "WHERE session_id = ? AND deleted_at IS NULL",
+                    (new_state, time.time(), session_id),
+                )
+                await conn.commit()
 
         # Wake up all waiting consumers
         for event in list(buf["consumers"]):
@@ -443,6 +465,15 @@ class MessageBuffer:
         current_state = buf.get("state", "idle")
         if current_state not in ("cancelled", "error"):
             buf["state"] = "completed"
+        # Persist final state to sessions table
+        if self.db is not None:
+            async with self.db.connection() as conn:
+                await conn.execute(
+                    "UPDATE sessions SET status = ?, last_active_at = ? "
+                    "WHERE session_id = ? AND deleted_at IS NULL",
+                    (buf["state"], time.time(), session_id),
+                )
+                await conn.commit()
         for event in list(buf.get("consumers", set())):
             event.set()
 
@@ -453,8 +484,6 @@ class MessageBuffer:
 
     async def cancel(self, session_id: str, user_id: str | None = None) -> None:
         """Cancel a running agent task."""
-        buf = await self._ensure_buf(session_id, user_id)
-        buf["state"] = "cancelled"
         await self.add_message(
             session_id,
             {
@@ -464,7 +493,7 @@ class MessageBuffer:
             },
             user_id or "",
         )
-        buf["done"] = True
+        buf = await self._ensure_buf(session_id, user_id)
         for event in list(buf["consumers"]):
             event.set()
 

@@ -502,6 +502,8 @@ body {
   position: relative;
   overflow: hidden;
   grid-row: 1;
+  height: 100%;
+  min-height: 0;
 }
 
 .messages {
@@ -510,6 +512,7 @@ body {
   display: flex;
   flex-direction: column;
   overflow-y: auto;
+  overscroll-behavior-y: contain;
   padding: 20px;
 }
 

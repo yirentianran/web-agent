@@ -6380,16 +6380,58 @@ async def list_observations(
     )
 
 
+@app.get("/api/admin/sessions")
+async def admin_list_sessions(
+    user_id: str | None = None,
+    status: str | None = None,
+    q: str = "",
+    from_date: str | None = None,
+    to_date: str | None = None,
+    sort: str = "created_at",
+    order: str = "desc",
+    page: int = 1,
+    page_size: int = 20,
+    current_user: str = Depends(require_admin),
+) -> dict[str, Any]:
+    """Admin: list all sessions across users with filters + token aggregation."""
+    if session_store is None:
+        raise HTTPException(503, "Session store not available")
+    return await session_store.list_all_sessions(
+        user_id=user_id, status=status, q=q,
+        from_date=from_date, to_date=to_date,
+        sort=sort, order=order, page=page, page_size=page_size,
+    )
+
+
+@app.get("/api/admin/sessions/aggregate")
+async def admin_sessions_aggregate(
+    from_date: str | None = None,
+    to_date: str | None = None,
+    current_user: str = Depends(require_admin),
+) -> dict[str, Any]:
+    """Admin: aggregate session stats — overview, by user, by date."""
+    if session_store is None:
+        raise HTTPException(503, "Session store not available")
+    return await session_store.get_sessions_aggregate(
+        from_date=from_date, to_date=to_date,
+    )
+
+
 @app.get("/api/admin/sessions/{session_id}/messages")
 async def admin_session_messages(
     session_id: str,
     limit: int = 50,
+    page: int = 1,
+    page_size: int = 50,
     current_user: str = Depends(require_admin),
 ):
     """Get session messages for admin review (no user-scope check)."""
     if session_store is None:
         raise HTTPException(503, "Session store not available")
-    return await session_store.get_messages_for_session(session_id, limit=limit)
+    offset = (page - 1) * page_size
+    msgs = await session_store.get_messages_for_session(session_id, limit=page_size, offset=offset)
+    total = await session_store.count_messages_for_session(session_id)
+    return {"items": msgs, "total": total, "page": page, "page_size": page_size}
 
 
 # ── Health ───────────────────────────────────────────────────────
@@ -6398,6 +6440,15 @@ async def admin_session_messages(
 @app.get("/health")
 async def health() -> dict[str, str]:
     return {"status": "ok", "service": "main-server"}
+
+
+async def _run_backfill(store) -> None:
+    """Backfill session stats in the background so startup is not blocked."""
+    try:
+        await store.backfill_session_stats()
+        logger.info("Session stats backfill completed")
+    except Exception:
+        logger.exception("Session stats backfill failed")
 
 
 @app.on_event("startup")
@@ -6426,6 +6477,8 @@ async def startup() -> None:
         _obs_store = ObservationStore(_db)
         # async drain loop removed — add_message writes directly  # Start async write drain loop
         session_store = SessionStore(db=_db)
+
+        asyncio.create_task(_run_backfill(session_store))
 
         from src.audit_logger import AuditLogger
 

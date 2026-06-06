@@ -15,6 +15,7 @@ import LanguageSwitcher from "./i18n/LanguageSwitcher";
 import ChatArea from "./components/ChatArea";
 import InputBar, { type InputBarHandle } from "./components/InputBar";
 import SkillsPage from "./components/SkillsPage";
+import SessionsPage from "./pages/SessionsPage";
 import SessionFilePanel from "./components/SessionFilePanel";
 
 import MCPPage from "./components/MCPPage";
@@ -300,6 +301,7 @@ function MainLayout({
         onOpenMCP={() => navigate("/mcp")}
         onOpenDashboard={() => navigate("/dashboard")}
         onOpenUsers={() => navigate("/users")}
+        onOpenSessions={() => navigate("/sessions")}
         onLogout={handleLogout}
         userRole={userRole}
       />
@@ -1642,6 +1644,16 @@ function MainApp() {
         element={
           roleLoading ? null : userRole === "admin" ? (
             <UsersPage />
+          ) : (
+            <Navigate to="/" replace />
+          )
+        }
+      />
+      <Route
+        path="/sessions"
+        element={
+          roleLoading ? null : userRole === "admin" ? (
+            <SessionsPage />
           ) : (
             <Navigate to="/" replace />
           )

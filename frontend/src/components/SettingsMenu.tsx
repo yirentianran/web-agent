@@ -7,10 +7,11 @@ interface SettingsMenuProps {
   onOpenMCP: () => void
   onOpenDashboard: () => void
   onOpenUsers: () => void
+  onOpenSessions: () => void
   userRole: string
 }
 
-export default function SettingsMenu({ onOpenSkills, onOpenEvolution, onOpenMCP, onOpenDashboard, onOpenUsers, userRole }: SettingsMenuProps) {
+export default function SettingsMenu({ onOpenSkills, onOpenEvolution, onOpenMCP, onOpenDashboard, onOpenUsers, onOpenSessions, userRole }: SettingsMenuProps) {
   const { t } = useTranslation()
   const [open, setOpen] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
@@ -49,6 +50,12 @@ export default function SettingsMenu({ onOpenSkills, onOpenEvolution, onOpenMCP,
               {t('header.usageDashboard')}
             </button>
           )}
+          {isAdmin && (
+            <button className="settings-menu-item" role="menuitem" onClick={() => handleAction(onOpenSessions)} type="button">
+              <span className="settings-menu-item-icon">📋</span>
+              {t('sessions.title')}
+            </button>
+          )}
           <button className="settings-menu-item" role="menuitem" onClick={() => handleAction(onOpenSkills)} type="button">
             <span className="settings-menu-item-icon">🧩</span>
             {t('header.skillsManagement')}
@@ -62,7 +69,7 @@ export default function SettingsMenu({ onOpenSkills, onOpenEvolution, onOpenMCP,
           {isAdmin && (
             <button className="settings-menu-item" role="menuitem" onClick={() => handleAction(onOpenUsers)} type="button">
               <span className="settings-menu-item-icon">👥</span>
-              {t('users.title')}
+              {t('header.users')}
             </button>
           )}
           {isAdmin && (
