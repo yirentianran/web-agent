@@ -51,12 +51,17 @@ export async function apiFetch(
   });
 }
 
-/** Fetch JSON with CSRF protection. */
+/** Fetch JSON with CSRF protection. Redirects to login on 401. */
 export async function fetchJson<T>(
   url: string,
   options: RequestInit = {},
 ): Promise<T> {
   const resp = await apiFetch(url, { ...options, method: options.method || "GET" });
+  if (resp.status === 401) {
+    localStorage.removeItem("userId");
+    window.location.href = window.location.origin;
+    throw new Error("Authentication required");
+  }
   if (!resp.ok) {
     throw new Error(`HTTP ${resp.status}: ${resp.statusText}`);
   }

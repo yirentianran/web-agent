@@ -11,10 +11,10 @@ from datetime import datetime, timedelta, timezone
 
 import bcrypt
 import jwt
-from fastapi import HTTPException, Request, status
+from fastapi import HTTPException, Request, Response, status
 
 ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24  # 24 hours
+ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 * 7  # 7 days
 ENFORCE_AUTH = os.getenv("ENFORCE_AUTH", "false").lower() == "true"
 
 _SECRET = os.getenv("JWT_SECRET", "")
@@ -89,18 +89,41 @@ def verify_token(token: str) -> str:
     return user_id
 
 
-def get_current_user(request: Request) -> str:
+
+def _decode_payload(token: str) -> dict:
+    """Decode and verify a JWT, returning the full payload. Raises HTTPException on failure."""
+    try:
+        return jwt.decode(token, JWT_SECRET, algorithms=[ALGORITHM])
+    except jwt.ExpiredSignatureError as e:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token has expired",
+            headers={"WWW-Authenticate": "Bearer"},
+        ) from e
+    except jwt.InvalidTokenError as e:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid token",
+            headers={"WWW-Authenticate": "Bearer"},
+        ) from e
+
+
+def get_current_user(request: Request, response: Response | None = None) -> str:
     """FastAPI dependency: extract and verify user from httpOnly JWT cookie.
 
     When ENFORCE_AUTH is False, tries to validate a token if present,
     returning empty string when no token is provided.
+
+    If the token is valid but expiring soon, automatically issues a new
+    token to extend the session (sliding expiration).
     """
     raw_token: str | None = request.cookies.get(ACCESS_TOKEN_COOKIE)
 
     if not ENFORCE_AUTH:
         if raw_token is not None:
             try:
-                return verify_token(raw_token)
+                payload = _decode_payload(raw_token)
+                return _maybe_renew(raw_token, payload, response)
             except HTTPException:
                 pass
         return ""
@@ -112,7 +135,22 @@ def get_current_user(request: Request) -> str:
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    return verify_token(raw_token)
+    payload = _decode_payload(raw_token)
+    return _maybe_renew(raw_token, payload, response)
+
+
+def _maybe_renew(token: str, payload: dict, response: Response | None) -> str:
+    """Issue a fresh token on every authenticated request (sliding expiration)."""
+    user_id: str = payload.get("sub", "")
+    if not user_id:
+        return user_id
+
+    if response is not None:
+        role: str = payload.get("role", "user")
+        new_token = create_token(user_id, role)
+        set_auth_cookies(response, new_token)
+
+    return user_id
 
 
 def require_user_match(path_user_id: str, current_user: str) -> str:

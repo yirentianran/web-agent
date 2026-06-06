@@ -178,6 +178,7 @@ export function useWebSocket({
     // simultaneously, and each must independently know if IT was closed
     // intentionally, not whether some other WS was.
     let intentionalClose = false;
+    let errorCloseTimer: ReturnType<typeof setTimeout> | null = null;
 
     ws.onopen = () => {
       reconnectAttempts.current = 0;
@@ -202,6 +203,7 @@ export function useWebSocket({
     };
 
     ws.onclose = (event) => {
+      if (errorCloseTimer) { clearTimeout(errorCloseTimer); errorCloseTimer = null; }
       logger.warn(
         'WebSocket closed — code:',
         event.code,
@@ -211,6 +213,11 @@ export function useWebSocket({
         event.wasClean,
       );
       if (intentionalClose) return;
+      if (event.code === 4001 || event.code === 4002) {
+        localStorage.removeItem("userId");
+        window.location.href = window.location.origin;
+        return;
+      }
       setStatus("reconnecting");
       onDisconnectRef.current?.();
       if (reconnectAttempts.current >= maxAttempts) {
@@ -239,7 +246,23 @@ export function useWebSocket({
         'WebSocket onerror fired — connection attempt failed. ' +
         'Reconnect attempt: ' + reconnectAttempts.current,
       );
-      // onclose fires right after — let onclose handle it.
+      // onclose normally fires after onerror, but for connection-refused
+      // errors (server restart window) some browsers skip onclose entirely.
+      // Fallback: if onclose doesn't fire within 500ms, trigger reconnect.
+      if (errorCloseTimer) clearTimeout(errorCloseTimer);
+      errorCloseTimer = setTimeout(() => {
+        if (intentionalClose) return;
+        logger.warn('WebSocket onclose did not fire after onerror — triggering reconnect');
+        setStatus("reconnecting");
+        onDisconnectRef.current?.();
+        if (reconnectAttempts.current >= maxAttempts) {
+          setStatus("failed");
+          return;
+        }
+        const delay = Math.min(1000 * 2 ** reconnectAttempts.current, 10000);
+        reconnectAttempts.current += 1;
+        reconnectTimer.current = setTimeout(() => connect(), delay);
+      }, 500);
     };
 
     const cleanup = () => {
