@@ -1,0 +1,301 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=1500">
+<title>Sessions Admin — Plan C (Full) Preview</title>
+<style>
+:root{--bg:#f5f6fa;--surface:#fff;--text:#1a202c;--t2:#64748b;--bd:#e2e8f0;--p:#4f46e5;--pl:#eef2ff;--g:#059669;--r:#dc2626;--w:#f59e0b;--b:#3b82f6;--rad:8px}
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:var(--bg);color:var(--text);padding:24px 32px}
+
+.detail-page{max-width:1700px;margin:0 auto}
+.detail-header{display:flex;align-items:center;justify-content:space-between;padding:20px 20px 12px;gap:12px}
+.detail-back-btn{border:1px solid var(--bd);border-radius:var(--rad);background:var(--surface);color:var(--t2);padding:6px 14px;cursor:pointer;font-size:.875rem;display:inline-flex;align-items:center;gap:4px}
+.detail-back-btn:hover{border-color:var(--p);color:var(--p)}
+.detail-header-title-group{display:flex;align-items:center;gap:12px;flex:1}
+.detail-header-title-group h2{font-size:1.25rem;font-weight:600;margin:0}
+.detail-header-title-group input{padding:6px 12px;border:1px solid var(--bd);border-radius:var(--rad);font-size:.875rem;width:240px}
+.detail-header-title-group input:focus{outline:none;border-color:var(--p)}
+
+.stats-cards{display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-bottom:16px}
+.stats-card{display:flex;align-items:center;gap:12px;padding:16px 20px;background:var(--surface);border:1px solid var(--bd);border-radius:var(--rad)}
+.stats-card-icon{font-size:1.5rem}
+.stats-card-body{flex:1}
+.stats-card-value{font-size:1.5rem;font-weight:700;display:block}
+.stats-card-label{font-size:.8rem;color:var(--t2)}
+
+.filter-bar{display:flex;gap:8px;margin-bottom:12px;align-items:center}
+.filter-bar input,.filter-bar select{padding:6px 10px;border:1px solid var(--bd);border-radius:6px;background:var(--surface);font-size:.85rem}
+.filter-bar input:focus,.filter-bar select:focus{outline:none;border-color:var(--p)}
+.filter-bar .total{margin-left:auto;font-size:.85rem;color:var(--t2)}
+
+/* Batch action bar */
+.batch-bar{display:none;align-items:center;gap:12px;padding:10px 16px;background:var(--pl);border:1px solid #c7d2fe;border-radius:var(--rad);margin-bottom:12px;font-size:.85rem}
+.batch-bar.show{display:flex}
+.batch-bar .count{font-weight:600}
+.batch-bar button{padding:6px 14px;border-radius:6px;border:1px solid var(--p);color:var(--p);background:#fff;cursor:pointer;font-size:.8rem}
+.batch-bar button:hover{background:var(--p);color:#fff}
+.batch-bar button.danger{border-color:var(--r);color:var(--r)}
+.batch-bar button.danger:hover{background:var(--r);color:#fff}
+
+/* Aggregate panels */
+.agg-row{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px}
+.agg-panel{background:var(--surface);border:1px solid var(--bd);border-radius:var(--rad);overflow:hidden}
+.agg-panel h4{padding:10px 14px;font-size:.85rem;font-weight:600;border-bottom:1px solid var(--bd);background:#fafbfc;margin:0}
+.agg-panel table{width:100%;font-size:.8rem}
+.agg-panel th{padding:6px 12px;text-align:left;background:#f8fafc;color:var(--t2);font-weight:500;font-size:.75rem;border-bottom:1px solid var(--bd)}
+.agg-panel td{padding:6px 12px;border-bottom:1px solid var(--bd)}
+.agg-panel .bar-cell{display:flex;align-items:center;gap:8px}
+.agg-panel .bar-bg{flex:1;height:6px;background:var(--bg);border-radius:3px;overflow:hidden}
+.agg-panel .bar-fill{height:100%;background:var(--p);border-radius:3px;transition:width .4s}
+.agg-toggle{display:flex;gap:4px;padding:8px 14px}
+.agg-toggle button{padding:4px 12px;border:1px solid var(--bd);border-radius:4px;background:var(--surface);cursor:pointer;font-size:.8rem}
+.agg-toggle button.active{background:var(--p);color:#fff;border-color:var(--p)}
+
+/* Main table */
+.main-table{background:var(--surface);border:1px solid var(--bd);border-radius:var(--rad);overflow:hidden;margin-bottom:16px}
+.main-table table{width:100%;border-collapse:collapse;font-size:.875rem}
+.main-table th{text-align:left;padding:10px 12px;border-bottom:2px solid var(--bd);font-weight:600;color:var(--t2);background:#fafbfc;white-space:nowrap}
+.main-table td{padding:10px 12px;border-bottom:1px solid var(--bd)}
+.main-table tr:hover td{background:#f8fafc}
+.main-table tr.selected td{background:var(--pl)}
+.main-table tr{cursor:pointer}
+.action-col{display:flex;gap:6px}
+.btn-sm{padding:3px 10px;border-radius:4px;border:1px solid var(--bd);font-size:.75rem;cursor:pointer;background:var(--surface)}
+.btn-sm:hover{border-color:var(--p);color:var(--p)}
+.btn-sm.danger{border-color:var(--r);color:var(--r)}
+.btn-sm.danger:hover{background:#fef2f2}
+.btn-sm.warn{border-color:var(--w);color:var(--w)}
+.btn-sm.warn:hover{background:#fffbeb}
+
+.badge{display:inline-block;padding:2px 8px;border-radius:999px;font-size:.75rem;font-weight:500}
+.b-running{background:#dcfce7;color:#166534}.b-completed{background:#dbeafe;color:#1e40af}
+.b-cancelled{background:#fef3c7;color:#92400e}.b-error{background:#fee2e2;color:#991b1b}
+
+.pagination{display:flex;align-items:center;gap:6px;justify-content:center;padding:16px;font-size:.85rem}
+.pagination button{padding:4px 10px;border:1px solid var(--bd);border-radius:4px;background:var(--surface);cursor:pointer}
+.pagination button:hover{border-color:var(--p)}
+.pagination button.active{background:var(--p);color:#fff;border-color:var(--p)}
+.pagination .page-info{color:var(--t2);margin-left:12px}
+
+/* Chat overlay */
+.overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.4);z-index:100;justify-content:center;align-items:center}
+.overlay.show{display:flex}
+.chat-preview{width:850px;max-height:88vh;background:var(--surface);border-radius:12px;box-shadow:0 20px 60px rgba(0,0,0,.3);display:flex;flex-direction:column;overflow:hidden}
+.chat-header{display:flex;align-items:center;justify-content:space-between;padding:12px 16px;border-bottom:1px solid var(--bd);background:#fafbfc}
+.chat-header h3{font-size:1rem;margin:0}
+.chat-header .meta{font-size:.75rem;color:var(--t2)}
+.chat-close{background:none;border:none;font-size:1.2rem;cursor:pointer;color:var(--t2);padding:4px 8px;border-radius:4px}
+.chat-close:hover{background:var(--bd)}
+.chat-msgs{flex:1;overflow-y:auto;padding:16px;display:flex;flex-direction:column;gap:10px;min-height:300px;max-height:400px}
+.c-msg{max-width:80%;padding:10px 14px;border-radius:12px;font-size:.85rem;line-height:1.4}
+.c-msg.user{align-self:flex-end;background:var(--p);color:#fff;border-bottom-right-radius:4px}
+.c-msg.assistant{align-self:flex-start;background:#f0f4ff;border:1px solid #dbe4ff;border-bottom-left-radius:4px}
+.c-msg.system{align-self:center;background:var(--bg);color:var(--t2);font-size:.75rem;padding:6px 12px;border-radius:20px}
+.c-msg .ts{font-size:.65rem;opacity:.6;margin-top:4px}
+.chat-input-bar{display:flex;gap:8px;padding:12px 16px;border-top:1px solid var(--bd);background:#fafbfc}
+.chat-input-bar input{flex:1;padding:10px 14px;border:1px solid var(--bd);border-radius:20px;font-size:.875rem;background:var(--surface)}
+.chat-input-bar input::placeholder{color:var(--t2)}
+.chat-input-bar button{padding:8px 20px;border-radius:20px;border:none;background:var(--p);color:#fff;font-size:.875rem;cursor:pointer}
+
+/* Inline preview row */
+.preview-row td{padding:0;background:#fafcfd}
+.preview-inner{padding:12px 20px;display:flex;gap:10px;overflow-x:auto}
+.preview-msg{min-width:200px;max-width:280px;padding:8px 10px;border-radius:6px;font-size:.78rem;background:var(--bg);border:1px solid var(--bd)}
+.preview-msg .idx{font-size:.7rem;color:var(--t2)}
+.preview-msg .body{color:var(--text);margin-top:4px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.preview-msg.user{border-left:3px solid var(--p)}
+.preview-msg.assistant{border-left:3px solid var(--g)}
+.preview-msg .action-link{font-size:.7rem;color:var(--p);cursor:pointer;margin-top:4px;display:inline-block}
+</style>
+</head>
+<body>
+
+<div class="detail-page">
+
+  <!-- Header -->
+  <div class="detail-header">
+    <button class="detail-back-btn">← 返回</button>
+    <div class="detail-header-title-group">
+      <h2>Sessions</h2>
+      <input type="text" placeholder="🔍 搜索 session_id / user_id / title...">
+    </div>
+  </div>
+
+  <!-- Stats Cards -->
+  <div class="stats-cards">
+    <div class="stats-card"><span class="stats-card-icon">📊</span><div class="stats-card-body"><span class="stats-card-value">256</span><span class="stats-card-label">总会话数</span></div></div>
+    <div class="stats-card"><span class="stats-card-icon">🟢</span><div class="stats-card-body"><span class="stats-card-value">12</span><span class="stats-card-label">活跃会话</span></div></div>
+    <div class="stats-card"><span class="stats-card-icon">👥</span><div class="stats-card-body"><span class="stats-card-value">48</span><span class="stats-card-label">总用户数</span></div></div>
+    <div class="stats-card"><span class="stats-card-icon">💰</span><div class="stats-card-body"><span class="stats-card-value">$45.82</span><span class="stats-card-label">总费用</span></div></div>
+  </div>
+
+  <!-- Aggregate: By User + By Date -->
+  <div class="agg-row">
+    <div class="agg-panel">
+      <h4>📋 按用户聚合 <span style="font-weight:400;color:var(--t2);font-size:.75rem;margin-left:8px">Top 6</span></h4>
+      <table>
+        <thead><tr><th>User</th><th style="text-align:right">Sessions</th><th style="text-align:right">Msgs</th><th style="text-align:right">Cost</th><th>分布</th></tr></thead>
+        <tbody>
+          <tr><td>alice</td><td style="text-align:right">68</td><td style="text-align:right">2,341</td><td style="text-align:right">$12.45</td><td><div class="bar-cell"><div class="bar-bg"><div class="bar-fill" style="width:82%"></div></div>82%</div></td></tr>
+          <tr><td>bob</td><td style="text-align:right">54</td><td style="text-align:right">1,892</td><td style="text-align:right">$9.87</td><td><div class="bar-cell"><div class="bar-bg"><div class="bar-fill" style="width:65%"></div></div>65%</div></td></tr>
+          <tr><td>carol</td><td style="text-align:right">42</td><td style="text-align:right">1,456</td><td style="text-align:right">$7.23</td><td><div class="bar-cell"><div class="bar-bg"><div class="bar-fill" style="width:48%"></div></div>48%</div></td></tr>
+          <tr><td>dave</td><td style="text-align:right">31</td><td style="text-align:right">987</td><td style="text-align:right">$5.10</td><td><div class="bar-cell"><div class="bar-bg"><div class="bar-fill" style="width:34%"></div></div>34%</div></td></tr>
+          <tr><td>eve</td><td style="text-align:right">28</td><td style="text-align:right">765</td><td style="text-align:right">$4.55</td><td><div class="bar-cell"><div class="bar-bg"><div class="bar-fill" style="width:30%"></div></div>30%</div></td></tr>
+          <tr><td>frank</td><td style="text-align:right">19</td><td style="text-align:right">543</td><td style="text-align:right">$3.12</td><td><div class="bar-cell"><div class="bar-bg"><div class="bar-fill" style="width:20%"></div></div>20%</div></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="agg-panel">
+      <h4>📅 按日期聚合 <span style="font-weight:400;color:var(--t2);font-size:.75rem;margin-left:8px">最近 7 天</span></h4>
+      <div class="agg-toggle">
+        <button class="active">Sessions</button><button>Messages</button><button>Cost</button>
+      </div>
+      <table>
+        <thead><tr><th>日期</th><th style="text-align:right">Sessions</th><th style="text-align:right">Messages</th><th style="text-align:right">Cost</th><th>趋势</th></tr></thead>
+        <tbody>
+          <tr><td>06-05</td><td style="text-align:right">18</td><td style="text-align:right">623</td><td style="text-align:right">$6.23</td><td><div class="bar-cell"><div class="bar-bg"><div class="bar-fill" style="width:100%"></div></div></td></tr>
+          <tr><td>06-04</td><td style="text-align:right">15</td><td style="text-align:right">487</td><td style="text-align:right">$4.89</td><td><div class="bar-cell"><div class="bar-bg"><div class="bar-fill" style="width:78%"></div></div></td></tr>
+          <tr><td>06-03</td><td style="text-align:right">22</td><td style="text-align:right">812</td><td style="text-align:right">$8.12</td><td><div class="bar-cell"><div class="bar-bg"><div class="bar-fill" style="width:90%"></div></div></td></tr>
+          <tr><td>06-02</td><td style="text-align:right">14</td><td style="text-align:right">421</td><td style="text-align:right">$4.21</td><td><div class="bar-cell"><div class="bar-bg"><div class="bar-fill" style="width:68%"></div></div></td></tr>
+          <tr><td>06-01</td><td style="text-align:right">20</td><td style="text-align:right">756</td><td style="text-align:right">$7.56</td><td><div class="bar-cell"><div class="bar-bg"><div class="bar-fill" style="width:84%"></div></div></td></tr>
+          <tr><td>05-31</td><td style="text-align:right">19</td><td style="text-align:right">689</td><td style="text-align:right">$6.89</td><td><div class="bar-cell"><div class="bar-bg"><div class="bar-fill" style="width:76%"></div></div></td></tr>
+          <tr><td>05-30</td><td style="text-align:right">12</td><td style="text-align:right">345</td><td style="text-align:right">$3.45</td><td><div class="bar-cell"><div class="bar-bg"><div class="bar-fill" style="width:55%"></div></div></td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Filter -->
+  <div class="filter-bar">
+    <select><option>全部用户</option><option>alice</option><option>bob</option></select>
+    <select><option>全部状态</option><option>running</option><option>completed</option><option>cancelled</option><option>error</option></select>
+    <input type="date" value="2026-05-29"> 至 <input type="date" value="2026-06-05">
+    <select><option>最新创建 ↑</option><option>最早创建 ↓</option><option>消息数 ↓</option><option>费用 ↓</option></select>
+    <span class="total">共 256 条 · 已选 <b id="selectedCount">0</b> 条</span>
+  </div>
+
+  <!-- Batch Action Bar -->
+  <div class="batch-bar" id="batchBar">
+    <span>已选 <span class="count" id="batchCount">3</span> 条 session</span>
+    <button onclick="alert('Batch cancel 3 sessions')">⏸ 批量取消</button>
+    <button class="danger" onclick="alert('Batch delete 3 sessions')">🗑 批量删除</button>
+    <span style="margin-left:auto;color:var(--t2);font-size:.8rem">✕ 取消选择</span>
+  </div>
+
+  <!-- Main Table -->
+  <div class="main-table">
+    <table>
+      <thead>
+        <tr><th style="width:20px"><input type="checkbox" id="selectAll" onchange="toggleAll()"></th><th>Session ID</th><th>User</th><th>Title</th><th>Status</th><th style="text-align:right">Msgs</th><th style="text-align:right">Cost</th><th>Created</th><th>Last Active</th><th style="width:130px">Actions</th></tr>
+      </thead>
+      <tbody>
+        <tr onclick="expandRow(this)" data-expanded="0">
+          <td><input type="checkbox" checked onchange="updateBatch(this)"></td>
+          <td style="font-family:monospace;font-size:.8rem">sess_a1b2c3d4e5f6</td><td>alice</td><td>帮我分析财务报表</td>
+          <td><span class="badge b-running">running</span></td><td style="text-align:right">47</td><td style="text-align:right">$1.23</td>
+          <td style="font-size:.8rem">06-05 10:23</td><td style="font-size:.8rem">06-05 11:45</td>
+          <td><div class="action-col" onclick="event.stopPropagation()"><button class="btn-sm" onclick="openChat('sess_a1','alice','帮我分析财务报表','running')">📋</button><button class="btn-sm warn" onclick="alert('Cancel')">⏸</button><button class="btn-sm danger" onclick="alert('Delete')">🗑</button></div></td>
+        </tr>
+        <tr class="preview-row" id="prev1" style="display:none"><td colspan="10">
+          <div class="preview-inner">
+            <div class="preview-msg user"><div class="idx">#46 · user · 11:23:05</div><div class="body">帮我分析一下最新的财务报表，看看Q2的利润增长情况</div><div class="action-link">查看完整 →</div></div>
+            <div class="preview-msg assistant"><div class="idx">#45 · assistant · 11:23:08</div><div class="body">我来帮你分析。先读取最新的财务报表文件...</div><div class="action-link">查看完整 →</div></div>
+            <div class="preview-msg assistant"><div class="idx">#44 · tool_use · 11:23:09</div><div class="body">Read /data/users/alice/workspace/financial-Q2-2026.xlsx</div></div>
+            <div class="preview-msg assistant"><div class="idx">#43 · assistant · 11:23:15</div><div class="body">根据Q2报表，利润同比增长了23.5%。主要增长来自...</div><div class="action-link">查看完整 →</div></div>
+            <div class="preview-msg user"><div class="idx">#42 · user · 11:24:01</div><div class="body">能做一个图表来展示各季度的对比吗？</div></div>
+          </div>
+        </td></tr>
+
+        <tr onclick="expandRow(this)" data-expanded="0">
+          <td><input type="checkbox" onchange="updateBatch(this)"></td>
+          <td style="font-family:monospace;font-size:.8rem">sess_b2c3d4e5f6a7</td><td>bob</td><td>Generate a marketing plan</td>
+          <td><span class="badge b-completed">completed</span></td><td style="text-align:right">32</td><td style="text-align:right">$0.87</td>
+          <td style="font-size:.8rem">06-04 15:30</td><td style="font-size:.8rem">06-04 16:12</td>
+          <td><div class="action-col" onclick="event.stopPropagation()"><button class="btn-sm" onclick="openChat('sess_b2','bob','Generate a marketing plan','completed')">📋</button><button class="btn-sm danger" onclick="alert('Delete')">🗑</button></div></td>
+        </tr>
+        <tr class="preview-row" id="prev2" style="display:none"><td colspan="10">
+          <div class="preview-inner">
+            <div class="preview-msg user"><div class="idx">#32 · user · 15:30</div><div class="body">Generate a comprehensive marketing plan for Q3</div></div>
+            <div class="preview-msg assistant"><div class="idx">#31 · assistant · 15:31</div><div class="body">I'll create a marketing plan covering digital channels...</div></div>
+          </div>
+        </td></tr>
+
+        <tr onclick="expandRow(this)" data-expanded="0">
+          <td><input type="checkbox" checked onchange="updateBatch(this)"></td>
+          <td style="font-family:monospace;font-size:.8rem">sess_c3d4e5f6a7b8</td><td>alice</td><td>Debug the API error</td>
+          <td><span class="badge b-cancelled">cancelled</span></td><td style="text-align:right">15</td><td style="text-align:right">$0.32</td>
+          <td style="font-size:.8rem">06-03 09:15</td><td style="font-size:.8rem">06-03 09:45</td>
+          <td><div class="action-col" onclick="event.stopPropagation()"><button class="btn-sm" onclick="openChat('sess_c3','alice','Debug the API error','cancelled')">📋</button><button class="btn-sm danger" onclick="alert('Delete')">🗑</button></div></td>
+        </tr>
+        <tr class="preview-row" id="prev3" style="display:none"><td colspan="10">
+          <div class="preview-inner">
+            <div class="preview-msg user"><div class="idx">#15 · user · 09:15</div><div class="body">为什么这个接口返回403？</div></div>
+            <div class="preview-msg assistant"><div class="idx">#14 · assistant · 09:16</div><div class="body">让我检查一下代码... 发现 verify_csrf 依赖没有注入</div></div>
+          </div>
+        </td></tr>
+
+        <tr onclick="expandRow(this)" data-expanded="0">
+          <td><input type="checkbox" onchange="updateBatch(this)"></td>
+          <td style="font-family:monospace;font-size:.8rem">sess_d4e5f6a7b8c9</td><td>carol</td><td>Write unit tests for auth</td>
+          <td><span class="badge b-error">error</span></td><td style="text-align:right">8</td><td style="text-align:right">$0.15</td>
+          <td style="font-size:.8rem">06-02 14:00</td><td style="font-size:.8rem">06-02 14:22</td>
+          <td><div class="action-col" onclick="event.stopPropagation()"><button class="btn-sm" onclick="openChat('sess_d4','carol','Write unit tests','error')">📋</button><button class="btn-sm danger" onclick="alert('Delete')">🗑</button></div></td>
+        </tr>
+      </tbody>
+    </table>
+    <div class="pagination">
+      <button>←</button><button class="active">1</button><button>2</button><button>3</button><span class="page-info">...</span><button>13</button><button>→</button><span class="page-info">共 256 条</span>
+    </div>
+  </div>
+
+</div>
+
+<!-- Chat Overlay -->
+<div class="overlay" id="chatOverlay">
+<div class="chat-preview">
+  <div class="chat-header">
+    <div><h3 id="chatTitle">Debug the API error</h3><span class="meta" id="chatMeta">sess_c3d4e5f6a7b8 · alice · 15 msgs · $0.32</span></div>
+    <button class="chat-close" onclick="document.getElementById('chatOverlay').classList.remove('show')">✕</button>
+  </div>
+  <div class="chat-msgs">
+    <div class="c-msg user">为什么这个接口返回403？<div class="ts">09:15:02</div></div>
+    <div class="c-msg assistant">让我检查一下代码... <code>verify_csrf</code> 依赖没有正确注入到路由中。<div class="ts">09:15:05</div></div>
+    <div class="c-msg system">🔧 Read /main_server.py:3510-3530</div>
+    <div class="c-msg assistant">找到了问题：<code>dependencies=[Depends(verify_csrf)]</code> 缺失。<div class="ts">09:15:12</div></div>
+    <div class="c-msg user">好的，帮我修复它<div class="ts">09:15:20</div></div>
+    <div class="c-msg assistant">修改完成。现在所有 state-changing 端点都需要有效的 CSRF token。<div class="ts">09:15:30</div></div>
+    <div class="c-msg system">⏸ Session cancelled<div class="ts">09:15:35</div></div>
+  </div>
+  <div class="chat-input-bar"><input placeholder="以 alice 身份回复..." disabled><button style="opacity:.5" disabled>发送</button></div>
+</div>
+</div>
+
+<script>
+function updateBatch(cb){
+  const checked = document.querySelectorAll('input[type=checkbox]:checked:not(#selectAll)');
+  const bar = document.getElementById('batchBar');
+  document.getElementById('batchCount').textContent = checked.length;
+  document.getElementById('selectedCount').textContent = checked.length;
+  bar.classList.toggle('show', checked.length >= 2);
+}
+function toggleAll(){
+  const all = document.getElementById('selectAll').checked;
+  document.querySelectorAll('tbody input[type=checkbox]').forEach(c=>{c.checked=all});
+  updateBatch();
+}
+function expandRow(tr){
+  const next = tr.nextElementSibling;
+  if(next && next.classList.contains('preview-row')){
+    next.style.display = next.style.display === 'none' ? 'table-row' : 'none';
+  }
+}
+function openChat(sid,user,title,status){
+  document.getElementById('chatTitle').textContent=title;
+  document.getElementById('chatMeta').innerHTML=sid+' · '+user+' · '+status;
+  document.getElementById('chatOverlay').classList.add('show');
+}
+document.addEventListener('DOMContentLoaded', ()=>updateBatch(document.querySelector('input[type=checkbox]')));
+</script>
+</body>
+</html>

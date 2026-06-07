@@ -422,6 +422,20 @@ function MainApp() {
         ? { ...m, index: newIndex ?? m.index, sendState: "sent" as const }
         : m,
     );
+
+  // Update an optimistic user message when the backend echo arrives.
+  // If the echo has a lower index than the optimistic message (can happen
+  // when subscribe-loop indices don't match DB seq), only confirm send
+  // state without downgrading the index.
+  const applyEchoUpdate = (prev: Message[], msg: Message): Message[] =>
+    prev.map((m) => {
+      if (m.clientMsgId !== msg.clientMsgId) return m;
+      if (msg.index != null && msg.index < (m.index ?? 0)) {
+        return { ...m, sendState: "sent" as const };
+      }
+      return { ...m, index: msg.index ?? m.index, sendState: "sent" as const };
+    });
+
   const [userId, setUserId] = useState<string>(() => {
     return localStorage.getItem("userId") || "";
   });
@@ -628,6 +642,13 @@ function MainApp() {
             }
             return normalized;
           });
+          // Immediately set session state from the live buffer state embedded
+          // in every REST /history message. This prevents the spinner from
+          // disappearing between the history load and the /status fetch.
+          const liveState = msgs[0]?.session_state as SessionStatus | undefined;
+          if (liveState) {
+            setSessionStateFor(urlSessionId, liveState);
+          }
           // Confirm user messages found in REST history (subscribe loop may skip
           // the user echo for new sessions due to last_seen threshold).
           for (const m of msgs) {
@@ -684,9 +705,12 @@ function MainApp() {
                 : m,
             );
             if (newMsgs.length === 0) return reindexed;
-            return reindexed.sort(
-              (a, b) => (a.index ?? Number.MAX_SAFE_INTEGER) - (b.index ?? Number.MAX_SAFE_INTEGER),
-            );
+            // Move optimistic messages to the end — they should sort
+            // after all confirmed messages. Keep confirmed messages
+            // in their natural REST /history seq order.
+            const optimistic = reindexed.filter((m) => m.sendState === "sending");
+            const confirmed = reindexed.filter((m) => m.sendState !== "sending");
+            return [...confirmed, ...optimistic];
           });
           restLoadedRef.current = true;
           let derivedState: SessionStatus = "idle";
@@ -708,6 +732,13 @@ function MainApp() {
           const currentState = sessionStatesRef.current.get(urlSessionId) ?? "idle";
           const { state: resolvedFromHistory, shouldRecover: shouldRecoverFromHistory } =
             resolveSessionState(currentState, derivedState);
+          // If the live buffer state from REST /history says "running",
+          // it is authoritative — don't let history-derived state
+          // (e.g. "completed" from a previous turn's result) downgrade it.
+          const finalState: SessionStatus =
+            liveState === "running" && resolvedFromHistory !== "running"
+              ? "running"
+              : (resolvedFromHistory as SessionStatus);
           if (shouldRecoverFromHistory) {
             sendRecover(
               urlSessionId!,
@@ -717,7 +748,7 @@ function MainApp() {
             );
             didRecoverRef.current = true;
           }
-          setSessionStateFor(urlSessionId, resolvedFromHistory as SessionStatus);
+          setSessionStateFor(urlSessionId, finalState);
           fetch(`/api/users/${userId}/sessions/${urlSessionId}/status`, {
             credentials: "same-origin",
           })
@@ -978,8 +1009,11 @@ function MainApp() {
             const currentState = sessionStatesRef.current.get(msg.session_id);
             const isTerminal = TERMINAL_STATES.has(newState);
             if (isTerminal) {
-              // Replay terminal states are authoritative (from DB)
-              setSessionStateFor(msg.session_id, newState);
+              // Don't let a replayed terminal (e.g. "completed" from
+              // a previous turn) override a live "running" state.
+              if (currentState !== "running") {
+                setSessionStateFor(msg.session_id, newState);
+              }
             } else if (currentState === "running") {
               // Skip — live running state takes precedence over replayed non-terminal
             } else if (newState === "running" && currentState !== "running") {
@@ -1029,10 +1063,7 @@ function MainApp() {
               msg.clientMsgId &&
               prev.some((m) => m.clientMsgId === msg.clientMsgId)
             ) {
-              // Update the optimistic insert with the backend's real index
-              // and confirm delivery. Skipping would leave stale indices in
-              // maxMsgIndexRef, causing misaligned last_index on next send.
-              next = updateByClientMsgId(prev, msg.clientMsgId, msg.index);
+              next = applyEchoUpdate(prev, msg);
               dedupResult = "update:firstTurn-user-clientMsgIdDup";
             } else if (
               prev.some(
@@ -1068,7 +1099,7 @@ function MainApp() {
             msg.clientMsgId &&
             prev.some((m) => m.clientMsgId === msg.clientMsgId)
           ) {
-            next = updateByClientMsgId(prev, msg.clientMsgId, msg.index);
+            next = applyEchoUpdate(prev, msg);
             dedupResult = "update:user-clientMsgIdDup";
           } else if (
             !msg.clientMsgId &&
@@ -1182,12 +1213,13 @@ function MainApp() {
         );
       }
       if (msg.type === "result" && msg.session_id) {
-        // result is always terminal — accept it. The last_index
-        // parameter sent to the backend ensures only current-run
-        // results reach the frontend (old results are filtered by
-        // after_index on the backend side).
-        setSessionStateFor(msg.session_id, "completed");
-        loadSessions();
+        // Don't let a replayed result (e.g. from a previous turn)
+        // override a live "running" state set by REST /history.
+        const currentState = sessionStatesRef.current.get(msg.session_id);
+        if (currentState !== "running") {
+          setSessionStateFor(msg.session_id, "completed");
+          loadSessions();
+        }
       }
     },
     [userId, updateSendState],

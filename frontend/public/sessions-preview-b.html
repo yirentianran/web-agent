@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=1400">
+<title>Sessions Admin — Plan B Preview</title>
+<style>
+  :root {
+    --bg: #f5f6fa; --surface: #fff; --text: #1a202c; --text2: #64748b; --border: #e2e8f0;
+    --primary: #4f46e5; --primary-light: #eef2ff; --accent: #059669; --danger: #dc2626;
+    --warning: #f59e0b; --info: #3b82f6; --radius: 8px;
+  }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background:var(--bg); color:var(--text); padding:24px 32px; }
+
+  .detail-page { max-width:1600px; margin:0 auto; }
+  .detail-header { display:flex; align-items:center; justify-content:space-between; padding:20px 20px 12px; gap:12px; }
+  .detail-back-btn { border:1px solid var(--border); border-radius:var(--radius); background:var(--surface); color:var(--text2); padding:6px 14px; cursor:pointer; font-size:0.875rem; display:inline-flex; align-items:center; gap:4px; }
+  .detail-back-btn:hover { border-color:var(--primary); color:var(--primary); }
+  .detail-header-title-group { display:flex; align-items:center; gap:12px; flex:1; }
+  .detail-header-title-group h2 { font-size:1.25rem; font-weight:600; margin:0; }
+  .detail-header-title-group input { padding:6px 12px; border:1px solid var(--border); border-radius:var(--radius); font-size:0.875rem; width:240px; }
+  .detail-header-title-group input:focus { outline:none; border-color:var(--primary); }
+
+  .stats-cards { display:grid; grid-template-columns:repeat(4,1fr); gap:16px; margin-bottom:16px; }
+  .stats-card { display:flex; align-items:center; gap:12px; padding:16px 20px; background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); }
+  .stats-card-icon { font-size:1.5rem; }
+  .stats-card-body { flex:1; }
+  .stats-card-value { font-size:1.5rem; font-weight:700; display:block; }
+  .stats-card-label { font-size:0.8rem; color:var(--text2); }
+
+  .filter-bar { display:flex; gap:8px; margin-bottom:16px; align-items:center; }
+  .filter-bar input, .filter-bar select { padding:6px 10px; border:1px solid var(--border); border-radius:6px; background:var(--surface); font-size:0.85rem; }
+  .filter-bar input:focus, .filter-bar select:focus { outline:none; border-color:var(--primary); }
+  .filter-bar .total { margin-left:auto; font-size:0.85rem; color:var(--text2); }
+
+  table { width:100%; border-collapse:collapse; font-size:0.875rem; background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); }
+  th { text-align:left; padding:10px 12px; border-bottom:2px solid var(--border); font-weight:600; color:var(--text2); background:#fafbfc; white-space:nowrap; }
+  td { padding:10px 12px; border-bottom:1px solid var(--border); }
+  tr:hover td { background:#f8fafc; }
+  tr { cursor:pointer; transition:background 0.15s; }
+
+  .badge { display:inline-block; padding:2px 8px; border-radius:999px; font-size:0.75rem; font-weight:500; }
+  .badge-running { background:#dcfce7; color:#166534; }
+  .badge-completed { background:#dbeafe; color:#1e40af; }
+  .badge-cancelled { background:#fef3c7; color:#92400e; }
+  .badge-error { background:#fee2e2; color:#991b1b; }
+  .badge-idle { background:#f1f5f9; color:#475569; }
+
+  .pagination { display:flex; align-items:center; gap:6px; justify-content:center; padding:16px; font-size:0.85rem; }
+  .pagination button { padding:4px 10px; border:1px solid var(--border); border-radius:4px; background:var(--surface); cursor:pointer; }
+  .pagination button:hover { border-color:var(--primary); }
+  .pagination button.active { background:var(--primary); color:#fff; border-color:var(--primary); }
+  .pagination .page-info { color:var(--text2); margin-left:12px; }
+
+  .action-col { display:flex; gap:6px; }
+  .btn-sm { padding:3px 10px; border-radius:4px; border:1px solid var(--border); font-size:0.75rem; cursor:pointer; background:var(--surface); }
+  .btn-sm:hover { border-color:var(--primary); color:var(--primary); }
+  .btn-sm.danger { border-color:var(--danger); color:var(--danger); }
+  .btn-sm.danger:hover { background:#fef2f2; }
+
+  /* Overlay chat preview */
+  .overlay { display:none; position:fixed; inset:0; background:rgba(0,0,0,0.4); z-index:100; justify-content:center; align-items:center; }
+  .overlay.show { display:flex; }
+  .chat-preview { width:800px; max-height:85vh; background:var(--surface); border-radius:12px; box-shadow:0 20px 60px rgba(0,0,0,0.3); display:flex; flex-direction:column; overflow:hidden; }
+
+  .chat-header { display:flex; align-items:center; justify-content:space-between; padding:12px 16px; border-bottom:1px solid var(--border); background:#fafbfc; }
+  .chat-header-left { display:flex; align-items:center; gap:10px; }
+  .chat-header-left h3 { font-size:1rem; margin:0; }
+  .chat-header-left .meta { font-size:0.75rem; color:var(--text2); }
+  .chat-close { background:none; border:none; font-size:1.2rem; cursor:pointer; color:var(--text2); padding:4px 8px; border-radius:4px; }
+  .chat-close:hover { background:var(--border); }
+
+  .chat-messages { flex:1; overflow-y:auto; padding:16px; display:flex; flex-direction:column; gap:12px; min-height:400px; max-height:500px; }
+  .chat-msg { max-width:80%; padding:10px 14px; border-radius:12px; font-size:0.85rem; line-height:1.4; }
+  .chat-msg.user { align-self:flex-end; background:var(--primary); color:#fff; border-bottom-right-radius:4px; }
+  .chat-msg.assistant { align-self:flex-start; background:#f0f4ff; border:1px solid #dbe4ff; border-bottom-left-radius:4px; }
+  .chat-msg.system { align-self:center; background:var(--bg); color:var(--text2); font-size:0.75rem; padding:6px 12px; border-radius:20px; }
+  .chat-msg .ts { font-size:0.65rem; opacity:0.6; margin-top:4px; }
+
+  .chat-input-bar { display:flex; align-items:center; gap:8px; padding:12px 16px; border-top:1px solid var(--border); background:#fafbfc; }
+  .chat-input-bar input { flex:1; padding:10px 14px; border:1px solid var(--border); border-radius:20px; font-size:0.875rem; background:var(--surface); }
+  .chat-input-bar input:focus { outline:none; border-color:var(--primary); }
+  .chat-input-bar input::placeholder { color:var(--text2); }
+  .chat-input-bar button { padding:8px 20px; border-radius:20px; border:none; background:var(--primary); color:#fff; font-size:0.875rem; cursor:pointer; }
+
+  .note-bar { background:#fffbeb; border:1px solid #fde68a; border-radius:8px; padding:10px 16px; margin-bottom:16px; font-size:0.8rem; color:#92400e; display:flex; align-items:center; gap:8px; }
+  .note-bar .note-icon { font-size:1.1rem; }
+</style>
+</head>
+<body>
+
+<div class="detail-page">
+  <!-- Note -->
+  <div class="note-bar">
+    <span class="note-icon">💡</span>
+    <span><strong>方案 B：</strong>点击行 → 跳转到该 Session 的聊天页面，使用已有的 ChatArea 组件以用户视角查看完整对话。下方为模拟预览。</span>
+  </div>
+
+  <!-- Header -->
+  <div class="detail-header">
+    <button class="detail-back-btn">← 返回</button>
+    <div class="detail-header-title-group">
+      <h2>Sessions</h2>
+      <input type="text" placeholder="搜索 session_id / user_id / title...">
+    </div>
+  </div>
+
+  <!-- Stats Cards -->
+  <div class="stats-cards">
+    <div class="stats-card"><span class="stats-card-icon">📊</span><div class="stats-card-body"><span class="stats-card-value">256</span><span class="stats-card-label">总会话数</span></div></div>
+    <div class="stats-card"><span class="stats-card-icon">🟢</span><div class="stats-card-body"><span class="stats-card-value">12</span><span class="stats-card-label">活跃会话</span></div></div>
+    <div class="stats-card"><span class="stats-card-icon">👥</span><div class="stats-card-body"><span class="stats-card-value">48</span><span class="stats-card-label">总用户数</span></div></div>
+    <div class="stats-card"><span class="stats-card-icon">💬</span><div class="stats-card-body"><span class="stats-card-value">8,231</span><span class="stats-card-label">总消息数</span></div></div>
+  </div>
+
+  <!-- Filter Bar -->
+  <div class="filter-bar">
+    <select><option>全部用户</option><option>alice</option><option>bob</option></select>
+    <select><option>全部状态</option><option>running</option><option>completed</option><option>cancelled</option><option>error</option></select>
+    <input type="date" value="2026-05-29"> 至 <input type="date" value="2026-06-05">
+    <select><option>最新创建 ↑</option><option>最早创建 ↓</option><option>消息数 ↓</option><option>费用 ↓</option></select>
+    <span class="total">共 256 条</span>
+  </div>
+
+  <!-- Table -->
+  <table>
+    <thead>
+      <tr><th style="width:20px"><input type="checkbox"></th><th>Session ID</th><th>User</th><th>Title</th><th>Status</th><th style="text-align:right">Msgs</th><th style="text-align:right">Cost</th><th>Created</th><th>Last Active</th><th style="width:120px">Actions</th></tr>
+    </thead>
+    <tbody>
+      <tr onclick="openChat('sess_a1b2c3', 'alice', '帮我分析财务报表', 'running', 47)">
+        <td><input type="checkbox" onclick="event.stopPropagation()"></td>
+        <td style="font-family:monospace;font-size:0.8rem">sess_a1b2c3d4e5f6</td>
+        <td>alice</td>
+        <td>帮我分析财务报表</td>
+        <td><span class="badge badge-running">running</span></td>
+        <td style="text-align:right">47</td><td style="text-align:right">$1.23</td>
+        <td style="font-size:0.8rem">06-05 10:23</td><td style="font-size:0.8rem">06-05 11:45</td>
+        <td><div class="action-col"><button class="btn-sm" onclick="event.stopPropagation();openChat('sess_a1b2c3','alice','帮我分析财务报表','running',47)">查看</button><button class="btn-sm danger" onclick="event.stopPropagation();alert('Cancel session')">取消</button></div></td>
+      </tr>
+      <tr onclick="openChat('sess_b2c3d4', 'bob', 'Generate a marketing plan', 'completed', 32)">
+        <td><input type="checkbox" onclick="event.stopPropagation()"></td>
+        <td style="font-family:monospace;font-size:0.8rem">sess_b2c3d4e5f6a7</td>
+        <td>bob</td>
+        <td>Generate a marketing plan</td>
+        <td><span class="badge badge-completed">completed</span></td>
+        <td style="text-align:right">32</td><td style="text-align:right">$0.87</td>
+        <td style="font-size:0.8rem">06-04 15:30</td><td style="font-size:0.8rem">06-04 16:12</td>
+        <td><div class="action-col"><button class="btn-sm" onclick="event.stopPropagation();openChat('sess_b2c3d4','bob','Generate a marketing plan','completed',32)">查看</button><button class="btn-sm danger" onclick="event.stopPropagation();alert('Delete session')">删除</button></div></td>
+      </tr>
+      <tr onclick="openChat('sess_c3d4e5', 'alice', 'Debug the API error', 'cancelled', 15)">
+        <td><input type="checkbox" onclick="event.stopPropagation()"></td>
+        <td style="font-family:monospace;font-size:0.8rem">sess_c3d4e5f6a7b8</td>
+        <td>alice</td>
+        <td>Debug the API error</td>
+        <td><span class="badge badge-cancelled">cancelled</span></td>
+        <td style="text-align:right">15</td><td style="text-align:right">$0.32</td>
+        <td style="font-size:0.8rem">06-03 09:15</td><td style="font-size:0.8rem">06-03 09:45</td>
+        <td><div class="action-col"><button class="btn-sm" onclick="event.stopPropagation();openChat('sess_c3d4e5','alice','Debug the API error','cancelled',15)">查看</button><button class="btn-sm danger" onclick="event.stopPropagation();alert('Delete session')">删除</button></div></td>
+      </tr>
+      <tr onclick="openChat('sess_d4e5f6', 'carol', 'Write unit tests for auth', 'error', 8)">
+        <td><input type="checkbox" onclick="event.stopPropagation()"></td>
+        <td style="font-family:monospace;font-size:0.8rem">sess_d4e5f6a7b8c9</td>
+        <td>carol</td>
+        <td>Write unit tests for auth</td>
+        <td><span class="badge badge-error">error</span></td>
+        <td style="text-align:right">8</td><td style="text-align:right">$0.15</td>
+        <td style="font-size:0.8rem">06-02 14:00</td><td style="font-size:0.8rem">06-02 14:22</td>
+        <td><div class="action-col"><button class="btn-sm" onclick="event.stopPropagation();openChat('sess_d4e5f6','carol','Write unit tests for auth','error',8)">查看</button><button class="btn-sm danger" onclick="event.stopPropagation();alert('Delete session')">删除</button></div></td>
+      </tr>
+      <tr onclick="openChat('sess_e5f6a7', 'bob', '帮我写周报', 'completed', 63)">
+        <td><input type="checkbox" onclick="event.stopPropagation()"></td>
+        <td style="font-family:monospace;font-size:0.8rem">sess_e5f6a7b8c9d0</td>
+        <td>bob</td>
+        <td>帮我写周报</td>
+        <td><span class="badge badge-completed">completed</span></td>
+        <td style="text-align:right">63</td><td style="text-align:right">$2.10</td>
+        <td style="font-size:0.8rem">06-01 08:00</td><td style="font-size:0.8rem">06-01 09:30</td>
+        <td><div class="action-col"><button class="btn-sm" onclick="event.stopPropagation();openChat('sess_e5f6a7','bob','帮我写周报','completed',63)">查看</button><button class="btn-sm danger" onclick="event.stopPropagation();alert('Delete session')">删除</button></div></td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div class="pagination">
+    <button>←</button><button class="active">1</button><button>2</button><button>3</button><span class="page-info">...</span><button>13</button><button>→</button><span class="page-info">共 256 条</span>
+  </div>
+</div>
+
+<!-- Chat Overlay (Plan B: navigate to chat page) -->
+<div class="overlay show" id="chatOverlay">
+<div class="chat-preview">
+  <div class="chat-header">
+    <div class="chat-header-left">
+      <div>
+        <h3 id="chatTitle">Debug the API error</h3>
+        <span class="meta">sess_c3d4e5f6a7b8 · alice · 15 msgs · $0.32 · <span class="badge badge-cancelled" id="chatBadge">cancelled</span></span>
+      </div>
+    </div>
+    <div style="display:flex;gap:6px">
+      <button class="chat-close" onclick="document.getElementById('chatOverlay').classList.remove('show')">✕</button>
+    </div>
+  </div>
+
+  <div class="chat-messages">
+    <div class="chat-msg user">
+      为什么这个接口返回403？
+      <div class="ts">10:23:05</div>
+    </div>
+    <div class="chat-msg assistant">
+      让我检查一下代码... 发现 <code>verify_csrf</code> 依赖没有正确注入到路由中。
+      <div class="ts">10:23:07</div>
+    </div>
+    <div class="chat-msg system">
+      🔧 Read /main_server.py:3510-3530
+      <div class="ts">10:23:08</div>
+    </div>
+    <div class="chat-msg assistant">
+      找到了问题：<code>POST /api/users/{user_id}/sessions</code> 没有 <code>dependencies=[Depends(verify_csrf)]</code>。
+      <div class="ts">10:23:12</div>
+    </div>
+    <div class="chat-msg user">
+      好的，帮我修复它
+      <div class="ts">10:23:20</div>
+    </div>
+    <div class="chat-msg assistant">
+      我来修改 <code>main_server.py</code>，添加 CSRF 依赖到所有 state-changing 端点。目前已有 16 个端点需要添加 <code>dependencies=[Depends(verify_csrf)]</code>...
+      <div class="ts">10:23:25</div>
+    </div>
+    <div class="chat-msg system">
+      📝 Edit /main_server.py — 16 endpoints updated
+      <div class="ts">10:23:30</div>
+    </div>
+    <div class="chat-msg assistant">
+      修改完成。现在所有 POST/PUT/PATCH/DELETE 端点都需要有效的 <code>X-CSRF-Token</code> header 匹配 <code>csrf_token</code> cookie。
+      <div class="ts">10:23:35</div>
+    </div>
+    <div class="chat-msg system">
+      ⏸ Session cancelled
+      <div class="ts">10:23:40</div>
+    </div>
+  </div>
+
+  <div class="chat-input-bar">
+    <input placeholder="以 alice 身份回复 (admin 模拟)..." disabled>
+    <button style="opacity:0.5" disabled>发送</button>
+  </div>
+</div>
+</div>
+
+<script>
+function openChat(sid, user, title, status, msgs) {
+  document.getElementById('chatTitle').textContent = title;
+  document.getElementById('chatBadge').textContent = status;
+  document.getElementById('chatBadge').className = 'badge badge-' + status;
+  document.querySelector('#chatOverlay .meta').innerHTML = sid + ' · ' + user + ' · ' + msgs + ' msgs · $0.32 · <span class="badge badge-' + status + '">' + status + '</span>';
+  document.getElementById('chatOverlay').classList.add('show');
+}
+</script>
+
+</body>
+</html>
