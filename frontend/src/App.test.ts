@@ -72,7 +72,11 @@ function createMessageHandler(opts?: {
         }
         // Live user message with clientMsgId: update optimistic, don't append duplicate
         if (msg.type === 'user' && !msg.replay && msg.clientMsgId && prev.some((m) => m.clientMsgId === msg.clientMsgId)) {
-          return updateByClientMsgId(prev, msg.clientMsgId, msg.index)
+          const existing = prev.find(m => m.clientMsgId === msg.clientMsgId)
+          if (existing && (msg.index == null || msg.index >= (existing.index ?? 0))) {
+            return updateByClientMsgId(prev, msg.clientMsgId, msg.index)
+          }
+          return prev.map(m => m.clientMsgId === msg.clientMsgId ? { ...m, sendState: 'sent' } : m)
         }
         // clientMsgId dedup for replay messages with mismatched index
         if (msg.clientMsgId && prev.some((m) => m.clientMsgId === msg.clientMsgId)) {
@@ -92,7 +96,11 @@ function createMessageHandler(opts?: {
       }
       // Live user message with clientMsgId: update optimistic, don't append duplicate
       if (msg.type === 'user' && !msg.replay && msg.clientMsgId && prev.some((m) => m.clientMsgId === msg.clientMsgId)) {
-        return updateByClientMsgId(prev, msg.clientMsgId, msg.index)
+        const existing = prev.find(m => m.clientMsgId === msg.clientMsgId)
+        if (existing && (msg.index == null || msg.index >= (existing.index ?? 0))) {
+          return updateByClientMsgId(prev, msg.clientMsgId, msg.index)
+        }
+        return prev.map(m => m.clientMsgId === msg.clientMsgId ? { ...m, sendState: 'sent' } : m)
       }
       // Live dedup for user messages without clientMsgId
       if (msg.type === 'user' && !msg.replay) {

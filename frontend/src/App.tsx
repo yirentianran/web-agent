@@ -1046,10 +1046,17 @@ function MainApp() {
               msg.clientMsgId &&
               prev.some((m) => m.clientMsgId === msg.clientMsgId)
             ) {
-              // Update the optimistic insert with the backend's real index
-              // and confirm delivery. Skipping would leave stale indices in
-              // maxMsgIndexRef, causing misaligned last_index on next send.
-              next = updateByClientMsgId(prev, msg.clientMsgId, msg.index);
+              // Update the optimistic insert with the backend's real index.
+              // But don't downgrade — backend echo may have a lower index
+              // due to index/seq mismatch from synthetic messages.
+              const existing2 = prev.find((m) => m.clientMsgId === msg.clientMsgId);
+              if (existing2 && (msg.index == null || msg.index >= (existing2.index ?? 0))) {
+                next = updateByClientMsgId(prev, msg.clientMsgId, msg.index);
+              } else {
+                next = prev.map((m) =>
+                  m.clientMsgId === msg.clientMsgId ? { ...m, sendState: "sent" as const } : m,
+                );
+              }
               dedupResult = "update:firstTurn-user-clientMsgIdDup";
             } else if (
               prev.some(
@@ -1085,7 +1092,16 @@ function MainApp() {
             msg.clientMsgId &&
             prev.some((m) => m.clientMsgId === msg.clientMsgId)
           ) {
-            next = updateByClientMsgId(prev, msg.clientMsgId, msg.index);
+            // Don't downgrade the optimistic index — backend echo
+            // may have a lower seq due to index/seq mismatch.
+            const existing2 = prev.find((m) => m.clientMsgId === msg.clientMsgId);
+            if (existing2 && (msg.index == null || msg.index >= (existing2.index ?? 0))) {
+              next = updateByClientMsgId(prev, msg.clientMsgId, msg.index);
+            } else {
+              next = prev.map((m) =>
+                m.clientMsgId === msg.clientMsgId ? { ...m, sendState: "sent" as const } : m,
+              );
+            }
             dedupResult = "update:user-clientMsgIdDup";
           } else if (
             !msg.clientMsgId &&
