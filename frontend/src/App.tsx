@@ -1503,10 +1503,6 @@ function MainApp() {
         // Recalculate true max from prev — maxMsgIndexRef can be stale.
         const trueMaxIdx = computeMaxIndex(prev);
         const adjustedIndex = Math.max(optimisticMsg.index ?? 0, trueMaxIdx + 1);
-        logger.debug(
-          "[handleSend] lastBackendIndex=%d trueMaxIdx=%d optIndex=%d adjusted=%d prevLen=%d",
-          lastBackendIndex, trueMaxIdx, optimisticMsg.index, adjustedIndex, prev.length,
-        );
         const finalMsg = adjustedIndex !== optimisticMsg.index
           ? { ...optimisticMsg, index: adjustedIndex }
           : optimisticMsg;
