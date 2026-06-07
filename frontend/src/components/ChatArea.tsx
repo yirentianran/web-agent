@@ -149,21 +149,25 @@ export default function ChatArea({
       return;
     }
 
-    // Detect transition TO running — always record a fresh start time.
-    // The saved start time in sessionStartTimesRef is only for the
-    // session-changed branch above (switching back to a running session).
-    // This branch fires when the SAME session transitions from non-running
-    // to running, which is always a new user turn — must reset the timer.
+    // Detect transition TO running.
+    // If a saved start time exists in localStorage, the session was already
+    // running before the page refresh — restore the saved timer instead of
+    // resetting to 0. Otherwise this is a new user turn — record fresh time.
     if (
       sessionState === "running" &&
       prevSessionStateRef.current !== "running"
     ) {
-      const now = Date.now();
-      if (sessionId) {
-        sessionStartTimesRef.current.set(sessionId, now);
-        saveStartTimes(sessionStartTimesRef.current);
+      const savedStart = sessionId ? sessionStartTimesRef.current.get(sessionId) : undefined;
+      if (savedStart !== undefined) {
+        setAgentStartTime(savedStart);
+      } else {
+        const now = Date.now();
+        if (sessionId) {
+          sessionStartTimesRef.current.set(sessionId, now);
+          saveStartTimes(sessionStartTimesRef.current);
+        }
+        setAgentStartTime(now);
       }
-      setAgentStartTime(now);
     }
     // Transition AWAY from running — clear start time for this session
     // (new runs will get a fresh timestamp)
@@ -265,8 +269,10 @@ export default function ChatArea({
   }, [messages]);
 
   // Sort messages by index to ensure chronological order (newest at bottom)
+  // Use ?? -1 to handle undefined indices safely — prevents NaN comparisons
+  // that destabilize JavaScript's sort algorithm.
   const sortedMessages = useMemo(
-    () => [...messages].sort((a, b) => a.index - b.index),
+    () => [...messages].sort((a, b) => (a.index ?? -1) - (b.index ?? -1)),
     [messages],
   );
 

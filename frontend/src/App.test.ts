@@ -16,16 +16,32 @@ function createMessageHandler(opts?: {
 }) {
   const { onSessionStateChange } = opts || {}
   let messages: Message[] = []
+  let maxMsgIndexRef = 0  // Track highest index (mirrors App.tsx)
   let optimisticMsgRef: Message | null = null
   let clearThresholdRef = -1
   let replayStartedRef = false
   let activeSessionRef: { current: string | null } = { current: null }
 
+  // Recalculate maxMsgIndex from messages (mirrors App.tsx useEffect)
+  function recalcMaxIndex() {
+    let maxIdx = 0
+    for (const m of messages) {
+      if (m.index != null && m.index > maxIdx) maxIdx = m.index
+    }
+    maxMsgIndexRef = maxIdx
+  }
+
   function handleIncomingMessage(msg: Message) {
     setMessages((prev) => {
       const isInvisibleMessage =
         msg.type === 'heartbeat' ||
+        msg.type === 'stream_event' ||
         (msg.type === 'system' && msg.subtype === 'session_state_changed')
+
+      // Invisible messages: don't append to the messages array
+      if (isInvisibleMessage) {
+        return prev
+      }
 
       const isFirstTurnMessage =
         !replayStartedRef &&
@@ -34,10 +50,25 @@ function createMessageHandler(opts?: {
 
       if (isFirstTurnMessage) {
         replayStartedRef = true
-        // Index-based dedup only — content dedup was causing legitimate
-        // user messages to be dropped during recovery.
+        // Index-based dedup
         if (prev.some((m) => m.index === msg.index)) {
           return prev
+        }
+        // Live user message with clientMsgId: update optimistic, don't append duplicate
+        if (msg.type === 'user' && !msg.replay && msg.clientMsgId && prev.some((m) => m.clientMsgId === msg.clientMsgId)) {
+          return prev.map((m) =>
+            m.clientMsgId === msg.clientMsgId
+              ? { ...m, index: msg.index ?? m.index, sendState: 'sent' as const }
+              : m,
+          )
+        }
+        // clientMsgId dedup for replay messages with mismatched index
+        if (msg.clientMsgId && prev.some((m) => m.clientMsgId === msg.clientMsgId)) {
+          return prev.map((m) =>
+            m.clientMsgId === msg.clientMsgId
+              ? { ...m, index: msg.index ?? m.index, sendState: 'sent' as const }
+              : m,
+          )
         }
         return [...prev, msg]
       }
@@ -46,9 +77,24 @@ function createMessageHandler(opts?: {
       if (msg.replay && prev.some((m) => m.index === msg.index)) {
         return prev
       }
-      // Live dedup for user messages: the frontend optimistically adds
-      // the user message; the server sends back the confirmed copy with
-      // a different index. Skip the server copy if content matches.
+      // Replay clientMsgId dedup: update index when optimistic message has
+      // a synthetic index that differs from the backend's real index.
+      if (msg.replay && msg.clientMsgId && prev.some((m) => m.clientMsgId === msg.clientMsgId)) {
+        return prev.map((m) =>
+          m.clientMsgId === msg.clientMsgId
+            ? { ...m, index: msg.index ?? m.index, sendState: 'sent' as const }
+            : m,
+        )
+      }
+      // Live user message with clientMsgId: update optimistic, don't append duplicate
+      if (msg.type === 'user' && !msg.replay && msg.clientMsgId && prev.some((m) => m.clientMsgId === msg.clientMsgId)) {
+        return prev.map((m) =>
+          m.clientMsgId === msg.clientMsgId
+            ? { ...m, index: msg.index ?? m.index, sendState: 'sent' as const }
+            : m,
+        )
+      }
+      // Live dedup for user messages without clientMsgId
       if (msg.type === 'user' && !msg.replay) {
         if (prev.some((m) => m.type === 'user' && m.content === msg.content)) {
           return prev
@@ -60,6 +106,14 @@ function createMessageHandler(opts?: {
         if (msg.index != null && prev.some((m) => m.index === msg.index)) {
           return prev
         }
+      }
+      // Fallthrough clientMsgId dedup
+      if (msg.clientMsgId && prev.some((m) => m.clientMsgId === msg.clientMsgId)) {
+        return prev.map((m) =>
+          m.clientMsgId === msg.clientMsgId
+            ? { ...m, index: msg.index ?? m.index, sendState: 'sent' as const }
+            : m,
+        )
       }
       return [...prev, msg]
     })
@@ -76,19 +130,40 @@ function createMessageHandler(opts?: {
 
   function setMessages(updater: (prev: Message[]) => Message[]) {
     messages = updater(messages)
+    recalcMaxIndex()
   }
 
-  function handleSend(message: string) {
-    const lastBackendIndex = messages.length
-    clearThresholdRef = lastBackendIndex
-    replayStartedRef = false
+  function handleSend(message: string, clientMsgId?: string) {
+    const lastBackendIndex = maxMsgIndexRef
+    const msgId = clientMsgId || `uuid-${Math.random().toString(36).slice(2)}`
+    const provisionalIndex = lastBackendIndex + 1
     const optimisticMsg: Message = {
       type: 'user',
       content: message,
-      index: lastBackendIndex - 1,
+      index: provisionalIndex,
+      clientMsgId: msgId,
+      sendState: 'sending',
     }
     optimisticMsgRef = optimisticMsg
-    setMessages((prev) => [...prev, optimisticMsg])
+    setMessages((prev) => {
+      // Recalculate true max index from prev — ensures optimistic
+      // message sorts after ALL existing messages even if the ref
+      // was stale (e.g., messages arrived between ref update and
+      // this callback).
+      let trueMaxIdx = 0
+      for (const m of prev) {
+        if (m.index != null && m.index > trueMaxIdx) trueMaxIdx = m.index
+      }
+      const adjustedIndex = Math.max(provisionalIndex, trueMaxIdx + 1)
+      const finalMsg = adjustedIndex !== provisionalIndex
+        ? { ...optimisticMsg, index: adjustedIndex }
+        : optimisticMsg
+      // Correct refs to match the true max from actual state
+      clearThresholdRef = trueMaxIdx
+      maxMsgIndexRef = adjustedIndex
+      replayStartedRef = false
+      return [...prev, finalMsg]
+    })
   }
 
   function simulateReplay(historyMessages: Message[]) {
@@ -106,10 +181,13 @@ function createMessageHandler(opts?: {
     getOptimistic: () => optimisticMsgRef,
     getClearThreshold: () => clearThresholdRef,
     getReplayStarted: () => replayStartedRef,
+    getMaxMsgIndex: () => maxMsgIndexRef,
     handleIncomingMessage,
     handleSend,
     simulateReplay,
     simulateLiveMessage,
+    setMessagesDirect: (msgs: Message[]) => { messages = msgs; recalcMaxIndex() },
+    forceMaxMsgIndexRef: (val: number) => { maxMsgIndexRef = val },
   }
 }
 
@@ -131,21 +209,35 @@ describe('message handling after recovery', () => {
       handler.simulateReplay(history)
 
       expect(handler.getMessages()).toHaveLength(3)
+      expect(handler.getMaxMsgIndex()).toBe(2)
 
-      // User sends new message
-      handler.handleSend('new question')
+      // User sends new message — optimistic gets index = maxMsgIndex + 1 = 3
+      const clientMsgId = 'uuid-second-msg'
+      handler.handleSend('new question', clientMsgId)
       expect(handler.getMessages()).toHaveLength(4) // 3 history + optimistic
+      expect(handler.getMessages()[3].index).toBe(3)
 
-      // Agent response arrives (first live message of new turn)
+      // Backend echoes user message with real seq (same index as optimistic = 3)
+      // Index dedup skips the echo, but optimistic already has correct index
+      handler.simulateLiveMessage({
+        type: 'user',
+        content: 'new question',
+        index: 3,
+        clientMsgId,
+      })
+      // No duplicate — the echo was deduped (same index as optimistic)
+      expect(handler.getMessages()).toHaveLength(4)
+      // The second user message has the correct index
+      expect(handler.getMessages().find(m => m.clientMsgId === clientMsgId)?.index).toBe(3)
+
+      // Agent response arrives (seq=4, after user echo seq=3)
       const agentResponse: Message = {
         type: 'assistant',
         content: 'Here is the answer...',
-        index: 3,
+        index: 4,
       }
       handler.simulateLiveMessage(agentResponse)
 
-      // BUG: Before fix, this would be 2 (only optimistic + agent response)
-      // FIX: Should be 4 (3 history + optimistic + agent)
       expect(handler.getMessages()).toHaveLength(5)
       expect(handler.getMessages()[0].content).toBe('hello')
       expect(handler.getMessages()[1].content).toBe('Hi there!')
@@ -163,9 +255,9 @@ describe('message handling after recovery', () => {
 
       handler.handleSend('second turn')
 
-      // Multiple agent messages arrive
-      handler.simulateLiveMessage({ type: 'assistant', content: 'thinking...', index: 2 })
-      handler.simulateLiveMessage({ type: 'assistant', content: 'final answer', index: 3 })
+      // Multiple agent messages arrive with indices higher than optimistic (2+1=3)
+      handler.simulateLiveMessage({ type: 'assistant', content: 'thinking...', index: 4 })
+      handler.simulateLiveMessage({ type: 'assistant', content: 'final answer', index: 5 })
 
       expect(handler.getMessages()).toHaveLength(5) // 2 history + optimistic + 2 agent
       expect(handler.getMessages().map((m) => m.content)).toEqual([
@@ -213,6 +305,40 @@ describe('message handling after recovery', () => {
       // (optimistic stays since page hasn't refreshed)
       expect(handler.getMessages()).toHaveLength(2)
     })
+
+    it('dedups replay user message by clientMsgId when index differs (page refresh bug)', () => {
+      // BUG scenario: user sends message in new session, then refreshes.
+      // localStorage recovery creates optimistic message with syntheticIndex = 1
+      // (loadLastKnownIndex returns 0 → syntheticIndex = 0+1 = 1).
+      // Backend real message has index = 0 (seq=0).
+      // Without clientMsgId dedup, the replay would append a duplicate.
+      const clientMsgId = 'uuid-abc123'
+
+      // Simulate localStorage recovery: optimistic message with synthetic index
+      const optimisticMsg: Message = {
+        type: 'user',
+        content: 'hello',
+        index: 1, // syntheticIndex (loadLastKnownIndex+1)
+        clientMsgId,
+        sendState: 'sending',
+      }
+      handler = createMessageHandler()
+      handler.simulateLiveMessage(optimisticMsg)
+      expect(handler.getMessages()).toHaveLength(1)
+      expect(handler.getMessages()[0].index).toBe(1)
+
+      // WS recover replay sends same user message with backend's real index
+      handler.simulateReplay([
+        { type: 'user', content: 'hello', index: 0, clientMsgId },
+      ])
+
+      // Should NOT append duplicate — clientMsgId match updates existing message
+      expect(handler.getMessages()).toHaveLength(1)
+      expect(handler.getMessages()[0].content).toBe('hello')
+      expect(handler.getMessages()[0].clientMsgId).toBe('uuid-abc123')
+      // Index should be corrected to backend's real value
+      expect(handler.getMessages()[0].index).toBe(0)
+    })
   })
 
   describe('normal turn without clearing', () => {
@@ -222,12 +348,13 @@ describe('message handling after recovery', () => {
       handler.simulateLiveMessage({ type: 'assistant', content: 'old response', index: 1 })
 
       expect(handler.getMessages()).toHaveLength(2)
+      expect(handler.getMaxMsgIndex()).toBe(1)
 
-      // User sends new message
+      // User sends new message — optimistic gets index = maxMsgIndex + 1 = 2
       handler.handleSend('new msg')
 
-      // Agent response arrives
-      handler.simulateLiveMessage({ type: 'assistant', content: 'new response', index: 2 })
+      // Agent response arrives (seq higher than optimistic, e.g. 3)
+      handler.simulateLiveMessage({ type: 'assistant', content: 'new response', index: 3 })
 
       // Old messages are preserved, new messages appended
       expect(handler.getMessages()).toHaveLength(4)
@@ -237,6 +364,49 @@ describe('message handling after recovery', () => {
         'new msg',
         'new response',
       ])
+    })
+
+    it('second user message sorts after all first-turn messages (continuation bug)', () => {
+      // Simulate a completed first turn with multiple messages
+      // (including invisible session_state_changed that occupies a seq)
+      handler.simulateLiveMessage({ type: 'user', content: 'hello', index: 0 })
+      handler.simulateLiveMessage({ type: 'assistant', content: 'Hi there', index: 1 })
+      handler.simulateLiveMessage({ type: 'tool_use', content: 'ls', index: 2, name: 'Bash' })
+      handler.simulateLiveMessage({ type: 'tool_result', content: 'file.txt', index: 3 })
+      handler.simulateLiveMessage({ type: 'assistant', content: 'The file exists', index: 4 })
+      handler.simulateLiveMessage({ type: 'result', content: '', index: 5 })
+
+      expect(handler.getMessages()).toHaveLength(6)
+      expect(handler.getMaxMsgIndex()).toBe(5)
+
+      // User sends second message — must get a higher index than all
+      // first-turn messages so it sorts at the END, not at position 2
+      const clientMsgId = 'uuid-second-turn'
+      handler.handleSend('follow up question', clientMsgId)
+
+      const secondMsg = handler.getMessages().find(m => m.clientMsgId === clientMsgId)
+      expect(secondMsg).toBeDefined()
+      expect(secondMsg!.index).toBeGreaterThan(5) // Must be > max first-turn index
+
+      // Backend echoes the second user message (seq = 6, same as optimistic)
+      handler.simulateLiveMessage({
+        type: 'user',
+        content: 'follow up question',
+        index: 6,
+        clientMsgId,
+      })
+
+      // After dedup (index collision → skipped, but optimistic is already correct)
+      const updatedMsg = handler.getMessages().find(m => m.clientMsgId === clientMsgId)
+      expect(updatedMsg!.index).toBe(6) // Correct index, same as backend's seq
+
+      // Verify second user message sorts AFTER all first-turn messages
+      // (not at position 2 after the first user message — the original bug)
+      const sorted = [...handler.getMessages()].sort((a, b) => (a.index ?? -1) - (b.index ?? -1))
+      const secondMsgPosition = sorted.findIndex(m => m.clientMsgId === clientMsgId)
+      expect(secondMsgPosition).toBeGreaterThan(4) // After all first-turn messages
+      // Second user message has the highest index → sorts at the end
+      expect(sorted[sorted.length - 1].index).toBe(6)
     })
   })
 
@@ -255,10 +425,10 @@ describe('message handling after recovery', () => {
         index: 2,
       })
 
-      expect(handler.getMessages()).toHaveLength(3) // 2 history + heartbeat
+      expect(handler.getMessages()).toHaveLength(2) // 2 history, heartbeat is invisible
     })
 
-    it('does not clear messages for session_state_changed during recovery', () => {
+    it('does not add session_state_changed to messages array (invisible)', () => {
       const history: Message[] = [
         { type: 'user', content: 'hello', index: 0 },
       ]
@@ -272,29 +442,69 @@ describe('message handling after recovery', () => {
         state: 'running',
       })
 
+      // session_state_changed is invisible — NOT added to messages array
+      expect(handler.getMessages()).toHaveLength(1)
+    })
+
+    it('does not add stream_event messages to the messages array', () => {
+      const history: Message[] = [
+        { type: 'user', content: 'hello', index: 0 },
+      ]
+      handler.simulateReplay(history)
+      expect(handler.getMessages()).toHaveLength(1)
+
+      // stream_event arrives (computed index that could collide with real seq)
+      handler.simulateLiveMessage({
+        type: 'stream_event',
+        content: '',
+        index: 1, // computed index (last_seen + i)
+        event: { type: 'content_block_delta', text: 'thinking...' },
+      })
+
+      // stream_event should be invisible — NOT added to messages array
+      expect(handler.getMessages()).toHaveLength(1)
+
+      // Real assistant message with seq=1 arrives — should NOT be blocked
+      // by a stream_event that had computed index=1
+      handler.simulateLiveMessage({
+        type: 'assistant',
+        content: 'The answer is...',
+        index: 1,
+      })
       expect(handler.getMessages()).toHaveLength(2)
+      expect(handler.getMessages()[1].type).toBe('assistant')
+      expect(handler.getMessages()[1].content).toBe('The answer is...')
     })
   })
 
   describe('live user message dedup', () => {
-    it('adds server echo of user message when index differs (normal behavior)', () => {
-      // In the real app, the backend does NOT echo back user messages during
-      // a normal chat turn — only agent/tool messages stream live.
-      // If a user message did arrive with a different index than the optimistic,
-      // it would be added (no content dedup in isFirstTurnMessage branch).
-      handler.handleSend('test message')
-      expect(handler.getMessages()).toHaveLength(1)
-      expect(handler.getMessages()[0].index).toBe(-1) // optimistic index
+    it('dedups server echo of user message by clientMsgId (continuation turn)', () => {
+      // Simulate a completed first turn
+      handler.simulateReplay([
+        { type: 'user', content: 'hello', index: 0 },
+        { type: 'assistant', content: 'Hi!', index: 1 },
+      ])
+      expect(handler.getMaxMsgIndex()).toBe(1)
 
-      // If server somehow echoes the user message with a real index
+      // User sends second message — optimistic gets index = maxMsgIndex + 1 = 2
+      const clientMsgId = 'uuid-second-msg'
+      handler.handleSend('follow up', clientMsgId)
+      expect(handler.getMessages()).toHaveLength(3)
+      expect(handler.getMessages()[2].index).toBe(2) // optimistic index
+
+      // Backend echoes user message with real seq (also 2 — same index collision)
+      // The dedup skips by index, but the optimistic message is already correct
       handler.simulateLiveMessage({
         type: 'user',
-        content: 'test message',
-        index: 0,
+        content: 'follow up',
+        index: 2,
+        clientMsgId,
       })
 
-      // Added because index is different (0 vs -1)
-      expect(handler.getMessages()).toHaveLength(2)
+      // No duplicate — the echo was deduped (same index as optimistic)
+      expect(handler.getMessages()).toHaveLength(3)
+      // The second user message has the correct index (2) and sorts at the end
+      expect(handler.getMessages().find(m => m.clientMsgId === clientMsgId)?.index).toBe(2)
     })
 
     it('adds user message when content differs from optimistic', () => {
@@ -449,7 +659,8 @@ describe('message handling after recovery', () => {
       handler = createMessageHandler()
       handler.simulateReplay(backendHistory)
 
-      expect(handler.getMessages()).toHaveLength(2)
+      // session_state_changed is invisible — only user message in array
+      expect(handler.getMessages()).toHaveLength(1)
       expect(handler.getMessages()[0].type).toBe('user')
       expect(handler.getMessages()[0].content).toBe('write a poem')
     })
@@ -489,7 +700,8 @@ describe('message handling after recovery', () => {
         index: 2,
       })
 
-      expect(handler.getMessages()).toHaveLength(3)
+      // session_state_changed is invisible, so only user + assistant in messages array
+      expect(handler.getMessages()).toHaveLength(2)
       expect(stateChanges.some(c => c.state === 'running')).toBe(true)
     })
 
@@ -2371,5 +2583,80 @@ describe('agent_alive flag in heartbeat', () => {
     })
 
     expect(handler.getRecoverCalled()).toBe(false)
+  })
+})
+
+describe('second user message sorts after all first-turn messages', () => {
+  it('places optimistic message after all existing messages even when maxMsgIndexRef is stale', () => {
+    const handler = createMessageHandler()
+
+    // First turn: simulate messages arriving from the backend
+    handler.simulateLiveMessage({ type: 'user', content: 'first question', index: 0, session_id: 'sess1' })
+    handler.simulateLiveMessage({ type: 'assistant', content: 'thinking...', index: 2, session_id: 'sess1' })
+    handler.simulateLiveMessage({ type: 'tool_use', name: 'Bash', content: 'ls', index: 3, session_id: 'sess1' })
+    handler.simulateLiveMessage({ type: 'tool_result', content: 'file1.txt', index: 4, session_id: 'sess1' })
+    handler.simulateLiveMessage({ type: 'assistant', content: 'Here is the answer', index: 5, session_id: 'sess1' })
+    handler.simulateLiveMessage({ type: 'result', content: 'done', index: 7, session_id: 'sess1' })
+
+    // Verify maxMsgIndexRef is correct
+    expect(handler.getMaxMsgIndex()).toBe(7)
+
+    // Simulate stale maxMsgIndexRef: manually set to 0 (this could happen
+    // if maxMsgIndexRef was reset but messages haven't been re-processed yet)
+    // The fix inside handleSend recalculates from prev, so even with
+    // a stale ref, the optimistic index should be adjusted.
+    const staleHandler = createMessageHandler()
+
+    // Load messages directly (bypassing handleIncomingMessage)
+    const msgs: Message[] = [
+      { type: 'user', content: 'first question', index: 0, session_id: 'sess1' },
+      { type: 'assistant', content: 'thinking...', index: 2, session_id: 'sess1' },
+      { type: 'tool_use', name: 'Bash', content: 'ls', index: 3, session_id: 'sess1' },
+      { type: 'tool_result', content: 'file1.txt', index: 4, session_id: 'sess1' },
+      { type: 'assistant', content: 'Here is the answer', index: 5, session_id: 'sess1' },
+      { type: 'result', content: 'done', index: 7, session_id: 'sess1' },
+    ]
+    // Force messages into the handler, but leave maxMsgIndexRef stale (0)
+    staleHandler.setMessagesDirect(msgs)
+    // Manually force stale ref value (simulating the bug scenario)
+    staleHandler.forceMaxMsgIndexRef(0)
+
+    // Send second message — with stale ref, provisional index would be 1,
+    // but the fix adjusts it to 8 (trueMax+1 from prev)
+    staleHandler.handleSend('second question', 'uuid-second-msg')
+
+    const resultMsgs = staleHandler.getMessages()
+    // Second user message should have index > 7 (the max from first turn)
+    const secondUserMsg = resultMsgs.find(m => m.content === 'second question')
+    expect(secondUserMsg).toBeDefined()
+    expect(secondUserMsg!.index).toBeGreaterThan(7)
+
+    // Verify sort order: second user message appears AFTER all first-turn messages
+    const sorted = [...resultMsgs].sort((a, b) => (a.index ?? -1) - (b.index ?? -1))
+    const secondUserPos = sorted.findIndex(m => m.content === 'second question')
+    // It should be at the end or near the end
+    expect(secondUserPos).toBe(sorted.length - 1)
+  })
+
+  it('adjusts optimistic index when messages arrive between handleSend and setMessages callback', () => {
+    const handler = createMessageHandler()
+
+    // First turn messages
+    handler.simulateLiveMessage({ type: 'user', content: 'hello', index: 0, session_id: 'sess1' })
+    handler.simulateLiveMessage({ type: 'assistant', content: 'reply', index: 5, session_id: 'sess1' })
+
+    // MaxMsgIndexRef should be 5
+    expect(handler.getMaxMsgIndex()).toBe(5)
+
+    // Now simulate a scenario where maxMsgIndexRef is stale (1 instead of 5)
+    // and send a second message
+    handler.forceMaxMsgIndexRef(1)
+    handler.handleSend('follow-up', 'uuid-followup')
+
+    // The optimistic message should have been adjusted to index=6 (5+1),
+    // not left at index=2 (stale 1+1)
+    const followup = handler.getMessages().find(m => m.content === 'follow-up')
+    expect(followup!.index).toBeGreaterThan(5)
+    expect(followup!.index).toBe(6)
   })
 })
