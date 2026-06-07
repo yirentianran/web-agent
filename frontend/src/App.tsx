@@ -621,7 +621,7 @@ function MainApp() {
           // the ref will point to a different session
           if (urlSessionIdRef.current !== urlSessionId) return;
           const msgs = (data as any[]).map((m: any) => {
-            const normalized = { ...m, index: m.index ?? -1, session_id: urlSessionId };
+            const normalized = { ...m, index: m.index ?? Number.MAX_SAFE_INTEGER, session_id: urlSessionId };
             // Backend sends client_msg_id; frontend dedup needs clientMsgId
             if (m.client_msg_id && !normalized.clientMsgId) {
               normalized.clientMsgId = m.client_msg_id;
@@ -658,18 +658,34 @@ function MainApp() {
               logger.debug("[setMessages] no same-session msgs, replacing with %d new msgs", msgs.length);
               return msgs;
             }
-            const prevIndices = new Set(sameSession.map((m) => m.index));
+            // Indices from confirmed messages only — optimistic messages
+            // have synthetic indices that can collide with real seq values.
+            const confirmedIndices = new Set(
+              sameSession.filter((m) => m.sendState !== "sending").map((m) => m.index),
+            );
             const prevClientMsgIds = new Set(
               sameSession.filter((m) => m.clientMsgId).map((m) => m.clientMsgId),
             );
             const newMsgs = msgs.filter(
               (m: Message) =>
-                !prevIndices.has(m.index) &&
+                !confirmedIndices.has(m.index) &&
                 !(m.clientMsgId && prevClientMsgIds.has(m.clientMsgId)),
             );
-            if (newMsgs.length === 0) return sameSession;
-            return [...sameSession, ...newMsgs].sort(
-              (a, b) => (a.index ?? 0) - (b.index ?? 0),
+            // Merge: sameSession may contain an optimistic user message
+            // (sendState="sending") with a stale syntheticIndex. Re-index
+            // it so it sorts after all confirmed messages.
+            const merged = [...sameSession, ...newMsgs];
+            const confirmedMax = computeMaxIndex(
+              merged.filter((m) => m.sendState !== "sending"),
+            );
+            const reindexed = merged.map((m) =>
+              m.sendState === "sending" && m.index <= confirmedMax
+                ? { ...m, index: confirmedMax + 1 }
+                : m,
+            );
+            if (newMsgs.length === 0) return reindexed;
+            return reindexed.sort(
+              (a, b) => (a.index ?? Number.MAX_SAFE_INTEGER) - (b.index ?? Number.MAX_SAFE_INTEGER),
             );
           });
           restLoadedRef.current = true;

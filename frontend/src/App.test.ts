@@ -2649,3 +2649,147 @@ describe('second user message sorts after all first-turn messages', () => {
     expect(followup!.index).toBe(6)
   })
 })
+
+// ── REST /history merge: optimistic message re-indexing ──────────
+
+/**
+ * When switching sessions, REST /history merges with existing messages
+ * (which may contain an optimistic user message with a stale syntheticIndex).
+ * Two bugs were fixed:
+ * 1. Optimistic synthetic indices were included in dedup set, blocking
+ *    real messages from REST /history whose seq happened to match.
+ * 2. Optimistic message with stale index sorted before real messages.
+ *
+ * This test simulates the merge logic from App.tsx's setMessages callback
+ * when REST /history arrives.
+ */
+function computeMaxIndex(msgs: Message[]): number {
+  let max = 0
+  for (const m of msgs) {
+    if (m.index != null && m.index > max) max = m.index
+  }
+  return max
+}
+
+function mergeRestHistory(
+  prev: Message[],
+  msgs: Message[],
+  sessionId: string,
+): Message[] {
+  const sameSession = prev.filter((m) => m.session_id === sessionId)
+  if (sameSession.length === 0) return msgs
+
+  // Indices from confirmed messages only — optimistic messages
+  // have synthetic indices that can collide with real seq values.
+  const confirmedIndices = new Set(
+    sameSession.filter((m) => m.sendState !== "sending").map((m) => m.index),
+  )
+  const prevClientMsgIds = new Set(
+    sameSession.filter((m) => m.clientMsgId).map((m) => m.clientMsgId),
+  )
+  const newMsgs = msgs.filter(
+    (m: Message) =>
+      !confirmedIndices.has(m.index) &&
+      !(m.clientMsgId && prevClientMsgIds.has(m.clientMsgId)),
+  )
+  // Re-index optimistic messages to sort after all confirmed messages
+  const merged = [...sameSession, ...newMsgs]
+  const confirmedMax = computeMaxIndex(
+    merged.filter((m) => m.sendState !== "sending"),
+  )
+  const reindexed = merged.map((m) =>
+    m.sendState === "sending" && m.index <= confirmedMax
+      ? { ...m, index: confirmedMax + 1 }
+      : m,
+  )
+  if (newMsgs.length === 0) return reindexed
+  return reindexed.sort(
+    (a, b) => (a.index ?? Number.MAX_SAFE_INTEGER) - (b.index ?? Number.MAX_SAFE_INTEGER),
+  )
+}
+
+describe('REST /history merge with optimistic message', () => {
+  it('does not block real messages whose seq matches optimistic synthetic index', () => {
+    // Bug scenario: optimistic has syntheticIndex=1 (from localStorage),
+    // REST /history has assistant seq=1 — dedup incorrectly blocks assistant
+    const prev: Message[] = [
+      { type: 'user', content: 'hello', index: 1, clientMsgId: 'uuid-1', sendState: 'sending', session_id: 'sessA' },
+    ]
+
+    const restHistory: Message[] = [
+      { type: 'user', content: 'hello', index: 0, clientMsgId: 'uuid-1', session_id: 'sessA' },
+      { type: 'assistant', content: 'Hi there!', index: 1, session_id: 'sessA' },
+    ]
+
+    const result = mergeRestHistory(prev, restHistory, 'sessA')
+
+    // assistant (seq=1) should NOT be blocked by optimistic (syntheticIndex=1)
+    expect(result.some(m => m.content === 'Hi there!')).toBe(true)
+  })
+
+  it('re-indexes optimistic message to sort after all confirmed messages', () => {
+    // optimistic has index=1, but confirmed messages go up to seq=5
+    const prev: Message[] = [
+      { type: 'user', content: 'follow up', index: 1, clientMsgId: 'uuid-opt', sendState: 'sending', session_id: 'sessA' },
+    ]
+
+    const restHistory: Message[] = [
+      { type: 'user', content: 'hello', index: 0, session_id: 'sessA' },
+      { type: 'assistant', content: 'answer', index: 1, session_id: 'sessA' },
+      { type: 'tool_use', content: 'tool', index: 2, name: 'Bash', session_id: 'sessA' },
+      { type: 'tool_result', content: 'result', index: 3, session_id: 'sessA' },
+      { type: 'assistant', content: 'final', index: 4, session_id: 'sessA' },
+      { type: 'result', content: '', index: 5, session_id: 'sessA' },
+    ]
+
+    const result = mergeRestHistory(prev, restHistory, 'sessA')
+
+    // Optimistic should be re-indexed to 6 (confirmedMax=5 + 1)
+    const optimistic = result.find(m => m.clientMsgId === 'uuid-opt')
+    expect(optimistic!.index).toBe(6)
+
+    // Optimistic sorts at the end, not at position 2
+    const sortedContents = result.map(m => m.content)
+    expect(sortedContents[sortedContents.length - 1]).toBe('follow up')
+  })
+
+  it('clientMsgId dedup works correctly when optimistic matches a real user message', () => {
+    const prev: Message[] = [
+      { type: 'user', content: 'hello', index: 1, clientMsgId: 'uuid-1', sendState: 'sending', session_id: 'sessA' },
+    ]
+
+    const restHistory: Message[] = [
+      { type: 'user', content: 'hello', index: 0, clientMsgId: 'uuid-1', session_id: 'sessA' },
+      { type: 'assistant', content: 'Hi!', index: 1, session_id: 'sessA' },
+    ]
+
+    const result = mergeRestHistory(prev, restHistory, 'sessA')
+
+    // clientMsgId dedup: the REST user message (seq=0) is filtered because
+    // uuid-1 already exists. The optimistic message gets the real user
+    // message from REST (keeping its own row, not creating a duplicate).
+    expect(result.filter(m => m.clientMsgId === 'uuid-1')).toHaveLength(1)
+
+    // The assistant message (seq=1) is NOT blocked by optimistic (index=1)
+    // because dedup now only uses confirmedIndices (excludes sendState=sending)
+    expect(result.some(m => m.content === 'Hi!')).toBe(true)
+  })
+
+  it('works correctly when no optimistic messages exist (pure merge)', () => {
+    const prev: Message[] = [
+      { type: 'user', content: 'hello', index: 0, session_id: 'sessA' },
+    ]
+
+    const restHistory: Message[] = [
+      { type: 'user', content: 'hello', index: 0, session_id: 'sessA' },
+      { type: 'assistant', content: 'Hi!', index: 1, session_id: 'sessA' },
+    ]
+
+    const result = mergeRestHistory(prev, restHistory, 'sessA')
+
+    // User dedup (same index=0), assistant appended
+    expect(result).toHaveLength(2)
+    expect(result[0].content).toBe('hello')
+    expect(result[1].content).toBe('Hi!')
+  })
+})
