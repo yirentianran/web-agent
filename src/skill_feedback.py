@@ -647,9 +647,9 @@ class DBSkillFeedbackManager:
         import os
         from pathlib import Path
 
-        api_key = os.environ.get("ANTHROPIC_API_KEY")
+        api_key = os.environ.get("ANTHROPIC_AUTH_TOKEN") or os.environ.get("ANTHROPIC_API_KEY")
         if not api_key:
-            logger.warning("AUTO_FIX skipped: ANTHROPIC_API_KEY not set")
+            logger.warning("AUTO_FIX skipped: API key not set (ANTHROPIC_AUTH_TOKEN / ANTHROPIC_API_KEY)")
             return None
 
         # Read current skill content

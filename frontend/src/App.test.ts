@@ -22,13 +22,29 @@ function createMessageHandler(opts?: {
   let replayStartedRef = false
   let activeSessionRef: { current: string | null } = { current: null }
 
-  // Recalculate maxMsgIndex from messages (mirrors App.tsx useEffect)
-  function recalcMaxIndex() {
-    let maxIdx = 0
-    for (const m of messages) {
-      if (m.index != null && m.index > maxIdx) maxIdx = m.index
+  // ── Shared helpers (mirrors App.tsx) ────────────────────────────
+  function computeMaxIndex(msgs: Message[]): number {
+    let max = 0
+    for (const m of msgs) {
+      if (m.index != null && m.index > max) max = m.index
     }
-    maxMsgIndexRef = maxIdx
+    return max
+  }
+
+  function updateByClientMsgId(
+    prev: Message[],
+    clientMsgId: string,
+    newIndex: number | undefined,
+  ): Message[] {
+    return prev.map((m) =>
+      m.clientMsgId === clientMsgId
+        ? { ...m, index: newIndex ?? m.index, sendState: 'sent' as const }
+        : m,
+    )
+  }
+
+  function recalcMaxIndex() {
+    maxMsgIndexRef = computeMaxIndex(messages)
   }
 
   function handleIncomingMessage(msg: Message) {
@@ -56,19 +72,11 @@ function createMessageHandler(opts?: {
         }
         // Live user message with clientMsgId: update optimistic, don't append duplicate
         if (msg.type === 'user' && !msg.replay && msg.clientMsgId && prev.some((m) => m.clientMsgId === msg.clientMsgId)) {
-          return prev.map((m) =>
-            m.clientMsgId === msg.clientMsgId
-              ? { ...m, index: msg.index ?? m.index, sendState: 'sent' as const }
-              : m,
-          )
+          return updateByClientMsgId(prev, msg.clientMsgId, msg.index)
         }
         // clientMsgId dedup for replay messages with mismatched index
         if (msg.clientMsgId && prev.some((m) => m.clientMsgId === msg.clientMsgId)) {
-          return prev.map((m) =>
-            m.clientMsgId === msg.clientMsgId
-              ? { ...m, index: msg.index ?? m.index, sendState: 'sent' as const }
-              : m,
-          )
+          return updateByClientMsgId(prev, msg.clientMsgId, msg.index)
         }
         return [...prev, msg]
       }
@@ -80,19 +88,11 @@ function createMessageHandler(opts?: {
       // Replay clientMsgId dedup: update index when optimistic message has
       // a synthetic index that differs from the backend's real index.
       if (msg.replay && msg.clientMsgId && prev.some((m) => m.clientMsgId === msg.clientMsgId)) {
-        return prev.map((m) =>
-          m.clientMsgId === msg.clientMsgId
-            ? { ...m, index: msg.index ?? m.index, sendState: 'sent' as const }
-            : m,
-        )
+        return updateByClientMsgId(prev, msg.clientMsgId, msg.index)
       }
       // Live user message with clientMsgId: update optimistic, don't append duplicate
       if (msg.type === 'user' && !msg.replay && msg.clientMsgId && prev.some((m) => m.clientMsgId === msg.clientMsgId)) {
-        return prev.map((m) =>
-          m.clientMsgId === msg.clientMsgId
-            ? { ...m, index: msg.index ?? m.index, sendState: 'sent' as const }
-            : m,
-        )
+        return updateByClientMsgId(prev, msg.clientMsgId, msg.index)
       }
       // Live dedup for user messages without clientMsgId
       if (msg.type === 'user' && !msg.replay) {
@@ -109,11 +109,7 @@ function createMessageHandler(opts?: {
       }
       // Fallthrough clientMsgId dedup
       if (msg.clientMsgId && prev.some((m) => m.clientMsgId === msg.clientMsgId)) {
-        return prev.map((m) =>
-          m.clientMsgId === msg.clientMsgId
-            ? { ...m, index: msg.index ?? m.index, sendState: 'sent' as const }
-            : m,
-        )
+        return updateByClientMsgId(prev, msg.clientMsgId, msg.index)
       }
       return [...prev, msg]
     })
@@ -146,14 +142,7 @@ function createMessageHandler(opts?: {
     }
     optimisticMsgRef = optimisticMsg
     setMessages((prev) => {
-      // Recalculate true max index from prev — ensures optimistic
-      // message sorts after ALL existing messages even if the ref
-      // was stale (e.g., messages arrived between ref update and
-      // this callback).
-      let trueMaxIdx = 0
-      for (const m of prev) {
-        if (m.index != null && m.index > trueMaxIdx) trueMaxIdx = m.index
-      }
+      const trueMaxIdx = computeMaxIndex(prev)
       const adjustedIndex = Math.max(provisionalIndex, trueMaxIdx + 1)
       const finalMsg = adjustedIndex !== provisionalIndex
         ? { ...optimisticMsg, index: adjustedIndex }
