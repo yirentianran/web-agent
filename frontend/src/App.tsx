@@ -422,6 +422,20 @@ function MainApp() {
         ? { ...m, index: newIndex ?? m.index, sendState: "sent" as const }
         : m,
     );
+
+  // Update an optimistic user message when the backend echo arrives.
+  // If the echo has a lower index than the optimistic message (can happen
+  // when subscribe-loop indices don't match DB seq), only confirm send
+  // state without downgrading the index.
+  const applyEchoUpdate = (prev: Message[], msg: Message): Message[] =>
+    prev.map((m) => {
+      if (m.clientMsgId !== msg.clientMsgId) return m;
+      if (msg.index != null && msg.index < (m.index ?? 0)) {
+        return { ...m, sendState: "sent" as const };
+      }
+      return { ...m, index: msg.index ?? m.index, sendState: "sent" as const };
+    });
+
   const [userId, setUserId] = useState<string>(() => {
     return localStorage.getItem("userId") || "";
   });
@@ -1049,17 +1063,7 @@ function MainApp() {
               msg.clientMsgId &&
               prev.some((m) => m.clientMsgId === msg.clientMsgId)
             ) {
-              // Update the optimistic insert with the backend's real index.
-              // But don't downgrade — backend echo may have a lower index
-              // due to index/seq mismatch from synthetic messages.
-              const existing2 = prev.find((m) => m.clientMsgId === msg.clientMsgId);
-              if (existing2 && (msg.index == null || msg.index >= (existing2.index ?? 0))) {
-                next = updateByClientMsgId(prev, msg.clientMsgId, msg.index);
-              } else {
-                next = prev.map((m) =>
-                  m.clientMsgId === msg.clientMsgId ? { ...m, sendState: "sent" as const } : m,
-                );
-              }
+              next = applyEchoUpdate(prev, msg);
               dedupResult = "update:firstTurn-user-clientMsgIdDup";
             } else if (
               prev.some(
@@ -1095,16 +1099,7 @@ function MainApp() {
             msg.clientMsgId &&
             prev.some((m) => m.clientMsgId === msg.clientMsgId)
           ) {
-            // Don't downgrade the optimistic index — backend echo
-            // may have a lower seq due to index/seq mismatch.
-            const existing2 = prev.find((m) => m.clientMsgId === msg.clientMsgId);
-            if (existing2 && (msg.index == null || msg.index >= (existing2.index ?? 0))) {
-              next = updateByClientMsgId(prev, msg.clientMsgId, msg.index);
-            } else {
-              next = prev.map((m) =>
-                m.clientMsgId === msg.clientMsgId ? { ...m, sendState: "sent" as const } : m,
-              );
-            }
+            next = applyEchoUpdate(prev, msg);
             dedupResult = "update:user-clientMsgIdDup";
           } else if (
             !msg.clientMsgId &&

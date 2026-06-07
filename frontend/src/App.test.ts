@@ -43,6 +43,16 @@ function createMessageHandler(opts?: {
     )
   }
 
+  function applyEchoUpdate(prev: Message[], msg: Message): Message[] {
+    return prev.map((m) => {
+      if (m.clientMsgId !== msg.clientMsgId) return m
+      if (msg.index != null && msg.index < (m.index ?? 0)) {
+        return { ...m, sendState: 'sent' as const }
+      }
+      return { ...m, index: msg.index ?? m.index, sendState: 'sent' as const }
+    })
+  }
+
   function recalcMaxIndex() {
     maxMsgIndexRef = computeMaxIndex(messages)
   }
@@ -72,11 +82,7 @@ function createMessageHandler(opts?: {
         }
         // Live user message with clientMsgId: update optimistic, don't append duplicate
         if (msg.type === 'user' && !msg.replay && msg.clientMsgId && prev.some((m) => m.clientMsgId === msg.clientMsgId)) {
-          const existing = prev.find(m => m.clientMsgId === msg.clientMsgId)
-          if (existing && (msg.index == null || msg.index >= (existing.index ?? 0))) {
-            return updateByClientMsgId(prev, msg.clientMsgId, msg.index)
-          }
-          return prev.map(m => m.clientMsgId === msg.clientMsgId ? { ...m, sendState: 'sent' } : m)
+          return applyEchoUpdate(prev, msg)
         }
         // clientMsgId dedup for replay messages with mismatched index
         if (msg.clientMsgId && prev.some((m) => m.clientMsgId === msg.clientMsgId)) {
@@ -96,11 +102,7 @@ function createMessageHandler(opts?: {
       }
       // Live user message with clientMsgId: update optimistic, don't append duplicate
       if (msg.type === 'user' && !msg.replay && msg.clientMsgId && prev.some((m) => m.clientMsgId === msg.clientMsgId)) {
-        const existing = prev.find(m => m.clientMsgId === msg.clientMsgId)
-        if (existing && (msg.index == null || msg.index >= (existing.index ?? 0))) {
-          return updateByClientMsgId(prev, msg.clientMsgId, msg.index)
-        }
-        return prev.map(m => m.clientMsgId === msg.clientMsgId ? { ...m, sendState: 'sent' } : m)
+        return applyEchoUpdate(prev, msg)
       }
       // Live dedup for user messages without clientMsgId
       if (msg.type === 'user' && !msg.replay) {
