@@ -632,10 +632,6 @@ function MainApp() {
           // in every REST /history message. This prevents the spinner from
           // disappearing between the history load and the /status fetch.
           const liveState = msgs[0]?.session_state as SessionStatus | undefined;
-          logger.debug(
-            "[REST /history] liveState=%s session=%s msgCount=%d",
-            liveState, urlSessionId, msgs.length,
-          );
           if (liveState) {
             setSessionStateFor(urlSessionId, liveState);
           }
@@ -726,10 +722,6 @@ function MainApp() {
             liveState === "running" && resolvedFromHistory !== "running"
               ? "running"
               : (resolvedFromHistory as SessionStatus);
-          logger.debug(
-            "[REST /history] state resolution: currentState=%s derivedState=%s resolvedFromHistory=%s liveState=%s finalState=%s",
-            currentState, derivedState, resolvedFromHistory, liveState, finalState,
-          );
           if (shouldRecoverFromHistory) {
             sendRecover(
               urlSessionId!,
@@ -1000,8 +992,11 @@ function MainApp() {
             const currentState = sessionStatesRef.current.get(msg.session_id);
             const isTerminal = TERMINAL_STATES.has(newState);
             if (isTerminal) {
-              // Replay terminal states are authoritative (from DB)
-              setSessionStateFor(msg.session_id, newState);
+              // Don't let a replayed terminal (e.g. "completed" from
+              // a previous turn) override a live "running" state.
+              if (currentState !== "running") {
+                setSessionStateFor(msg.session_id, newState);
+              }
             } else if (currentState === "running") {
               // Skip — live running state takes precedence over replayed non-terminal
             } else if (newState === "running" && currentState !== "running") {

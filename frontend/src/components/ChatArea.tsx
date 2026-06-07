@@ -125,17 +125,11 @@ export default function ChatArea({
   useEffect(() => {
     // Session changed — save previous session's start time, restore new session's
     if (agentSessionIdRef.current !== sessionId) {
-      console.log(
-        "[ChatArea] session change: %s → %s, newState=%s startTimes=%s",
-        agentSessionIdRef.current, sessionId, sessionState,
-        sessionId ? sessionStartTimesRef.current.get(sessionId) : "n/a",
-      );
       agentSessionIdRef.current = sessionId;
       prevSessionStateRef.current = sessionState;
 
       if (sessionState === "running" && sessionId) {
         const savedStart = sessionStartTimesRef.current.get(sessionId);
-        console.log("[ChatArea] session change → running, savedStart=%s", savedStart);
         if (savedStart !== undefined) {
           setAgentStartTime(savedStart);
         } else {
@@ -147,21 +141,23 @@ export default function ChatArea({
         }
       } else {
         // Session is not running on mount or change — hide the spinner.
+        // Do NOT delete the stored start time here: the state may
+        // later transition to 'running' (e.g. page refresh while agent
+        // is running, buffer status API returns after mount).
         setAgentStartTime(null);
       }
       return;
     }
 
     // Detect transition TO running.
+    // If a saved start time exists in localStorage, the session was already
+    // running before the page refresh — restore the saved timer instead of
+    // resetting to 0. Otherwise this is a new user turn — record fresh time.
     if (
       sessionState === "running" &&
       prevSessionStateRef.current !== "running"
     ) {
       const savedStart = sessionId ? sessionStartTimesRef.current.get(sessionId) : undefined;
-      console.log(
-        "[ChatArea] transition TO running: %s → running, savedStart=%s",
-        prevSessionStateRef.current, savedStart,
-      );
       if (savedStart !== undefined) {
         setAgentStartTime(savedStart);
       } else {
@@ -174,14 +170,11 @@ export default function ChatArea({
       }
     }
     // Transition AWAY from running — clear start time for this session
+    // (new runs will get a fresh timestamp)
     if (
       prevSessionStateRef.current === "running" &&
       sessionState !== "running"
     ) {
-      console.log(
-        "[ChatArea] transition AWAY running: running → %s, deleting timer for %s",
-        sessionState, sessionId,
-      );
       if (sessionId) {
         sessionStartTimesRef.current.delete(sessionId);
         saveStartTimes(sessionStartTimesRef.current);
