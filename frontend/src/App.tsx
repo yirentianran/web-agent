@@ -628,6 +628,13 @@ function MainApp() {
             }
             return normalized;
           });
+          // Immediately set session state from the live buffer state embedded
+          // in every REST /history message. This prevents the spinner from
+          // disappearing between the history load and the /status fetch.
+          const liveState = msgs[0]?.session_state as SessionStatus | undefined;
+          if (liveState) {
+            setSessionStateFor(urlSessionId, liveState);
+          }
           // Confirm user messages found in REST history (subscribe loop may skip
           // the user echo for new sessions due to last_seen threshold).
           for (const m of msgs) {
