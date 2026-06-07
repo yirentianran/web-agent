@@ -271,7 +271,16 @@ export default function ChatArea({
   // Sort messages by index to ensure chronological order (newest at bottom)
   // Sort by index; messages without an index sort at the bottom.
   const sortedMessages = useMemo(
-    () => [...messages].sort((a, b) => (a.index ?? Number.MAX_SAFE_INTEGER) - (b.index ?? Number.MAX_SAFE_INTEGER)),
+    () => {
+      const sorted = [...messages].sort((a, b) => (a.index ?? Number.MAX_SAFE_INTEGER) - (b.index ?? Number.MAX_SAFE_INTEGER));
+      const userIndices = sorted.filter(m => m.type === "user").map(m => `${m.content.slice(0,15)}#${m.index}`);
+      const last5indices = sorted.slice(-5).map(m => `${m.type}#${m.index}`);
+      if (userIndices.length > 1) {
+        console.log("[ChatArea] user msg indices:", userIndices.join(", "));
+        console.log("[ChatArea] last 5 msgs:", last5indices.join(", "));
+      }
+      return sorted;
+    },
     [messages],
   );
 
