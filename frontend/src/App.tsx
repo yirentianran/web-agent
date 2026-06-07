@@ -691,9 +691,12 @@ function MainApp() {
                 : m,
             );
             if (newMsgs.length === 0) return reindexed;
-            return reindexed.sort(
-              (a, b) => (a.index ?? Number.MAX_SAFE_INTEGER) - (b.index ?? Number.MAX_SAFE_INTEGER),
-            );
+            // Move optimistic messages to the end — they should sort
+            // after all confirmed messages. Keep confirmed messages
+            // in their natural REST /history seq order.
+            const optimistic = reindexed.filter((m) => m.sendState === "sending");
+            const confirmed = reindexed.filter((m) => m.sendState !== "sending");
+            return [...confirmed, ...optimistic];
           });
           restLoadedRef.current = true;
           let derivedState: SessionStatus = "idle";

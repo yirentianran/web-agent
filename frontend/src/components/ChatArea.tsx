@@ -268,34 +268,27 @@ export default function ChatArea({
     return -1;
   }, [messages]);
 
-  // Sort messages by index to ensure chronological order (newest at bottom)
-  // Sort by index; messages without an index sort at the bottom.
-  const sortedMessages = useMemo(
-    () => [...messages].sort((a, b) => (a.index ?? Number.MAX_SAFE_INTEGER) - (b.index ?? Number.MAX_SAFE_INTEGER)),
-    [messages],
-  );
-
-  // Keep only the latest TodoWrite message — hide all earlier updates.
-  // TodoWrite is a stateful progress widget; showing every snapshot
-  // creates stacked duplicate progress bars.
-  const filteredMessages = useMemo(() => {
+  // Use messages in their natural arrival order — sorting by index
+  // is unreliable because agent stream events and DB-assigned seq
+  // use two different numbering schemes that can interleave.
+  const visibleMessages = useMemo(() => {
     let lastTodoWriteIndex = -1;
-    for (let i = sortedMessages.length - 1; i >= 0; i--) {
+    for (let i = messages.length - 1; i >= 0; i--) {
       if (
-        sortedMessages[i].type === "tool_use" &&
-        sortedMessages[i].name === "TodoWrite"
+        messages[i].type === "tool_use" &&
+        messages[i].name === "TodoWrite"
       ) {
-        lastTodoWriteIndex = sortedMessages[i].index;
+        lastTodoWriteIndex = messages[i].index;
         break;
       }
     }
-    return sortedMessages.filter(
+    return messages.filter(
       (msg) =>
         msg.type !== "tool_use" ||
         msg.name !== "TodoWrite" ||
         msg.index === lastTodoWriteIndex,
     );
-  }, [sortedMessages]);
+  }, [messages]);
 
   // Filter out invisible message types for the welcome screen check.
   // If a session only has heartbeats / internal state messages, show the welcome screen.
@@ -348,7 +341,7 @@ export default function ChatArea({
           </div>
         )}
 
-        {sessionId !== null && filteredMessages.map((msg, i) => (
+        {sessionId !== null && visibleMessages.map((msg, i) => (
           <MessageBubble
             key={msg.clientMsgId ?? `${msg.index}-${i}`}
             message={msg}

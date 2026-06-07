@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=1400">
+<title>Sessions Admin Preview</title>
+<style>
+  :root {
+    --bg: #f5f6fa; --surface: #fff; --text: #1a202c; --text2: #64748b; --border: #e2e8f0;
+    --primary: #4f46e5; --primary-light: #eef2ff; --accent: #059669; --danger: #dc2626;
+    --warning: #f59e0b; --info: #3b82f6; --radius: 8px;
+  }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background:var(--bg); color:var(--text); padding:24px 32px; }
+
+  .detail-page { max-width:1600px; margin:0 auto; }
+  .detail-header { display:flex; align-items:center; justify-content:space-between; padding:20px 20px 12px; gap:12px; }
+  .detail-back-btn { border:1px solid var(--border); border-radius:var(--radius); background:var(--surface); color:var(--text2); padding:6px 14px; cursor:pointer; font-size:0.875rem; display:inline-flex; align-items:center; gap:4px; }
+  .detail-back-btn:hover { border-color:var(--primary); color:var(--primary); }
+  .detail-header-title-group { display:flex; align-items:center; gap:12px; flex:1; }
+  .detail-header-title-group h2 { font-size:1.25rem; font-weight:600; margin:0; }
+  .detail-header-title-group input { padding:6px 12px; border:1px solid var(--border); border-radius:var(--radius); font-size:0.875rem; width:240px; }
+  .detail-header-title-group input:focus { outline:none; border-color:var(--primary); }
+
+  .stats-cards { display:grid; grid-template-columns:repeat(4,1fr); gap:16px; margin-bottom:16px; }
+  .stats-card { display:flex; align-items:center; gap:12px; padding:16px 20px; background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); }
+  .stats-card-icon { font-size:1.5rem; }
+  .stats-card-body { flex:1; }
+  .stats-card-value { font-size:1.5rem; font-weight:700; display:block; }
+  .stats-card-label { font-size:0.8rem; color:var(--text2); }
+
+  .filter-bar { display:flex; gap:8px; margin-bottom:16px; align-items:center; }
+  .filter-bar input, .filter-bar select { padding:6px 10px; border:1px solid var(--border); border-radius:6px; background:var(--surface); font-size:0.85rem; }
+  .filter-bar input:focus, .filter-bar select:focus { outline:none; border-color:var(--primary); }
+  .filter-bar .total { margin-left:auto; font-size:0.85rem; color:var(--text2); }
+
+  .content-row { display:flex; gap:16px; }
+  .table-panel { flex:1; min-width:0; background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); overflow:hidden; transition:all 0.3s; }
+  .table-panel.collapsed { flex:0.55; }
+
+  table { width:100%; border-collapse:collapse; font-size:0.875rem; }
+  th { text-align:left; padding:10px 12px; border-bottom:2px solid var(--border); font-weight:600; color:var(--text2); background:#fafbfc; white-space:nowrap; }
+  td { padding:10px 12px; border-bottom:1px solid var(--border); }
+  tr:hover td { background:#f8fafc; }
+  tr.selected td { background:var(--primary-light); }
+  tr { cursor:pointer; }
+
+  .badge { display:inline-block; padding:2px 8px; border-radius:999px; font-size:0.75rem; font-weight:500; }
+  .badge-running { background:#dcfce7; color:#166534; }
+  .badge-completed { background:#dbeafe; color:#1e40af; }
+  .badge-cancelled { background:#fef3c7; color:#92400e; }
+  .badge-error { background:#fee2e2; color:#991b1b; }
+  .badge-idle { background:#f1f5f9; color:#475569; }
+
+  /* Side panel */
+  .side-panel { width:0; overflow:hidden; background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); transition:width 0.25s; display:flex; flex-direction:column; }
+  .side-panel.open { width:480px; min-width:480px; }
+  .side-panel-inner { padding:20px; display:flex; flex-direction:column; height:100%; }
+  .side-panel-header { display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:16px; }
+  .side-panel-header h3 { font-size:1.1rem; margin-bottom:4px; }
+  .side-panel-meta { display:grid; grid-template-columns:1fr 1fr; gap:8px; font-size:0.8rem; margin-bottom:16px; padding-bottom:16px; border-bottom:1px solid var(--border); }
+  .side-panel-meta dt { color:var(--text2); }
+  .side-panel-meta dd { font-weight:500; }
+  .side-close { background:none; border:none; font-size:1.2rem; cursor:pointer; color:var(--text2); padding:4px; }
+  .side-close:hover { color:var(--text); }
+
+  .msg-list { flex:1; overflow-y:auto; margin-bottom:12px; }
+  .msg-item { padding:8px 10px; border-radius:6px; margin-bottom:4px; font-size:0.8rem; display:flex; gap:8px; align-items:flex-start; }
+  .msg-item:hover { background:var(--bg); }
+  .msg-index { color:var(--text2); min-width:24px; font-weight:500; }
+  .msg-type { padding:1px 6px; border-radius:4px; font-size:0.7rem; font-weight:500; white-space:nowrap; }
+  .msg-type-user { background:#eef2ff; color:#4338ca; }
+  .msg-type-assistant { background:#f0fdf4; color:#166534; }
+  .msg-type-system { background:#fef3c7; color:#92400e; }
+  .msg-type-tool { background:#f1f5f9; color:#475569; }
+  .msg-content { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--text2); }
+
+  .side-actions { display:flex; gap:8px; padding-top:12px; border-top:1px solid var(--border); }
+  .btn { padding:8px 16px; border-radius:var(--radius); border:1px solid var(--border); font-size:0.85rem; cursor:pointer; background:var(--surface); }
+  .btn-danger { border-color:var(--danger); color:var(--danger); }
+  .btn-danger:hover { background:#fef2f2; }
+  .btn-warning { border-color:var(--warning); color:var(--warning); }
+  .btn-warning:hover { background:#fffbeb; }
+
+  .pagination { display:flex; align-items:center; gap:6px; justify-content:center; padding:16px; font-size:0.85rem; }
+  .pagination button { padding:4px 10px; border:1px solid var(--border); border-radius:4px; background:var(--surface); cursor:pointer; }
+  .pagination button:hover { border-color:var(--primary); }
+  .pagination button.active { background:var(--primary); color:#fff; border-color:var(--primary); }
+  .pagination .page-info { color:var(--text2); margin-left:12px; }
+</style>
+</head>
+<body>
+
+<div class="detail-page">
+  <!-- Header -->
+  <div class="detail-header">
+    <button class="detail-back-btn" onclick="window.close()">← 返回</button>
+    <div class="detail-header-title-group">
+      <h2>Sessions</h2>
+      <input type="text" placeholder="搜索 session_id / user_id / title...">
+    </div>
+  </div>
+
+  <!-- Stats Cards -->
+  <div class="stats-cards">
+    <div class="stats-card"><span class="stats-card-icon">📊</span><div class="stats-card-body"><span class="stats-card-value">256</span><span class="stats-card-label">总会话数</span></div></div>
+    <div class="stats-card"><span class="stats-card-icon">🟢</span><div class="stats-card-body"><span class="stats-card-value">12</span><span class="stats-card-label">活跃会话</span></div></div>
+    <div class="stats-card"><span class="stats-card-icon">👥</span><div class="stats-card-body"><span class="stats-card-value">48</span><span class="stats-card-label">总用户数</span></div></div>
+    <div class="stats-card"><span class="stats-card-icon">💬</span><div class="stats-card-body"><span class="stats-card-value">8,231</span><span class="stats-card-label">总消息数</span></div></div>
+  </div>
+
+  <!-- Filter Bar -->
+  <div class="filter-bar">
+    <select><option>全部用户</option><option>alice</option><option>bob</option></select>
+    <select><option>全部状态</option><option>running</option><option>completed</option><option>cancelled</option><option>error</option></select>
+    <input type="date" value="2026-05-29"> 至 <input type="date" value="2026-06-05">
+    <select><option>最新创建 ↑</option><option>最早创建 ↓</option><option>消息数 ↓</option><option>费用 ↓</option></select>
+    <span class="total">共 256 条</span>
+  </div>
+
+  <!-- Content: Table + Side Panel -->
+  <div class="content-row">
+    <div class="table-panel" id="tablePanel">
+      <table>
+        <thead>
+          <tr><th style="width:20px"><input type="checkbox"></th><th>Session ID</th><th>User</th><th>Title</th><th>Status</th><th style="text-align:right">Msgs</th><th style="text-align:right">Cost</th><th>Created</th><th>Last Active</th></tr>
+        </thead>
+        <tbody>
+          <tr onclick="openPanel(this)" data-sid="sess_a1b2c3d4e5f6" data-user="alice" data-title="帮我分析财务报表" data-status="running" data-msgs="47" data-cost="1.23" data-created="2026-06-05 10:23" data-active="2026-06-05 11:45">
+            <td><input type="checkbox" onclick="event.stopPropagation()"></td>
+            <td style="font-family:monospace;font-size:0.8rem">sess_a1b2c3d4e5f6</td>
+            <td>alice</td>
+            <td>帮我分析财务报表</td>
+            <td><span class="badge badge-running">running</span></td>
+            <td style="text-align:right">47</td><td style="text-align:right">$1.23</td>
+            <td style="font-size:0.8rem">06-05 10:23</td><td style="font-size:0.8rem">06-05 11:45</td>
+          </tr>
+          <tr onclick="openPanel(this)" data-sid="sess_b2c3d4e5f6a7" data-user="bob" data-title="Generate a marketing plan" data-status="completed" data-msgs="32" data-cost="0.87" data-created="2026-06-04 15:30" data-active="2026-06-04 16:12">
+            <td><input type="checkbox" onclick="event.stopPropagation()"></td>
+            <td style="font-family:monospace;font-size:0.8rem">sess_b2c3d4e5f6a7</td>
+            <td>bob</td>
+            <td>Generate a marketing plan</td>
+            <td><span class="badge badge-completed">completed</span></td>
+            <td style="text-align:right">32</td><td style="text-align:right">$0.87</td>
+            <td style="font-size:0.8rem">06-04 15:30</td><td style="font-size:0.8rem">06-04 16:12</td>
+          </tr>
+          <tr class="selected" id="selectedRow" onclick="openPanel(this)" data-sid="sess_c3d4e5f6a7b8" data-user="alice" data-title="Debug the API error" data-status="cancelled" data-msgs="15" data-cost="0.32" data-created="2026-06-03 09:15" data-active="2026-06-03 09:45">
+            <td><input type="checkbox" checked onclick="event.stopPropagation()"></td>
+            <td style="font-family:monospace;font-size:0.8rem">sess_c3d4e5f6a7b8</td>
+            <td>alice</td>
+            <td>Debug the API error</td>
+            <td><span class="badge badge-cancelled">cancelled</span></td>
+            <td style="text-align:right">15</td><td style="text-align:right">$0.32</td>
+            <td style="font-size:0.8rem">06-03 09:15</td><td style="font-size:0.8rem">06-03 09:45</td>
+          </tr>
+          <tr onclick="openPanel(this)" data-sid="sess_d4e5f6a7b8c9" data-user="carol" data-title="Write unit tests for auth" data-status="error" data-msgs="8" data-cost="0.15" data-created="2026-06-02 14:00" data-active="2026-06-02 14:22">
+            <td><input type="checkbox" onclick="event.stopPropagation()"></td>
+            <td style="font-family:monospace;font-size:0.8rem">sess_d4e5f6a7b8c9</td>
+            <td>carol</td>
+            <td>Write unit tests for auth</td>
+            <td><span class="badge badge-error">error</span></td>
+            <td style="text-align:right">8</td><td style="text-align:right">$0.15</td>
+            <td style="font-size:0.8rem">06-02 14:00</td><td style="font-size:0.8rem">06-02 14:22</td>
+          </tr>
+          <tr onclick="openPanel(this)" data-sid="sess_e5f6a7b8c9d0" data-user="bob" data-title="帮我写周报" data-status="completed" data-msgs="63" data-cost="2.10" data-created="2026-06-01 08:00" data-active="2026-06-01 09:30">
+            <td><input type="checkbox" onclick="event.stopPropagation()"></td>
+            <td style="font-family:monospace;font-size:0.8rem">sess_e5f6a7b8c9d0</td>
+            <td>bob</td>
+            <td>帮我写周报</td>
+            <td><span class="badge badge-completed">completed</span></td>
+            <td style="text-align:right">63</td><td style="text-align:right">$2.10</td>
+            <td style="font-size:0.8rem">06-01 08:00</td><td style="font-size:0.8rem">06-01 09:30</td>
+          </tr>
+        </tbody>
+      </table>
+      <div class="pagination">
+        <button>←</button><button class="active">1</button><button>2</button><button>3</button><span class="page-info">...</span><button>13</button><button>→</button><span class="page-info">共 256 条</span>
+      </div>
+    </div>
+
+    <!-- Side Panel -->
+    <div class="side-panel open" id="sidePanel">
+      <div class="side-panel-inner">
+        <div class="side-panel-header">
+          <div>
+            <h3>Session Detail</h3>
+            <span style="font-family:monospace;font-size:0.85rem;color:var(--text2)">sess_c3d4e5f6a7b8</span>
+          </div>
+          <button class="side-close" onclick="closePanel()">✕</button>
+        </div>
+        <dl class="side-panel-meta">
+          <dt>User</dt><dd>alice</dd>
+          <dt>Status</dt><dd><span class="badge badge-cancelled">cancelled</span></dd>
+          <dt>Title</dt><dd>Debug the API error</dd>
+          <dt>Messages</dt><dd>15</dd>
+          <dt>Created</dt><dd>2026-06-03 09:15</dd>
+          <dt>Cost</dt><dd>$0.32</dd>
+        </dl>
+        <div style="font-size:0.8rem;color:var(--text2);margin-bottom:8px">
+          Messages (15 total)
+          <span style="float:right">第 1 页 / 共 2 页 (10条/页)</span>
+        </div>
+        <div class="msg-list">
+          <div class="msg-item"><span class="msg-index">#14</span><span class="msg-type msg-type-user">user</span><span class="msg-content">为什么这个接口返回403？</span></div>
+          <div class="msg-item"><span class="msg-index">#13</span><span class="msg-type msg-type-assistant">assistant</span><span class="msg-content">让我检查一下代码... 发现 verify_csrf 依赖没有正确注入到路由中。</span></div>
+          <div class="msg-item"><span class="msg-index">#12</span><span class="msg-type msg-type-tool">tool_use</span><span class="msg-content">Read /main_server.py:3510-3530</span></div>
+          <div class="msg-item"><span class="msg-index">#11</span><span class="msg-type msg-type-tool">tool_result</span><span class="msg-content">def create_session(...)  — endpoint handler found</span></div>
+          <div class="msg-item"><span class="msg-index">#10</span><span class="msg-type msg-type-assistant">assistant</span><span class="msg-content">找到了问题：POST /api/users/{user_id}/sessions 没有 dependencies=[Depends(verify_csrf)]。</span></div>
+          <div class="msg-item"><span class="msg-index">#9</span><span class="msg-type msg-type-user">user</span><span class="msg-content">好的，帮我修复它</span></div>
+          <div class="msg-item"><span class="msg-index">#8</span><span class="msg-type msg-type-assistant">assistant</span><span class="msg-content">我来修改 main_server.py，添加 CSRF 依赖到所有 state-changing 端点。</span></div>
+          <div class="msg-item"><span class="msg-index">#7</span><span class="msg-type msg-type-tool">tool_use</span><span class="msg-content">Edit /main_server.py — add dependencies=[Depends(verify_csrf)]</span></div>
+          <div class="msg-item"><span class="msg-index">#6</span><span class="msg-type msg-type-tool">tool_result</span><span class="msg-content">Edit successful — file updated</span></div>
+          <div class="msg-item"><span class="msg-index">#5</span><span class="msg-type msg-type-system">system</span><span class="msg-content">session_state_changed: cancelled</span></div>
+        </div>
+        <div class="side-actions">
+          <button class="btn btn-danger">🗑 删除会话</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+function openPanel(row) {
+  document.querySelectorAll('tr.selected').forEach(r => r.classList.remove('selected'));
+  row.classList.add('selected');
+  document.getElementById('sidePanel').classList.add('open');
+  document.getElementById('tablePanel').classList.add('collapsed');
+}
+function closePanel() {
+  document.getElementById('sidePanel').classList.remove('open');
+  document.getElementById('tablePanel').classList.remove('collapsed');
+  document.querySelectorAll('tr.selected').forEach(r => r.classList.remove('selected'));
+}
+</script>
+
+</body>
+</html>
