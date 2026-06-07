@@ -1199,12 +1199,13 @@ function MainApp() {
         );
       }
       if (msg.type === "result" && msg.session_id) {
-        // result is always terminal — accept it. The last_index
-        // parameter sent to the backend ensures only current-run
-        // results reach the frontend (old results are filtered by
-        // after_index on the backend side).
-        setSessionStateFor(msg.session_id, "completed");
-        loadSessions();
+        // Don't let a replayed result (e.g. from a previous turn)
+        // override a live "running" state set by REST /history.
+        const currentState = sessionStatesRef.current.get(msg.session_id);
+        if (currentState !== "running") {
+          setSessionStateFor(msg.session_id, "completed");
+          loadSessions();
+        }
       }
     },
     [userId, updateSendState],
