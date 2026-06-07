@@ -231,7 +231,7 @@ class InstinctExtractor:
         self.skill_manager = skill_manager
         self.data_root = data_root
         self._last_scan_at = time.time()
-        self._api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+        self._api_key = os.environ.get("ANTHROPIC_AUTH_TOKEN") or os.environ.get("ANTHROPIC_API_KEY", "")
 
     def _filter_significant_events(
         self, events: list[dict[str, Any]]
@@ -308,7 +308,7 @@ class InstinctExtractor:
     async def run_once(self) -> dict[str, Any]:
         """Single extraction cycle. Returns summary dict."""
         if not self._api_key:
-            logger.warning("ANTHROPIC_API_KEY not set, skipping extraction")
+            logger.warning("API key not set (ANTHROPIC_AUTH_TOKEN / ANTHROPIC_API_KEY), skipping extraction")
             return {"extracted": 0, "clusters": 0, "applied": 0, "proposed": 0}
 
         # 1. Check event threshold

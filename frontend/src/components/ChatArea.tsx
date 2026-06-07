@@ -269,10 +269,9 @@ export default function ChatArea({
   }, [messages]);
 
   // Sort messages by index to ensure chronological order (newest at bottom)
-  // Use ?? -1 to handle undefined indices safely — prevents NaN comparisons
-  // that destabilize JavaScript's sort algorithm.
+  // Sort by index; messages without an index sort at the bottom.
   const sortedMessages = useMemo(
-    () => [...messages].sort((a, b) => (a.index ?? -1) - (b.index ?? -1)),
+    () => [...messages].sort((a, b) => (a.index ?? Number.MAX_SAFE_INTEGER) - (b.index ?? Number.MAX_SAFE_INTEGER)),
     [messages],
   );
 

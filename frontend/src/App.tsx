@@ -400,6 +400,28 @@ function MainLayout({
 
 function MainApp() {
   const { t } = useTranslation();
+
+  // ── Message helpers ──────────────────────────────────────────────
+  /** Find the highest index in a message array. */
+  const computeMaxIndex = (msgs: Message[]): number => {
+    let max = 0;
+    for (const m of msgs) {
+      if (m.index != null && m.index > max) max = m.index;
+    }
+    return max;
+  };
+
+  /** Update a message matching clientMsgId with new index/sendState. */
+  const updateByClientMsgId = (
+    prev: Message[],
+    clientMsgId: string,
+    newIndex: number | undefined,
+  ): Message[] =>
+    prev.map((m) =>
+      m.clientMsgId === clientMsgId
+        ? { ...m, index: newIndex ?? m.index, sendState: "sent" as const }
+        : m,
+    );
   const [userId, setUserId] = useState<string>(() => {
     return localStorage.getItem("userId") || "";
   });
@@ -521,12 +543,7 @@ function MainApp() {
   const firstMessageRef = useRef<string | null>(null);
   useEffect(() => {
     messagesRef.current = messages.length;
-    // Update maxMsgIndex from the actual message indices (not array length)
-    let maxIdx = 0;
-    for (const m of messages) {
-      if (m.index != null && m.index > maxIdx) maxIdx = m.index;
-    }
-    maxMsgIndexRef.current = maxIdx;
+    maxMsgIndexRef.current = computeMaxIndex(messages);
     // Capture first user message for auto-title
     if (!firstMessageRef.current && messages.length > 0) {
       const firstUser = messages.find((m) => m.type === "user");
@@ -604,7 +621,7 @@ function MainApp() {
           // the ref will point to a different session
           if (urlSessionIdRef.current !== urlSessionId) return;
           const msgs = (data as any[]).map((m: any) => {
-            const normalized = { ...m, index: m.index ?? -1, session_id: urlSessionId };
+            const normalized = { ...m, index: m.index ?? Number.MAX_SAFE_INTEGER, session_id: urlSessionId };
             // Backend sends client_msg_id; frontend dedup needs clientMsgId
             if (m.client_msg_id && !normalized.clientMsgId) {
               normalized.clientMsgId = m.client_msg_id;
@@ -641,18 +658,34 @@ function MainApp() {
               logger.debug("[setMessages] no same-session msgs, replacing with %d new msgs", msgs.length);
               return msgs;
             }
-            const prevIndices = new Set(sameSession.map((m) => m.index));
+            // Indices from confirmed messages only — optimistic messages
+            // have synthetic indices that can collide with real seq values.
+            const confirmedIndices = new Set(
+              sameSession.filter((m) => m.sendState !== "sending").map((m) => m.index),
+            );
             const prevClientMsgIds = new Set(
               sameSession.filter((m) => m.clientMsgId).map((m) => m.clientMsgId),
             );
             const newMsgs = msgs.filter(
               (m: Message) =>
-                !prevIndices.has(m.index) &&
+                !confirmedIndices.has(m.index) &&
                 !(m.clientMsgId && prevClientMsgIds.has(m.clientMsgId)),
             );
-            if (newMsgs.length === 0) return sameSession;
-            return [...sameSession, ...newMsgs].sort(
-              (a, b) => (a.index ?? 0) - (b.index ?? 0),
+            // Merge: sameSession may contain an optimistic user message
+            // (sendState="sending") with a stale syntheticIndex. Re-index
+            // it so it sorts after all confirmed messages.
+            const merged = [...sameSession, ...newMsgs];
+            const confirmedMax = computeMaxIndex(
+              merged.filter((m) => m.sendState !== "sending"),
+            );
+            const reindexed = merged.map((m) =>
+              m.sendState === "sending" && m.index <= confirmedMax
+                ? { ...m, index: confirmedMax + 1 }
+                : m,
+            );
+            if (newMsgs.length === 0) return reindexed;
+            return reindexed.sort(
+              (a, b) => (a.index ?? Number.MAX_SAFE_INTEGER) - (b.index ?? Number.MAX_SAFE_INTEGER),
             );
           });
           restLoadedRef.current = true;
@@ -877,13 +910,7 @@ function MainApp() {
         confirmSendRef.current(msg.clientMsgId);
       }
 
-      // stream_event messages are handled separately via useStreamingText
-      // (accumulated into streamingText for live display). Adding them to
-      // the messages array causes two problems:
-      // 1. Computed indices (last_seen + i) can collide with real seq values,
-      //    causing dedup to skip actual assistant/tool messages.
-      // 2. Even when indices don't collide, stream_events with wrong indices
-      //    destabilize the sort order in ChatArea's sortedMessages.
+      // stream_event indices are computed (last_seen+i) and can collide with real seq values
       const isInvisibleMessage =
         msg.type === "heartbeat" ||
         msg.type === "stream_event" ||
@@ -1005,11 +1032,7 @@ function MainApp() {
               // Update the optimistic insert with the backend's real index
               // and confirm delivery. Skipping would leave stale indices in
               // maxMsgIndexRef, causing misaligned last_index on next send.
-              next = prev.map((m) =>
-                m.clientMsgId === msg.clientMsgId
-                  ? { ...m, index: msg.index ?? m.index, sendState: "sent" as const }
-                  : m,
-              );
+              next = updateByClientMsgId(prev, msg.clientMsgId, msg.index);
               dedupResult = "update:firstTurn-user-clientMsgIdDup";
             } else if (
               prev.some(
@@ -1028,13 +1051,7 @@ function MainApp() {
               dedupResult = "append:firstTurn-user";
             }
           } else if (msg.clientMsgId && prev.some((m) => m.clientMsgId === msg.clientMsgId)) {
-            // Replay message matches optimistic insert by clientMsgId —
-            // update index to the backend's real value instead of appending.
-            next = prev.map((m) =>
-              m.clientMsgId === msg.clientMsgId
-                ? { ...m, index: msg.index ?? m.index, sendState: "sent" as const }
-                : m,
-            );
+            next = updateByClientMsgId(prev, msg.clientMsgId, msg.index);
             dedupResult = "update:firstTurn-clientMsgIdDup";
           } else {
             next = [...prev, msg];
@@ -1044,25 +1061,14 @@ function MainApp() {
           next = prev;
           dedupResult = "skip:replay-indexDup";
         } else if (msg.replay && msg.clientMsgId && prev.some((m) => m.clientMsgId === msg.clientMsgId)) {
-          // Replay message matches optimistic insert by clientMsgId —
-          // update index instead of appending duplicate.
-          next = prev.map((m) =>
-            m.clientMsgId === msg.clientMsgId
-              ? { ...m, index: msg.index ?? m.index, sendState: "sent" as const }
-              : m,
-          );
+          next = updateByClientMsgId(prev, msg.clientMsgId, msg.index);
           dedupResult = "update:replay-clientMsgIdDup";
         } else if (msg.type === "user" && !msg.replay) {
           if (
             msg.clientMsgId &&
             prev.some((m) => m.clientMsgId === msg.clientMsgId)
           ) {
-            // Update optimistic insert with backend's real index + confirm
-            next = prev.map((m) =>
-              m.clientMsgId === msg.clientMsgId
-                ? { ...m, index: msg.index ?? m.index, sendState: "sent" as const }
-                : m,
-            );
+            next = updateByClientMsgId(prev, msg.clientMsgId, msg.index);
             dedupResult = "update:user-clientMsgIdDup";
           } else if (
             !msg.clientMsgId &&
@@ -1088,12 +1094,7 @@ function MainApp() {
             dedupResult = "append:nonReplay-nonUser";
           }
         } else if (msg.clientMsgId && prev.some((m) => m.clientMsgId === msg.clientMsgId)) {
-          // Fallthrough: clientMsgId match — update instead of appending duplicate.
-          next = prev.map((m) =>
-            m.clientMsgId === msg.clientMsgId
-              ? { ...m, index: msg.index ?? m.index, sendState: "sent" as const }
-              : m,
-          );
+          next = updateByClientMsgId(prev, msg.clientMsgId, msg.index);
           dedupResult = "update:fallthrough-clientMsgIdDup";
         } else {
           next = [...prev, msg];
@@ -1146,11 +1147,10 @@ function MainApp() {
 
         // Update maxMsgIndexRef synchronously so handleSend always
         // reads the latest value, avoiding stale last_index on send.
-        let maxIdx = maxMsgIndexRef.current;
-        for (const m of withStates) {
-          if (m.index != null && m.index > maxIdx) maxIdx = m.index;
-        }
-        maxMsgIndexRef.current = maxIdx;
+        maxMsgIndexRef.current = Math.max(
+          maxMsgIndexRef.current,
+          computeMaxIndex(withStates),
+        );
 
         return sendStateChanged ? withStates : next;
       });
@@ -1482,24 +1482,16 @@ function MainApp() {
             m.clientMsgId === clientMsgId ? { ...m, sendState: state } : m,
           );
         }
-        // Recalculate true max index from prev — maxMsgIndexRef can be
-        // stale if messages arrived between the ref update and this
-        // callback. Ensures the optimistic message sorts after ALL
-        // existing messages, not just those tracked by the ref.
-        let trueMaxIdx = 0;
-        for (const m of prev) {
-          if (m.index != null && m.index > trueMaxIdx) trueMaxIdx = m.index;
-        }
+        // Recalculate true max from prev — maxMsgIndexRef can be stale.
+        const trueMaxIdx = computeMaxIndex(prev);
         const adjustedIndex = Math.max(optimisticMsg.index ?? 0, trueMaxIdx + 1);
         const finalMsg = adjustedIndex !== optimisticMsg.index
           ? { ...optimisticMsg, index: adjustedIndex }
           : optimisticMsg;
-        // Correct refs to match the true max from actual state
         clearThresholdRef.current = trueMaxIdx;
         maxMsgIndexRef.current = adjustedIndex;
         replayStartedRef.current = false;
-        const updated = [...prev, finalMsg];
-        return updated;
+        return [...prev, finalMsg];
       });
       setSessionStateFor(sessionId, "running");
       suppressAutoActivateRef.current = false;
