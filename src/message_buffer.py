@@ -198,7 +198,13 @@ class MessageBuffer:
             row = await cursor.fetchone()
             db_max_seq = row[0] if row else -1
 
-            next_seq = max(self._seq.get(session_id, 0), db_max_seq + 1)
+            mem_seq = self._seq.get(session_id, 0)
+            # If the in-memory counter is far ahead of the database
+            # (e.g. after messages were cleaned up without a server
+            # restart), trust the database value to avoid large seq gaps.
+            if mem_seq > db_max_seq + 100:
+              mem_seq = db_max_seq + 1
+            next_seq = max(mem_seq, db_max_seq + 1)
             self._seq[session_id] = next_seq + 1
 
             usage_json = None
