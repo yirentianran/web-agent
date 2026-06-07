@@ -715,6 +715,13 @@ function MainApp() {
           const currentState = sessionStatesRef.current.get(urlSessionId) ?? "idle";
           const { state: resolvedFromHistory, shouldRecover: shouldRecoverFromHistory } =
             resolveSessionState(currentState, derivedState);
+          // If the live buffer state from REST /history says "running",
+          // it is authoritative — don't let history-derived state
+          // (e.g. "completed" from a previous turn's result) downgrade it.
+          const finalState: SessionStatus =
+            liveState === "running" && resolvedFromHistory !== "running"
+              ? "running"
+              : (resolvedFromHistory as SessionStatus);
           if (shouldRecoverFromHistory) {
             sendRecover(
               urlSessionId!,
@@ -724,7 +731,7 @@ function MainApp() {
             );
             didRecoverRef.current = true;
           }
-          setSessionStateFor(urlSessionId, resolvedFromHistory as SessionStatus);
+          setSessionStateFor(urlSessionId, finalState);
           fetch(`/api/users/${userId}/sessions/${urlSessionId}/status`, {
             credentials: "same-origin",
           })
