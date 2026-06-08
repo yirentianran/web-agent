@@ -2689,10 +2689,11 @@ function mergeRestHistory(
   const sameSession = prev.filter((m) => m.session_id === sessionId)
   if (sameSession.length === 0) return msgs
 
-  // Indices from confirmed messages only — optimistic messages
-  // have synthetic indices that can collide with real seq values.
+  // Indices from confirmed messages only — optimistic (sending/failed)
+  // messages have synthetic indices that can collide with real seq values.
+  const isUnconfirmed = (m: Message) => m.sendState === "sending" || m.sendState === "failed"
   const confirmedIndices = new Set(
-    sameSession.filter((m) => m.sendState !== "sending").map((m) => m.index),
+    sameSession.filter((m) => !isUnconfirmed(m)).map((m) => m.index),
   )
   const prevClientMsgIds = new Set(
     sameSession.filter((m) => m.clientMsgId).map((m) => m.clientMsgId),
@@ -2702,20 +2703,20 @@ function mergeRestHistory(
       !confirmedIndices.has(m.index) &&
       !(m.clientMsgId && prevClientMsgIds.has(m.clientMsgId)),
   )
-  // Re-index optimistic messages to sort after all confirmed messages
+  // Re-index unconfirmed messages to sort after all confirmed messages
   const merged = [...sameSession, ...newMsgs]
   const confirmedMax = computeMaxIndex(
-    merged.filter((m) => m.sendState !== "sending"),
+    merged.filter((m) => !isUnconfirmed(m)),
   )
   const reindexed = merged.map((m) =>
-    m.sendState === "sending" && m.index <= confirmedMax
+    isUnconfirmed(m) && m.index <= confirmedMax
       ? { ...m, index: confirmedMax + 1 }
       : m,
   )
   if (newMsgs.length === 0) return reindexed
-  // Move optimistic messages to the end — keep confirmed in natural order
-  const optimistic = reindexed.filter((m) => m.sendState === "sending")
-  const confirmed = reindexed.filter((m) => m.sendState !== "sending")
+  // Move unconfirmed messages (sending/failed) to the end
+  const optimistic = reindexed.filter((m) => isUnconfirmed(m))
+  const confirmed = reindexed.filter((m) => !isUnconfirmed(m))
   return [...confirmed, ...optimistic]
 }
 

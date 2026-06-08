@@ -682,10 +682,12 @@ function MainApp() {
               logger.debug("[setMessages] no same-session msgs, replacing with %d new msgs", msgs.length);
               return msgs;
             }
-            // Indices from confirmed messages only — optimistic messages
-            // have synthetic indices that can collide with real seq values.
+            // Indices from confirmed messages only — optimistic (sending)
+            // and failed messages have synthetic indices that can collide
+            // with real seq values. Only "sent" and historical messages
+            // (no sendState) are truly confirmed.
             const confirmedIndices = new Set(
-              sameSession.filter((m) => m.sendState !== "sending").map((m) => m.index),
+              sameSession.filter((m) => m.sendState === "sent" || !m.sendState).map((m) => m.index),
             );
             const prevClientMsgIds = new Set(
               sameSession.filter((m) => m.clientMsgId).map((m) => m.clientMsgId),
@@ -699,20 +701,19 @@ function MainApp() {
             // (sendState="sending") with a stale syntheticIndex. Re-index
             // it so it sorts after all confirmed messages.
             const merged = [...sameSession, ...newMsgs];
+            const unconfirmed = (m: Message) => m.sendState === "sending" || m.sendState === "failed";
             const confirmedMax = computeMaxIndex(
-              merged.filter((m) => m.sendState !== "sending"),
+              merged.filter((m) => !unconfirmed(m)),
             );
             const reindexed = merged.map((m) =>
-              m.sendState === "sending" && m.index <= confirmedMax
+              unconfirmed(m) && m.index <= confirmedMax
                 ? { ...m, index: confirmedMax + 1 }
                 : m,
             );
             if (newMsgs.length === 0) return reindexed;
-            // Move optimistic messages to the end — they should sort
-            // after all confirmed messages. Keep confirmed messages
-            // in their natural REST /history seq order.
-            const optimistic = reindexed.filter((m) => m.sendState === "sending");
-            const confirmed = reindexed.filter((m) => m.sendState !== "sending");
+            // Move unconfirmed messages (sending/failed) to the end
+            const optimistic = reindexed.filter((m) => unconfirmed(m));
+            const confirmed = reindexed.filter((m) => !unconfirmed(m));
             return [...confirmed, ...optimistic];
           });
           restLoadedRef.current = true;
