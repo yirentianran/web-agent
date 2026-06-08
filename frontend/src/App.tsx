@@ -1024,12 +1024,16 @@ function MainApp() {
             }
           } else {
             // Live (non-replay) message for the active session.
-            // Live session_state_changed messages from the subscribe loop
-            // are always current-run signals — the loop starts from
-            // last_seen which is beyond any previous-run messages.
-            // Old state changes only arrive in the initial replay (handled
-            // above in the replay branch).
-            setSessionStateFor(msg.session_id, newState);
+            // When the state is "running" (set by REST /history) and a live
+            // error arrives, it's likely a synthetic error from orphan
+            // detection (server restart). Keep "running" so the spinner
+            // shows until /status confirms the actual state.
+            const currentState3 = sessionStatesRef.current.get(msg.session_id);
+            if (newState === "error" && currentState3 === "running") {
+              // Orphan detected — keep "running", let /status resolve it
+            } else {
+              setSessionStateFor(msg.session_id, newState);
+            }
           }
           // Refresh file panel on session state changes (files may have been generated)
           setFileRefreshKey(k => k + 1);
