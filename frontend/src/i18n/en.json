@@ -180,7 +180,6 @@
   },
   "message": {
     "sending": "Sending...",
-    "sent": "Sent",
     "sendFailed": "Send failed",
     "sendTimedOut": "Send timed out",
     "thinking": "Thinking",
