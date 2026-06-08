@@ -597,6 +597,7 @@ function MainApp() {
         };
         pendingUserMsgsRef.current.set(urlSessionId, optimisticMsg);
         sendStateMapRef.current.set(storedPending.clientMsgId, "sending");
+        sendTimesRef.current.set(storedPending.clientMsgId, Date.now());
         setMessages((prev) => {
           const exists = prev.some(
             (m) => m.clientMsgId === storedPending.clientMsgId,
@@ -846,10 +847,19 @@ function MainApp() {
     [],
   );
 
+  const MIN_SENDING_DISPLAY_MS = 400;
+
   const clearSendState = useCallback(
     (clientMsgId: string | undefined) => {
       if (!clientMsgId) return;
+      const sendTime = sendTimesRef.current.get(clientMsgId) ?? 0;
+      const elapsed = Date.now() - sendTime;
+      if (elapsed < MIN_SENDING_DISPLAY_MS) {
+        setTimeout(() => clearSendState(clientMsgId), MIN_SENDING_DISPLAY_MS - elapsed);
+        return;
+      }
       sendStateMapRef.current.delete(clientMsgId);
+      sendTimesRef.current.delete(clientMsgId);
       setMessages((prev) =>
         prev.map((m) =>
           m.clientMsgId === clientMsgId ? { ...m, sendState: undefined } : m,
@@ -1259,6 +1269,7 @@ function MainApp() {
   const sendRecoverRef = useRef<(sessionId: string, afterIndex: number) => void>(() => {});
   const confirmRecoverRef = useRef<(sessionId: string) => void>(() => {});
   const sendStateMapRef = useRef<Map<string, MessageSendState>>(new Map());
+  const sendTimesRef = useRef<Map<string, number>>(new Map());
   // Ref for authToken so session-loading effect doesn't re-fire on token changes
   const authTokenRef = useRef(authToken);
   authTokenRef.current = authToken;
@@ -1473,6 +1484,7 @@ function MainApp() {
         ),
       );
       sendStateMapRef.current.set(newClientMsgId, "sending");
+      sendTimesRef.current.set(newClientMsgId, Date.now());
       const resentMsg: Message = {
         ...failedMessage,
         clientMsgId: newClientMsgId,
@@ -1544,6 +1556,7 @@ function MainApp() {
       };
       // Track send state
       sendStateMapRef.current.set(clientMsgId, "sending");
+      sendTimesRef.current.set(clientMsgId, Date.now());
       if (sessionId) {
         pendingUserMsgsRef.current.set(sessionId, optimisticMsg);
         // Persist to localStorage so the pending message survives page refresh
