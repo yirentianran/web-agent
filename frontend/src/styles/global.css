@@ -4581,17 +4581,6 @@ body {
   animation: spin 1.5s linear infinite;
 }
 
-.send-state--sent {
-  color: var(--color-success, #22c55e);
-  animation: send-sent-fade 2.5s ease-out forwards;
-}
-
-@keyframes send-sent-fade {
-  0% { opacity: 1; }
-  70% { opacity: 1; }
-  100% { opacity: 0; }
-}
-
 @keyframes spin {
   from { transform: rotate(0deg); }
   to { transform: rotate(360deg); }
