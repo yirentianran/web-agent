@@ -1333,6 +1333,20 @@ function MainApp() {
     onMessage: handleIncomingMessage,
     onDisconnect: handleDisconnect,
     onSendFailed: handleSendFailed,
+    onConnectionFailed: (unconfirmedIds: string[]) => {
+      logger.warn(
+        "[WebSocket] Connection failed, marking %d unconfirmed messages as failed",
+        unconfirmedIds.length,
+      );
+      for (const id of unconfirmedIds) {
+        updateSendState(id, "failed");
+      }
+      // Reset session state for the active session if it was running
+      const activeId = urlSessionIdRef.current;
+      if (activeId && sessionStatesRef.current.get(activeId) === "running") {
+        setSessionStateFor(activeId, "idle");
+      }
+    },
     onRecoverTimeout: (sessionId: string) => {
       // Recover failed to yield data within the timeout window.
       // Reset to idle so the spinner doesn't show forever.
