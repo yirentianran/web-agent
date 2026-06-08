@@ -42,6 +42,7 @@ interface UseWebSocketOptions {
   onDisconnect?: () => void;
   onQueueFull?: () => void;
   onSendFailed?: (clientMsgId: string) => void;
+  onConnectionFailed?: (unconfirmedIds: string[]) => void;
   onRecoverTimeout?: (sessionId: string) => void;
   onAuthFailed?: () => void; // Called when WebSocket is rejected due to invalid/expired token
   token?: string;
@@ -54,6 +55,7 @@ export function useWebSocket({
   onDisconnect,
   onQueueFull,
   onSendFailed,
+  onConnectionFailed,
   onRecoverTimeout,
   onAuthFailed,
   token,
@@ -71,6 +73,7 @@ export function useWebSocket({
   const onDisconnectRef = useRef(onDisconnect);
   const onQueueFullRef = useRef(onQueueFull);
   const onSendFailedRef = useRef(onSendFailed);
+  const onConnectionFailedRef = useRef(onConnectionFailed);
   const onRecoverTimeoutRef = useRef(onRecoverTimeout);
   const onAuthFailedRef = useRef(onAuthFailed);
   const tokenRef = useRef(token);
@@ -87,6 +90,7 @@ export function useWebSocket({
     onDisconnectRef.current = onDisconnect;
     onQueueFullRef.current = onQueueFull;
     onSendFailedRef.current = onSendFailed;
+    onConnectionFailedRef.current = onConnectionFailed;
     onRecoverTimeoutRef.current = onRecoverTimeout;
     onAuthFailedRef.current = onAuthFailed;
     tokenRef.current = token;
@@ -223,10 +227,14 @@ export function useWebSocket({
       onDisconnectRef.current?.();
       if (reconnectAttempts.current >= maxAttempts) {
         setStatus("failed");
+        const unconfirmed = Array.from(pendingSends.current.keys());
         for (const [, ps] of pendingSends.current) {
-          ps.reject("connection_failed");
+          clearTimeout(ps.timer);
         }
         pendingSends.current.clear();
+        if (unconfirmed.length > 0) {
+          onConnectionFailedRef.current?.(unconfirmed);
+        }
         // Clear all recover timers — connection is gone
         for (const [, t] of recoverTimers.current) clearTimeout(t);
         recoverTimers.current.clear();
@@ -302,7 +310,14 @@ export function useWebSocket({
       if (ws?.readyState === WebSocket.OPEN) {
         const payload = JSON.stringify({ type: "chat", ...enriched, user_id: userIdRef.current });
         logger.debug("Sending direct:", payload.slice(0, 100));
-        ws.send(payload);
+        try {
+          ws.send(payload);
+        } catch {
+          // ws.send() can throw synchronously if the connection is in a bad state
+          // or the data payload exceeds the browser's limits.
+          onReject();
+          return { clientMsgId };
+        }
       } else {
         if (pendingQueue.current.length < PENDING_QUEUE_MAX) {
           pendingQueue.current.push(enriched);
