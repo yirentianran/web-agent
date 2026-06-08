@@ -646,6 +646,9 @@ function MainApp() {
           // in every REST /history message. This prevents the spinner from
           // disappearing between the history load and the /status fetch.
           const liveState = msgs[0]?.session_state as SessionStatus | undefined;
+          if (liveState === "error") {
+            console.warn("[REST /history] liveState=error, msg[0].session_state=%s, buffer is in error state", msgs[0]?.session_state);
+          }
           if (liveState) {
             setSessionStateFor(urlSessionId, liveState);
           }
@@ -762,6 +765,7 @@ function MainApp() {
             .then((status) => {
               if (urlSessionIdRef.current !== urlSessionId) return;
               const currentState2 = sessionStatesRef.current.get(urlSessionId) ?? "idle";
+              console.log("[REST /status] currentState=%s status.state=%s bufferAge=%d", currentState2, status.state, status.buffer_age ?? 0);
               const { state: resolvedFromStatus, shouldRecover } =
                 resolveBufferState(currentState2, status.state, status.buffer_age ?? 0);
               if (shouldRecover) {
@@ -993,6 +997,9 @@ function MainApp() {
           msg.session_id
         ) {
           const newState = (msg.state || msg.content || "completed") as SessionStatus;
+          if (newState === "error") {
+            console.warn("[WS] session_state_changed:error replay=%s idx=%d currentState=%s", msg.replay, msg.index, sessionStatesRef.current.get(msg.session_id));
+          }
           const isTerminal = TERMINAL_STATES.has(newState);
           // Accept terminal state changes even if index is slightly lower,
           // but never overwrite a live 'running' state with an old terminal.
@@ -1024,12 +1031,19 @@ function MainApp() {
             }
           } else {
             // Live (non-replay) message for the active session.
-            // Live session_state_changed messages from the subscribe loop
-            // are always current-run signals — the loop starts from
-            // last_seen which is beyond any previous-run messages.
-            // Old state changes only arrive in the initial replay (handled
-            // above in the replay branch).
-            setSessionStateFor(msg.session_id, newState);
+            // When the state is "running" (set by REST /history) and a live
+            // error arrives, it's likely a synthetic error from orphan
+            // detection (server restart). Keep "running" so the spinner
+            // shows until /status confirms the actual state.
+            const currentState3 = sessionStatesRef.current.get(msg.session_id);
+            if (newState === "error") {
+              console.warn("[WS] live error received: currentState=%s msg=%s", currentState3, msg.message || msg.content);
+            }
+            if (newState === "error" && currentState3 === "running") {
+              // Orphan detected — keep "running", let /status resolve it
+            } else {
+              setSessionStateFor(msg.session_id, newState);
+            }
           }
           // Refresh file panel on session state changes (files may have been generated)
           setFileRefreshKey(k => k + 1);
