@@ -213,9 +213,12 @@ export function useWebSocket({
         event.wasClean,
       );
       if (intentionalClose) return;
-      if (event.code === 4001 || event.code === 4002) {
-        localStorage.removeItem("userId");
-        window.location.href = window.location.origin;
+      // Auth failure — token expired or invalid. Stop reconnecting
+      // and notify the app so it can redirect to login.
+      if (event.code === 4001) {
+        logger.warn('WebSocket auth failed, stopping reconnect');
+        setStatus("failed");
+        onAuthFailedRef.current?.();
         return;
       }
       setStatus("reconnecting");

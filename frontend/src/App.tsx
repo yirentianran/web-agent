@@ -619,9 +619,9 @@ function MainApp() {
             "[REST /history] status=%d ok=%s userId=%s sessionId=%s",
             resp.status, resp.ok, userId, urlSessionId,
           );
-          if (resp.status === 403 || resp.status === 404) {
+          if (resp.status === 401 || resp.status === 401 || resp.status === 403 || resp.status === 404) {
             window.location.href = window.location.origin;
-            throw new Error("Permission denied");
+            throw new Error("Auth or permission denied");
           }
           if (resp.ok) return resp.json();
           return [];
@@ -753,7 +753,7 @@ function MainApp() {
             credentials: "same-origin",
           })
             .then((resp) => {
-              if (resp.status === 403 || resp.status === 404) {
+              if (resp.status === 401 || resp.status === 403 || resp.status === 404) {
                 window.location.href = window.location.origin;
                 throw new Error("Permission denied");
               }
@@ -1317,6 +1317,12 @@ function MainApp() {
         "[WebSocket] Pending queue full. Messages will be dropped until connection restores.",
       );
     },
+    onAuthFailed: () => {
+      // JWT expired or invalid — clear session and redirect to login
+      logger.warn("[WebSocket] Auth failed, redirecting to login");
+      localStorage.removeItem("userId");
+      setAuthToken(null);
+    },
     token: undefined,
   });
 
@@ -1674,7 +1680,7 @@ function MainApp() {
             authToken={authToken}
             userId={userId}
             userRole={userRole}
-            onBack={() => navigate("/")}
+            onBack={() => navigate(-1)}
           />
         }
       />
@@ -1684,7 +1690,7 @@ function MainApp() {
           <MCPPage
             userId={userId}
             authToken={authToken}
-            onBack={() => navigate("/")}
+            onBack={() => navigate(-1)}
           />
         }
       />

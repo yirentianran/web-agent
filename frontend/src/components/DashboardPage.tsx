@@ -67,7 +67,7 @@ export default function DashboardPage() {
       <div className="evolution-header skills-header detail-header">
         <button
           className="evolution-back-btn skills-back-btn detail-back-btn"
-          onClick={() => navigate("/")}
+          onClick={() => navigate(-1)}
           type="button"
         >
           {t("common.back")}
