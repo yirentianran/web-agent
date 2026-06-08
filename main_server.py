@@ -1654,10 +1654,17 @@ def message_to_dicts(msg: Any, model: str | None = None) -> Iterator[dict[str, A
     if isinstance(msg, UserMessage):
         content = msg.content
         if isinstance(content, list):
-            text = " ".join(b.text for b in content if isinstance(b, TextBlock))
+            emitted: list[dict[str, Any]] = []
+            def _emit(d: dict[str, Any]) -> None:
+                emitted.append(d)
+            combined_text = process_content_blocks(content, _emit)
+            for d in emitted:
+                yield d
+            text = combined_text
         else:
             text = content
-        yield {"type": "user", "content": text}
+        if text:
+            yield {"type": "user", "content": text}
         return
 
     if isinstance(msg, AssistantMessage):

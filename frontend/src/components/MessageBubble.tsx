@@ -198,7 +198,7 @@ export default function MessageBubble({ message, sessionId, onAnswer, onFileClic
 
     // Send state indicator
     const sendStateIcon = message.sendState === 'sending'
-      ? <span className="send-state send-state--sending" title={t('message.sending')} aria-label={t('message.sending')}>◌</span>
+      ? <span className="send-state send-state--sending" title={t('message.sending')} aria-label={t('message.sending')} />
       : message.sendState === 'failed'
       ? <span className="send-state send-state--failed" title={t('message.sendFailed')} aria-label={t('message.sendFailed')} role="button" tabIndex={0} onClick={() => onResend?.(message)}>✗</span>
       : null
