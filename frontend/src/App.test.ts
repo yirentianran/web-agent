@@ -38,7 +38,7 @@ function createMessageHandler(opts?: {
   ): Message[] {
     return prev.map((m) =>
       m.clientMsgId === clientMsgId
-        ? { ...m, index: newIndex ?? m.index, sendState: 'sent' as const }
+        ? { ...m, index: newIndex ?? m.index, sendState: undefined }
         : m,
     )
   }
@@ -47,9 +47,9 @@ function createMessageHandler(opts?: {
     return prev.map((m) => {
       if (m.clientMsgId !== msg.clientMsgId) return m
       if (msg.index != null && msg.index < (m.index ?? 0)) {
-        return { ...m, sendState: 'sent' as const }
+        return { ...m, sendState: undefined }
       }
-      return { ...m, index: msg.index ?? m.index, sendState: 'sent' as const }
+      return { ...m, index: msg.index ?? m.index, sendState: undefined }
     })
   }
 
