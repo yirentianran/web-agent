@@ -126,7 +126,7 @@ export default function UsersPage() {
   return (
     <div className="users-page detail-page">
       <div className="evolution-header skills-header detail-header">
-        <button className="evolution-back-btn skills-back-btn detail-back-btn" onClick={() => navigate('/')}>
+        <button className="evolution-back-btn skills-back-btn detail-back-btn" onClick={() => navigate(-1)}>
           {t('users.back')}
         </button>
         <div className="evolution-header-title-group skills-header-title-group">

@@ -104,7 +104,7 @@ export default function SessionsPage() {
   return (
     <div className="sessions-page detail-page">
       <div className="evolution-header skills-header detail-header">
-        <button className="evolution-back-btn skills-back-btn detail-back-btn" onClick={() => navigate('/')} type="button">
+        <button className="evolution-back-btn skills-back-btn detail-back-btn" onClick={() => navigate(-1)} type="button">
           {t('common.back')}
         </button>
         <div className="evolution-header-title-group skills-header-title-group">

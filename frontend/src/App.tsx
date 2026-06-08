@@ -1680,7 +1680,7 @@ function MainApp() {
             authToken={authToken}
             userId={userId}
             userRole={userRole}
-            onBack={() => navigate("/")}
+            onBack={() => navigate(-1)}
           />
         }
       />
@@ -1690,7 +1690,7 @@ function MainApp() {
           <MCPPage
             userId={userId}
             authToken={authToken}
-            onBack={() => navigate("/")}
+            onBack={() => navigate(-1)}
           />
         }
       />
