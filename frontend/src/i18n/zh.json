@@ -180,7 +180,6 @@
   },
   "message": {
     "sending": "发送中...",
-    "sent": "已发送",
     "sendFailed": "发送失败",
     "sendTimedOut": "发送超时",
     "thinking": "思考",

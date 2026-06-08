@@ -31,6 +31,7 @@ import {
   type StreamingTextState,
 } from "./hooks/useStreamingText";
 import type { Message, SessionItem, MessageSendState, ConnectionStatus, SessionStatus } from "./lib/types";
+import { isUnconfirmed } from "./lib/types";
 import {
   computeRecoverIndex,
   saveLastKnownIndex,
@@ -419,7 +420,7 @@ function MainApp() {
   ): Message[] =>
     prev.map((m) =>
       m.clientMsgId === clientMsgId
-        ? { ...m, index: newIndex ?? m.index, sendState: "sent" as const }
+        ? { ...m, index: newIndex ?? m.index, sendState: undefined }
         : m,
     );
 
@@ -431,9 +432,9 @@ function MainApp() {
     prev.map((m) => {
       if (m.clientMsgId !== msg.clientMsgId) return m;
       if (msg.index != null && msg.index < (m.index ?? 0)) {
-        return { ...m, sendState: "sent" as const };
+        return { ...m, sendState: undefined };
       }
-      return { ...m, index: msg.index ?? m.index, sendState: "sent" as const };
+      return { ...m, index: msg.index ?? m.index, sendState: undefined };
     });
 
   const [userId, setUserId] = useState<string>(() => {
@@ -597,6 +598,7 @@ function MainApp() {
         };
         pendingUserMsgsRef.current.set(urlSessionId, optimisticMsg);
         sendStateMapRef.current.set(storedPending.clientMsgId, "sending");
+        sendTimesRef.current.set(storedPending.clientMsgId, Date.now());
         setMessages((prev) => {
           const exists = prev.some(
             (m) => m.clientMsgId === storedPending.clientMsgId,
@@ -619,7 +621,7 @@ function MainApp() {
             "[REST /history] status=%d ok=%s userId=%s sessionId=%s",
             resp.status, resp.ok, userId, urlSessionId,
           );
-          if (resp.status === 401 || resp.status === 401 || resp.status === 403 || resp.status === 404) {
+          if (resp.status === 401 || resp.status === 403 || resp.status === 404) {
             window.location.href = window.location.origin;
             throw new Error("Auth or permission denied");
           }
@@ -656,7 +658,7 @@ function MainApp() {
           // the user echo for new sessions due to last_seen threshold).
           for (const m of msgs) {
             if (m.type === "user" && m.clientMsgId) {
-              updateSendState(m.clientMsgId, "sent");
+              clearSendState(m.clientMsgId);
               confirmSendRef.current(m.clientMsgId);
               // Clear pending message — backend has confirmed receipt
               if (m.session_id) {
@@ -682,10 +684,12 @@ function MainApp() {
               logger.debug("[setMessages] no same-session msgs, replacing with %d new msgs", msgs.length);
               return msgs;
             }
-            // Indices from confirmed messages only — optimistic messages
-            // have synthetic indices that can collide with real seq values.
+            // Indices from confirmed messages only — optimistic (sending)
+            // and failed messages have synthetic indices that can collide
+            // with real seq values. Only historical messages
+            // (no sendState) are truly confirmed.
             const confirmedIndices = new Set(
-              sameSession.filter((m) => m.sendState !== "sending").map((m) => m.index),
+              sameSession.filter((m) => !m.sendState).map((m) => m.index),
             );
             const prevClientMsgIds = new Set(
               sameSession.filter((m) => m.clientMsgId).map((m) => m.clientMsgId),
@@ -700,19 +704,17 @@ function MainApp() {
             // it so it sorts after all confirmed messages.
             const merged = [...sameSession, ...newMsgs];
             const confirmedMax = computeMaxIndex(
-              merged.filter((m) => m.sendState !== "sending"),
+              merged.filter((m) => !isUnconfirmed(m)),
             );
             const reindexed = merged.map((m) =>
-              m.sendState === "sending" && m.index <= confirmedMax
+              isUnconfirmed(m) && m.index <= confirmedMax
                 ? { ...m, index: confirmedMax + 1 }
                 : m,
             );
             if (newMsgs.length === 0) return reindexed;
-            // Move optimistic messages to the end — they should sort
-            // after all confirmed messages. Keep confirmed messages
-            // in their natural REST /history seq order.
-            const optimistic = reindexed.filter((m) => m.sendState === "sending");
-            const confirmed = reindexed.filter((m) => m.sendState !== "sending");
+            // Move unconfirmed messages (sending/failed) to the end
+            const optimistic = reindexed.filter((m) => isUnconfirmed(m));
+            const confirmed = reindexed.filter((m) => !isUnconfirmed(m));
             return [...confirmed, ...optimistic];
           });
           restLoadedRef.current = true;
@@ -845,6 +847,34 @@ function MainApp() {
     [],
   );
 
+  const MIN_SENDING_DISPLAY_MS = 2000;
+
+  const clearSendState = useCallback(
+    (clientMsgId: string | undefined) => {
+      if (!clientMsgId) return;
+      if (!sendTimesRef.current.has(clientMsgId)) return; // already cleared
+      const sendTime = sendTimesRef.current.get(clientMsgId)!;
+      const elapsed = Date.now() - sendTime;
+      if (elapsed < MIN_SENDING_DISPLAY_MS) {
+        setTimeout(() => clearSendState(clientMsgId), MIN_SENDING_DISPLAY_MS - elapsed);
+        return;
+      }
+      // Clear only after the minimum display time has elapsed.
+      // The map entries are intentionally kept during the delay so the
+      // reindex logic re-applies "sending" after the echo's setMessages
+      // sets sendState to undefined — this is what keeps the indicator
+      // visible for the full minimum duration.
+      sendStateMapRef.current.delete(clientMsgId);
+      sendTimesRef.current.delete(clientMsgId);
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.clientMsgId === clientMsgId ? { ...m, sendState: undefined } : m,
+        ),
+      );
+    },
+    [],
+  );
+
   const handleIncomingMessage = useCallback(
     (msg: Message) => {
       // Log incoming WS messages for debugging cross-user access
@@ -933,7 +963,7 @@ function MainApp() {
           pendingUserMsgsRef.current.delete(msg.session_id);
             clearPendingMessage(msg.session_id, userId);
           if (pending?.clientMsgId) {
-            updateSendState(pending.clientMsgId, "sent");
+            clearSendState(pending.clientMsgId);
             confirmSendRef.current(pending.clientMsgId);
           }
         }
@@ -941,7 +971,7 @@ function MainApp() {
 
       // Also confirm send if backend echoes a user message we're tracking (by clientMsgId on the incoming msg)
       if (msg.type === "user" && msg.clientMsgId) {
-        updateSendState(msg.clientMsgId, "sent");
+        clearSendState(msg.clientMsgId);
         confirmSendRef.current(msg.clientMsgId);
       }
 
@@ -1038,9 +1068,10 @@ function MainApp() {
             const currentState3 = sessionStatesRef.current.get(msg.session_id);
             if (newState === "error") {
               console.warn("[WS] live error received: currentState=%s msg=%s", currentState3, msg.message || msg.content);
-            }
-            if (newState === "error" && currentState3 === "running") {
-              // Orphan detected — keep "running", let /status resolve it
+              if (currentState3 !== "running") {
+                setSessionStateFor(msg.session_id, newState);
+              }
+              // If running, orphan detection fired — keep "running"
             } else {
               setSessionStateFor(msg.session_id, newState);
             }
@@ -1087,7 +1118,7 @@ function MainApp() {
               // Content match — update index of the first matching message
               next = prev.map((m) =>
                 m.type === "user" && m.content === msg.content && m.sendState === "sending"
-                  ? { ...m, index: msg.index ?? m.index, sendState: "sent" as const }
+                  ? { ...m, index: msg.index ?? m.index, sendState: undefined }
                   : m,
               );
               dedupResult = "update:firstTurn-user-contentDup";
@@ -1122,7 +1153,7 @@ function MainApp() {
             // Content match — update index of the matching optimistic message
             next = prev.map((m) =>
               m.type === "user" && m.content === msg.content && m.sendState === "sending"
-                ? { ...m, index: msg.index ?? m.index, sendState: "sent" as const }
+                ? { ...m, index: msg.index ?? m.index, sendState: undefined }
                 : m,
             );
             dedupResult = "update:user-contentDup";
@@ -1244,6 +1275,7 @@ function MainApp() {
   const sendRecoverRef = useRef<(sessionId: string, afterIndex: number) => void>(() => {});
   const confirmRecoverRef = useRef<(sessionId: string) => void>(() => {});
   const sendStateMapRef = useRef<Map<string, MessageSendState>>(new Map());
+  const sendTimesRef = useRef<Map<string, number>>(new Map());
   // Ref for authToken so session-loading effect doesn't re-fire on token changes
   const authTokenRef = useRef(authToken);
   authTokenRef.current = authToken;
@@ -1274,6 +1306,7 @@ function MainApp() {
   const handleSendFailed = useCallback(
     (clientMsgId: string) => {
       updateSendState(clientMsgId, "failed");
+      sendTimesRef.current.delete(clientMsgId); // free memory, no longer needed
       const activeId = urlSessionIdRef.current;
       if (activeId) {
         const currentState = sessionStatesRef.current.get(activeId);
@@ -1318,6 +1351,29 @@ function MainApp() {
     onMessage: handleIncomingMessage,
     onDisconnect: handleDisconnect,
     onSendFailed: handleSendFailed,
+    onConnectionFailed: (unconfirmedIds: string[]) => {
+      logger.warn(
+        "[WebSocket] Connection failed, marking %d unconfirmed messages as failed",
+        unconfirmedIds.length,
+      );
+      const failedSet = new Set(unconfirmedIds);
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.clientMsgId && failedSet.has(m.clientMsgId)
+            ? { ...m, sendState: "failed" as const }
+            : m,
+        ),
+      );
+      for (const id of unconfirmedIds) {
+        sendStateMapRef.current.set(id, "failed");
+        sendTimesRef.current.delete(id);
+      }
+      // Reset session state for the active session if it was running
+      const activeId = urlSessionIdRef.current;
+      if (activeId && sessionStatesRef.current.get(activeId) === "running") {
+        setSessionStateFor(activeId, "idle");
+      }
+    },
     onRecoverTimeout: (sessionId: string) => {
       // Recover failed to yield data within the timeout window.
       // Reset to idle so the spinner doesn't show forever.
@@ -1444,6 +1500,7 @@ function MainApp() {
         ),
       );
       sendStateMapRef.current.set(newClientMsgId, "sending");
+      sendTimesRef.current.set(newClientMsgId, Date.now());
       const resentMsg: Message = {
         ...failedMessage,
         clientMsgId: newClientMsgId,
@@ -1515,6 +1572,7 @@ function MainApp() {
       };
       // Track send state
       sendStateMapRef.current.set(clientMsgId, "sending");
+      sendTimesRef.current.set(clientMsgId, Date.now());
       if (sessionId) {
         pendingUserMsgsRef.current.set(sessionId, optimisticMsg);
         // Persist to localStorage so the pending message survives page refresh

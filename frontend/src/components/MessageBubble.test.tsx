@@ -1402,3 +1402,57 @@ describe('MessageBubble - assistant message with analysis tag', () => {
     expect(screen.getByText('Just a normal response without any tags.')).toBeInTheDocument()
   })
 })
+
+describe('MessageBubble - send state indicator', () => {
+  it('shows sending indicator when sendState is "sending"', () => {
+    const message: Message = {
+      type: 'user',
+      content: 'Hello',
+      index: 0,
+      sendState: 'sending',
+      clientMsgId: 'uuid-1',
+    }
+    renderMessage(message)
+    expect(screen.getByLabelText('Sending...')).toBeInTheDocument()
+  })
+
+  it('shows failed indicator when sendState is "failed"', () => {
+    const message: Message = {
+      type: 'user',
+      content: 'Hello',
+      index: 0,
+      sendState: 'failed',
+      clientMsgId: 'uuid-1',
+    }
+    renderMessage(message)
+    expect(screen.getByLabelText('Send failed')).toBeInTheDocument()
+  })
+
+  it('shows no indicator when sendState is undefined', () => {
+    const message: Message = {
+      type: 'user',
+      content: 'Hello',
+      index: 0,
+      sendState: undefined,
+      clientMsgId: 'uuid-1',
+    }
+    renderMessage(message)
+    expect(screen.queryByLabelText('Sending...')).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('Sent')).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('Send failed')).not.toBeInTheDocument()
+  })
+
+  it('calls onResend when failed indicator is clicked', () => {
+    const onResend = vi.fn()
+    const message: Message = {
+      type: 'user',
+      content: 'Hello',
+      index: 0,
+      sendState: 'failed',
+      clientMsgId: 'uuid-1',
+    }
+    renderMessage(message, { onResend })
+    screen.getByLabelText('Send failed').click()
+    expect(onResend).toHaveBeenCalledWith(message)
+  })
+})
