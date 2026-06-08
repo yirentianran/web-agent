@@ -31,6 +31,7 @@ import {
   type StreamingTextState,
 } from "./hooks/useStreamingText";
 import type { Message, SessionItem, MessageSendState, ConnectionStatus, SessionStatus } from "./lib/types";
+import { isUnconfirmed } from "./lib/types";
 import {
   computeRecoverIndex,
   saveLastKnownIndex,
@@ -702,19 +703,18 @@ function MainApp() {
             // (sendState="sending") with a stale syntheticIndex. Re-index
             // it so it sorts after all confirmed messages.
             const merged = [...sameSession, ...newMsgs];
-            const unconfirmed = (m: Message) => m.sendState === "sending" || m.sendState === "failed";
             const confirmedMax = computeMaxIndex(
-              merged.filter((m) => !unconfirmed(m)),
+              merged.filter((m) => !isUnconfirmed(m)),
             );
             const reindexed = merged.map((m) =>
-              unconfirmed(m) && m.index <= confirmedMax
+              isUnconfirmed(m) && m.index <= confirmedMax
                 ? { ...m, index: confirmedMax + 1 }
                 : m,
             );
             if (newMsgs.length === 0) return reindexed;
             // Move unconfirmed messages (sending/failed) to the end
-            const optimistic = reindexed.filter((m) => unconfirmed(m));
-            const confirmed = reindexed.filter((m) => !unconfirmed(m));
+            const optimistic = reindexed.filter((m) => isUnconfirmed(m));
+            const confirmed = reindexed.filter((m) => !isUnconfirmed(m));
             return [...confirmed, ...optimistic];
           });
           restLoadedRef.current = true;
@@ -847,17 +847,23 @@ function MainApp() {
     [],
   );
 
-  const MIN_SENDING_DISPLAY_MS = 400;
+  const MIN_SENDING_DISPLAY_MS = 2000;
 
   const clearSendState = useCallback(
     (clientMsgId: string | undefined) => {
       if (!clientMsgId) return;
-      const sendTime = sendTimesRef.current.get(clientMsgId) ?? 0;
+      if (!sendTimesRef.current.has(clientMsgId)) return; // already cleared
+      const sendTime = sendTimesRef.current.get(clientMsgId)!;
       const elapsed = Date.now() - sendTime;
       if (elapsed < MIN_SENDING_DISPLAY_MS) {
         setTimeout(() => clearSendState(clientMsgId), MIN_SENDING_DISPLAY_MS - elapsed);
         return;
       }
+      // Clear only after the minimum display time has elapsed.
+      // The map entries are intentionally kept during the delay so the
+      // reindex logic re-applies "sending" after the echo's setMessages
+      // sets sendState to undefined — this is what keeps the indicator
+      // visible for the full minimum duration.
       sendStateMapRef.current.delete(clientMsgId);
       sendTimesRef.current.delete(clientMsgId);
       setMessages((prev) =>
@@ -1300,6 +1306,7 @@ function MainApp() {
   const handleSendFailed = useCallback(
     (clientMsgId: string) => {
       updateSendState(clientMsgId, "failed");
+      sendTimesRef.current.delete(clientMsgId); // free memory, no longer needed
       const activeId = urlSessionIdRef.current;
       if (activeId) {
         const currentState = sessionStatesRef.current.get(activeId);
@@ -1349,8 +1356,17 @@ function MainApp() {
         "[WebSocket] Connection failed, marking %d unconfirmed messages as failed",
         unconfirmedIds.length,
       );
+      const failedSet = new Set(unconfirmedIds);
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.clientMsgId && failedSet.has(m.clientMsgId)
+            ? { ...m, sendState: "failed" as const }
+            : m,
+        ),
+      );
       for (const id of unconfirmedIds) {
-        updateSendState(id, "failed");
+        sendStateMapRef.current.set(id, "failed");
+        sendTimesRef.current.delete(id);
       }
       // Reset session state for the active session if it was running
       const activeId = urlSessionIdRef.current;

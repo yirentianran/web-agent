@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import type { Message } from './lib/types'
+import { isUnconfirmed } from './lib/types'
 
 /**
  * These tests verify the message handling logic in App.tsx.
@@ -2691,7 +2692,6 @@ function mergeRestHistory(
 
   // Indices from confirmed messages only — optimistic (sending/failed)
   // messages have synthetic indices that can collide with real seq values.
-  const isUnconfirmed = (m: Message) => m.sendState === "sending" || m.sendState === "failed"
   const confirmedIndices = new Set(
     sameSession.filter((m) => !isUnconfirmed(m)).map((m) => m.index),
   )

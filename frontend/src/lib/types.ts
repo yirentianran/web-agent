@@ -33,6 +33,11 @@ export interface Message {
 /** Send state machine for user messages */
 export type MessageSendState = 'sending' | 'failed'
 
+/** True when a message has an unconfirmed (sending or failed) send state */
+export function isUnconfirmed(m: Message): boolean {
+  return m.sendState === 'sending' || m.sendState === 'failed'
+}
+
 /** Session lifecycle status */
 export type SessionStatus = 'idle' | 'running' | 'completed' | 'error' | 'waiting_user' | 'cancelled'
 
