@@ -619,7 +619,7 @@ function MainApp() {
             "[REST /history] status=%d ok=%s userId=%s sessionId=%s",
             resp.status, resp.ok, userId, urlSessionId,
           );
-          if (resp.status === 401 || resp.status === 401 || resp.status === 403 || resp.status === 404) {
+          if (resp.status === 401 || resp.status === 403 || resp.status === 404) {
             window.location.href = window.location.origin;
             throw new Error("Auth or permission denied");
           }
@@ -1038,9 +1038,10 @@ function MainApp() {
             const currentState3 = sessionStatesRef.current.get(msg.session_id);
             if (newState === "error") {
               console.warn("[WS] live error received: currentState=%s msg=%s", currentState3, msg.message || msg.content);
-            }
-            if (newState === "error" && currentState3 === "running") {
-              // Orphan detected — keep "running", let /status resolve it
+              if (currentState3 !== "running") {
+                setSessionStateFor(msg.session_id, newState);
+              }
+              // If running, orphan detection fired — keep "running"
             } else {
               setSessionStateFor(msg.session_id, newState);
             }
