@@ -31,7 +31,7 @@ export interface Message {
 }
 
 /** Send state machine for user messages */
-export type MessageSendState = 'sending' | 'sent' | 'failed'
+export type MessageSendState = 'sending' | 'failed'
 
 /** Session lifecycle status */
 export type SessionStatus = 'idle' | 'running' | 'completed' | 'error' | 'waiting_user' | 'cancelled'
