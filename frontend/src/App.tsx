@@ -419,7 +419,7 @@ function MainApp() {
   ): Message[] =>
     prev.map((m) =>
       m.clientMsgId === clientMsgId
-        ? { ...m, index: newIndex ?? m.index, sendState: "sent" as const }
+        ? { ...m, index: newIndex ?? m.index, sendState: undefined }
         : m,
     );
 
@@ -431,9 +431,9 @@ function MainApp() {
     prev.map((m) => {
       if (m.clientMsgId !== msg.clientMsgId) return m;
       if (msg.index != null && msg.index < (m.index ?? 0)) {
-        return { ...m, sendState: "sent" as const };
+        return { ...m, sendState: undefined };
       }
-      return { ...m, index: msg.index ?? m.index, sendState: "sent" as const };
+      return { ...m, index: msg.index ?? m.index, sendState: undefined };
     });
 
   const [userId, setUserId] = useState<string>(() => {
@@ -656,7 +656,7 @@ function MainApp() {
           // the user echo for new sessions due to last_seen threshold).
           for (const m of msgs) {
             if (m.type === "user" && m.clientMsgId) {
-              updateSendState(m.clientMsgId, "sent");
+              clearSendState(m.clientMsgId);
               confirmSendRef.current(m.clientMsgId);
               // Clear pending message — backend has confirmed receipt
               if (m.session_id) {
@@ -684,10 +684,10 @@ function MainApp() {
             }
             // Indices from confirmed messages only — optimistic (sending)
             // and failed messages have synthetic indices that can collide
-            // with real seq values. Only "sent" and historical messages
+            // with real seq values. Only historical messages
             // (no sendState) are truly confirmed.
             const confirmedIndices = new Set(
-              sameSession.filter((m) => m.sendState === "sent" || !m.sendState).map((m) => m.index),
+              sameSession.filter((m) => !m.sendState).map((m) => m.index),
             );
             const prevClientMsgIds = new Set(
               sameSession.filter((m) => m.clientMsgId).map((m) => m.clientMsgId),
@@ -846,6 +846,19 @@ function MainApp() {
     [],
   );
 
+  const clearSendState = useCallback(
+    (clientMsgId: string | undefined) => {
+      if (!clientMsgId) return;
+      sendStateMapRef.current.delete(clientMsgId);
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.clientMsgId === clientMsgId ? { ...m, sendState: undefined } : m,
+        ),
+      );
+    },
+    [],
+  );
+
   const handleIncomingMessage = useCallback(
     (msg: Message) => {
       // Log incoming WS messages for debugging cross-user access
@@ -934,7 +947,7 @@ function MainApp() {
           pendingUserMsgsRef.current.delete(msg.session_id);
             clearPendingMessage(msg.session_id, userId);
           if (pending?.clientMsgId) {
-            updateSendState(pending.clientMsgId, "sent");
+            clearSendState(pending.clientMsgId);
             confirmSendRef.current(pending.clientMsgId);
           }
         }
@@ -942,7 +955,7 @@ function MainApp() {
 
       // Also confirm send if backend echoes a user message we're tracking (by clientMsgId on the incoming msg)
       if (msg.type === "user" && msg.clientMsgId) {
-        updateSendState(msg.clientMsgId, "sent");
+        clearSendState(msg.clientMsgId);
         confirmSendRef.current(msg.clientMsgId);
       }
 
@@ -1089,7 +1102,7 @@ function MainApp() {
               // Content match — update index of the first matching message
               next = prev.map((m) =>
                 m.type === "user" && m.content === msg.content && m.sendState === "sending"
-                  ? { ...m, index: msg.index ?? m.index, sendState: "sent" as const }
+                  ? { ...m, index: msg.index ?? m.index, sendState: undefined }
                   : m,
               );
               dedupResult = "update:firstTurn-user-contentDup";
@@ -1124,7 +1137,7 @@ function MainApp() {
             // Content match — update index of the matching optimistic message
             next = prev.map((m) =>
               m.type === "user" && m.content === msg.content && m.sendState === "sending"
-                ? { ...m, index: msg.index ?? m.index, sendState: "sent" as const }
+                ? { ...m, index: msg.index ?? m.index, sendState: undefined }
                 : m,
             );
             dedupResult = "update:user-contentDup";
