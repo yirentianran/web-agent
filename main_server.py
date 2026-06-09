@@ -1643,13 +1643,17 @@ async def build_sdk_options(
     )
 
 
-def message_to_dicts(msg: Any, model: str | None = None) -> Iterator[dict[str, Any]]:
+def message_to_dicts(msg: Any, model: str | None = None, tool_use_names: dict[str, str] | None = None) -> Iterator[dict[str, Any]]:
     """Convert a Claude SDK Message dataclass to one or more serializable dicts.
 
     An ``AssistantMessage`` may contain multiple content blocks (e.g. a
     ``ToolUseBlock`` followed by a ``ToolResultBlock``).  Each block that
     warrants its own message is yielded separately so that tool output
     (e.g. Bash stdout) reaches the frontend instead of being silently dropped.
+
+    ``tool_use_names`` is a shared dict that accumulates tool_use_id → name
+    mappings across messages so ToolResultBlock (which appears in a later
+    UserMessage) can resolve the correct tool name.
     """
     if isinstance(msg, UserMessage):
         content = msg.content
@@ -1657,7 +1661,7 @@ def message_to_dicts(msg: Any, model: str | None = None) -> Iterator[dict[str, A
             emitted: list[dict[str, Any]] = []
             def _emit(d: dict[str, Any]) -> None:
                 emitted.append(d)
-            combined_text = process_content_blocks(content, _emit)
+            combined_text = process_content_blocks(content, _emit, tool_use_names)
             for d in emitted:
                 yield d
             text = combined_text
@@ -1674,7 +1678,7 @@ def message_to_dicts(msg: Any, model: str | None = None) -> Iterator[dict[str, A
         def _emit(d: dict[str, Any]) -> None:
             emitted.append(d)
 
-        combined_text = process_content_blocks(msg.content, _emit)
+        combined_text = process_content_blocks(msg.content, _emit, tool_use_names)
 
         for d in emitted:
             yield d
@@ -2287,10 +2291,11 @@ async def run_agent_task(
         # Snapshot pre-existing output files so we only emit new ones
         pre_scan_snapshot = _snapshot_output_files(workspace, session_id)
         logger.debug("[AGENT_TASK] Starting receive_response loop")
+        tool_use_names: dict[str, str] = {}
         async for msg in client.receive_response():
             msg_count += 1
             logger.debug("[AGENT_TASK] Received message #%d: type=%s", msg_count, type(msg).__name__)
-            for event in message_to_dicts(msg, model=options.model):
+            for event in message_to_dicts(msg, model=options.model, tool_use_names=tool_use_names):
                 # User message already persisted at function start — skip duplicates from agent response
                 if event.get("type") == "user":
                     continue

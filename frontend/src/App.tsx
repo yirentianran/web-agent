@@ -226,7 +226,7 @@ interface MainLayoutProps {
   authToken: string | null;
   streamingText: string;
   inputBarRef: React.RefObject<InputBarHandle | null>;
-  handleSend: (message: string, fileMeta?: Array<{filename: string; size: number}>) => void;
+  handleSend: (message: string, fileMeta?: Array<{filename: string; size: number}>, sessionId?: string) => void;
   onEnsureSession: () => Promise<string | undefined>;
   stopSession: () => Promise<void>;
   filePanelOpen: boolean;
@@ -598,7 +598,6 @@ function MainApp() {
         };
         pendingUserMsgsRef.current.set(urlSessionId, optimisticMsg);
         sendStateMapRef.current.set(storedPending.clientMsgId, "sending");
-        sendTimesRef.current.set(storedPending.clientMsgId, Date.now());
         setMessages((prev) => {
           const exists = prev.some(
             (m) => m.clientMsgId === storedPending.clientMsgId,
@@ -847,25 +846,10 @@ function MainApp() {
     [],
   );
 
-  const MIN_SENDING_DISPLAY_MS = 2000;
-
   const clearSendState = useCallback(
     (clientMsgId: string | undefined) => {
       if (!clientMsgId) return;
-      if (!sendTimesRef.current.has(clientMsgId)) return; // already cleared
-      const sendTime = sendTimesRef.current.get(clientMsgId)!;
-      const elapsed = Date.now() - sendTime;
-      if (elapsed < MIN_SENDING_DISPLAY_MS) {
-        setTimeout(() => clearSendState(clientMsgId), MIN_SENDING_DISPLAY_MS - elapsed);
-        return;
-      }
-      // Clear only after the minimum display time has elapsed.
-      // The map entries are intentionally kept during the delay so the
-      // reindex logic re-applies "sending" after the echo's setMessages
-      // sets sendState to undefined — this is what keeps the indicator
-      // visible for the full minimum duration.
       sendStateMapRef.current.delete(clientMsgId);
-      sendTimesRef.current.delete(clientMsgId);
       setMessages((prev) =>
         prev.map((m) =>
           m.clientMsgId === clientMsgId ? { ...m, sendState: undefined } : m,
@@ -973,6 +957,25 @@ function MainApp() {
       if (msg.type === "user" && msg.clientMsgId) {
         clearSendState(msg.clientMsgId);
         confirmSendRef.current(msg.clientMsgId);
+      }
+
+      // Fallback: any agent message (assistant, tool_use, etc.) for a session
+      // with a pending user message confirms the user message was received.
+      // Needed because the subscribe loop may skip the user echo for new
+      // sessions, and REST /history can race against WS message processing.
+      if (
+        msg.session_id &&
+        msg.type !== "user" &&
+        msg.type !== "heartbeat" &&
+        msg.type !== "stream_event"
+      ) {
+        const pending = pendingUserMsgsRef.current.get(msg.session_id);
+        if (pending?.clientMsgId) {
+          clearSendState(pending.clientMsgId);
+          confirmSendRef.current(pending.clientMsgId);
+          pendingUserMsgsRef.current.delete(msg.session_id);
+          clearPendingMessage(msg.session_id, userId);
+        }
       }
 
       // stream_event indices are computed (last_seen+i) and can collide with real seq values
@@ -1275,7 +1278,6 @@ function MainApp() {
   const sendRecoverRef = useRef<(sessionId: string, afterIndex: number) => void>(() => {});
   const confirmRecoverRef = useRef<(sessionId: string) => void>(() => {});
   const sendStateMapRef = useRef<Map<string, MessageSendState>>(new Map());
-  const sendTimesRef = useRef<Map<string, number>>(new Map());
   // Ref for authToken so session-loading effect doesn't re-fire on token changes
   const authTokenRef = useRef(authToken);
   authTokenRef.current = authToken;
@@ -1306,7 +1308,6 @@ function MainApp() {
   const handleSendFailed = useCallback(
     (clientMsgId: string) => {
       updateSendState(clientMsgId, "failed");
-      sendTimesRef.current.delete(clientMsgId); // free memory, no longer needed
       const activeId = urlSessionIdRef.current;
       if (activeId) {
         const currentState = sessionStatesRef.current.get(activeId);
@@ -1366,7 +1367,6 @@ function MainApp() {
       );
       for (const id of unconfirmedIds) {
         sendStateMapRef.current.set(id, "failed");
-        sendTimesRef.current.delete(id);
       }
       // Reset session state for the active session if it was running
       const activeId = urlSessionIdRef.current;
@@ -1500,7 +1500,6 @@ function MainApp() {
         ),
       );
       sendStateMapRef.current.set(newClientMsgId, "sending");
-      sendTimesRef.current.set(newClientMsgId, Date.now());
       const resentMsg: Message = {
         ...failedMessage,
         clientMsgId: newClientMsgId,
@@ -1549,8 +1548,8 @@ function MainApp() {
   }, [userId, navigate, loadSessions]);
 
   const handleSend = useCallback(
-    async (message: string, fileMeta?: Array<{filename: string; size: number}>) => {
-      const sessionId = urlSessionIdRef.current;
+    async (message: string, fileMeta?: Array<{filename: string; size: number}>, paramSessionId?: string) => {
+      const sessionId = paramSessionId || urlSessionIdRef.current;
       if (!sessionId) return;
 
       // Use index = maxMsgIndex + 1 so it sorts AFTER all existing
@@ -1572,7 +1571,6 @@ function MainApp() {
       };
       // Track send state
       sendStateMapRef.current.set(clientMsgId, "sending");
-      sendTimesRef.current.set(clientMsgId, Date.now());
       if (sessionId) {
         pendingUserMsgsRef.current.set(sessionId, optimisticMsg);
         // Persist to localStorage so the pending message survives page refresh

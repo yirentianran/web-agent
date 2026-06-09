@@ -2,7 +2,7 @@ import React from 'react'
 import { describe, it, expect, vi } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import '@testing-library/jest-dom/vitest'
-import MessageBubble, { formatBashCommand, formatFileContent, parseTagBlocks, hasIncompleteTag } from '../components/MessageBubble'
+import MessageBubble, { formatBashCommand, formatFileContent, parseTagBlocks, hasIncompleteTag, pairToolMessages } from '../components/MessageBubble'
 import type { Message } from '../lib/types'
 
 function renderMessage(message: Message, overrides?: Partial<React.ComponentProps<typeof MessageBubble>>) {
@@ -446,18 +446,20 @@ describe('MessageBubble - assistant bubble styling', () => {
 })
 
 describe('MessageBubble - result message (Session completed)', () => {
-  it('hides the result message bubble — no "Session completed" shown', () => {
+  it('renders usage footer when result has duration', () => {
     const message: Message = {
       type: 'result',
       content: '',
       index: 10,
       session_id: 'session-1',
       duration_ms: 64500,
+      num_turns: 3,
+      usage: { input_tokens: 1200, output_tokens: 800 },
       subtype: 'complete',
     }
 
-    const { container } = renderMessage(message)
-    expect(container.firstChild).toBeNull()
+    renderMessage(message)
+    expect(screen.getByText(/64\.5s/)).toBeInTheDocument()
   })
 
   it('still hides result message without duration or cost', () => {
@@ -474,19 +476,21 @@ describe('MessageBubble - result message (Session completed)', () => {
 })
 
 describe('MessageBubble - tool result rendering', () => {
-  it('renders tool_result content as Markdown, not plain pre', () => {
+  it('renders tool_result content in code block', () => {
     const message: Message = {
       type: 'tool_result',
-      content: '**bold text** and `code`',
+      content: 'some output text',
       index: 5,
       name: 'Read',
     }
 
-    renderMessage(message)
+    const { container } = renderMessage(message)
 
-    // Bold should be rendered as <strong>, not plain text
-    const strong = screen.getByRole('strong')
-    expect(strong).toHaveTextContent('bold text')
+    // All content goes through code fence → .code-block
+    const details = container.querySelector('details.tool-result')
+    expect(details).toBeInTheDocument()
+    // Content should be in a code block (fenced by ```)
+    expect(details!.innerHTML).toContain('code-block')
   })
 
   it('renders JSON tool result as formatted code block', () => {
@@ -503,7 +507,7 @@ describe('MessageBubble - tool result rendering', () => {
     expect(screen.getByText(/"key"/)).toBeInTheDocument()
   })
 
-  it('hides tool_result when content is empty', () => {
+  it('shows empty result indicator when content is empty', () => {
     const message: Message = {
       type: 'tool_result',
       content: '',
@@ -511,19 +515,19 @@ describe('MessageBubble - tool result rendering', () => {
       name: 'TaskOutput',
     }
 
-    const { container } = renderMessage(message)
-    expect(container.firstChild).toBeNull()
+    renderMessage(message)
+    expect(screen.getByText('Done (no output)')).toBeInTheDocument()
   })
 
-  it('hides tool_result when content field is missing', () => {
+  it('shows empty result indicator when content field is missing', () => {
     const message: Message = {
       type: 'tool_result',
       index: 5,
       name: 'TaskOutput',
     } as Message
 
-    const { container } = renderMessage(message)
-    expect(container.firstChild).toBeNull()
+    renderMessage(message)
+    expect(screen.getByText('Done (no output)')).toBeInTheDocument()
   })
 
   it('shows tool_result when is_error is true', () => {
@@ -538,7 +542,9 @@ describe('MessageBubble - tool result rendering', () => {
     const { container } = renderMessage(message)
     const details = container.querySelector('details.tool-result')
     expect(details).toBeInTheDocument()
-    expect(details?.querySelector('summary')).toHaveTextContent('Result: Bash')
+    const summary = details?.querySelector('summary')
+    expect(summary?.querySelector('.tool-name')).toHaveTextContent('Bash')
+    expect(summary?.querySelector('.tool-detail')).toHaveTextContent('Result:')
     expect(screen.getByText('fatal: pathspec did not match any files')).toBeInTheDocument()
   })
 
@@ -858,7 +864,7 @@ describe('MessageBubble - Bash tool_use rendering', () => {
     expect(screen.getByText('analyze excel file')).toBeInTheDocument()
 
     // Command should have real newlines, not \\n literals
-    const codeBlock = container.querySelector('.tool-input code')
+    const codeBlock = container.querySelector('.code-block-pre code')
     expect(codeBlock?.textContent).toContain('\n')
     expect(codeBlock?.textContent).not.toContain('\\n')
   })
@@ -1028,16 +1034,16 @@ describe('MessageBubble - hidden system message subtypes', () => {
     expect(container.firstChild).toBeNull()
   })
 
-  it('still shows non-task_started system messages', () => {
+  it('hides system messages with subtypes not in the allowlist', () => {
     const message: Message = {
       type: 'system',
       subtype: 'some_other',
-      content: 'Visible message',
+      content: 'Invisible message',
       index: 0,
     }
 
-    renderMessage(message)
-    expect(screen.getByText('Visible message')).toBeInTheDocument()
+    const { container } = renderMessage(message)
+    expect(container.firstChild).toBeNull()
   })
 })
 
@@ -1114,7 +1120,7 @@ describe('MessageBubble - Write tool_use rendering', () => {
     expect(summary?.textContent).toContain('script.py')
 
     // Content should have real newlines, not \\n literals
-    const codeBlock = container.querySelector('.tool-input code')
+    const codeBlock = container.querySelector('.code-block-pre code')
     expect(codeBlock?.textContent).toContain('\n')
     expect(codeBlock?.textContent).not.toContain('\\n')
   })
@@ -1273,7 +1279,7 @@ describe('parseTagBlocks', () => {
 
   it('handles empty input', () => {
     const result = parseTagBlocks('')
-    expect(result).toEqual([{ kind: 'text', content: '' }])
+    expect(result).toEqual([])
   })
 
   it('preserves markdown inside tags', () => {
@@ -1454,5 +1460,140 @@ describe('MessageBubble - send state indicator', () => {
     renderMessage(message, { onResend })
     screen.getByLabelText('Send failed').click()
     expect(onResend).toHaveBeenCalledWith(message)
+  })
+})
+
+// ── pairToolMessages tests ────────────────────────────────────────
+
+describe('pairToolMessages', () => {
+  it('merges tool_result into matching tool_use and filters out the result', () => {
+    const messages: Message[] = [
+      { type: 'tool_use', id: 'toolu-1', name: 'Bash', input: { command: 'ls' }, content: '', index: 1 },
+      { type: 'tool_result', tool_use_id: 'toolu-1', content: 'file.txt', name: 'Bash', index: 2 },
+    ]
+    const result = pairToolMessages(messages)
+    expect(result).toHaveLength(1)
+    expect(result[0].type).toBe('tool_use')
+    expect(result[0].toolResult).toBeDefined()
+    expect(result[0].toolResult!.content).toBe('file.txt')
+  })
+
+  it('leaves unpaired tool_use without toolResult field', () => {
+    const messages: Message[] = [
+      { type: 'tool_use', id: 'toolu-1', name: 'Bash', input: { command: 'ls' }, content: '', index: 1 },
+    ]
+    const result = pairToolMessages(messages)
+    expect(result).toHaveLength(1)
+    expect(result[0].toolResult).toBeUndefined()
+  })
+
+  it('preserves unpaired tool_results (no matching tool_use)', () => {
+    const messages: Message[] = [
+      { type: 'tool_result', tool_use_id: 'orphan-1', content: 'orphaned', name: 'Bash', index: 1 },
+    ]
+    const result = pairToolMessages(messages)
+    expect(result).toHaveLength(1)
+    expect(result[0].type).toBe('tool_result')
+  })
+
+  it('preserves tool_results without tool_use_id', () => {
+    const messages: Message[] = [
+      { type: 'tool_result', content: 'no link', name: 'Read', index: 1 },
+    ]
+    const result = pairToolMessages(messages)
+    expect(result).toHaveLength(1)
+    expect(result[0].type).toBe('tool_result')
+  })
+
+  it('does not merge AskUserQuestion tool_use results', () => {
+    const messages: Message[] = [
+      { type: 'tool_use', id: 'toolu-1', name: 'AskUserQuestion', input: {}, content: '', index: 1 },
+      { type: 'tool_result', tool_use_id: 'toolu-1', content: 'answered', name: 'AskUserQuestion', index: 2 },
+    ]
+    const result = pairToolMessages(messages)
+    expect(result[0].toolResult).toBeUndefined()
+  })
+
+  it('handles tool_result arriving before tool_use in array order', () => {
+    const messages: Message[] = [
+      { type: 'tool_result', tool_use_id: 'toolu-1', content: 'result first', name: 'Bash', index: 1 },
+      { type: 'tool_use', id: 'toolu-1', name: 'Bash', input: { command: 'ls' }, content: '', index: 2 },
+    ]
+    const result = pairToolMessages(messages)
+    expect(result).toHaveLength(1)
+    expect(result[0].type).toBe('tool_use')
+    expect(result[0].toolResult!.content).toBe('result first')
+  })
+
+  it('handles error tool_results', () => {
+    const messages: Message[] = [
+      { type: 'tool_use', id: 'toolu-1', name: 'Bash', input: { command: 'bad' }, content: '', index: 1 },
+      { type: 'tool_result', tool_use_id: 'toolu-1', content: 'command not found', name: 'Bash', is_error: true, index: 2 },
+    ]
+    const result = pairToolMessages(messages)
+    expect(result[0].toolResult!.is_error).toBe(true)
+    expect(result[0].toolResult!.content).toBe('command not found')
+  })
+
+  it('does not modify non-tool messages', () => {
+    const messages: Message[] = [
+      { type: 'user', content: 'hello', index: 0 },
+      { type: 'assistant', content: 'hi', index: 1 },
+    ]
+    const result = pairToolMessages(messages)
+    expect(result).toHaveLength(2)
+    expect(result[0].type).toBe('user')
+    expect(result[1].type).toBe('assistant')
+  })
+})
+
+// ── Merged tool execution card rendering tests ────────────────────
+
+describe('MessageBubble - merged tool execution card', () => {
+  it('shows output section when toolResult is attached to tool_use', () => {
+    const message: Message = {
+      type: 'tool_use',
+      content: '',
+      index: 5,
+      id: 'toolu-1',
+      name: 'Bash',
+      input: { command: 'echo hello' },
+      toolResult: { content: 'hello', name: 'Bash' },
+    }
+    const { container } = renderMessage(message)
+    expect(screen.getByText('Result:')).toBeInTheDocument()
+    // "hello" appears in both input (echo hello) and output — verify output section specifically
+    const resultSection = container.querySelector('.tool-result-section')
+    expect(resultSection).toBeInTheDocument()
+    expect(resultSection!.textContent).toContain('hello')
+  })
+
+  it('shows running indicator when tool_use has no toolResult', () => {
+    const message: Message = {
+      type: 'tool_use',
+      content: '',
+      index: 5,
+      id: 'toolu-1',
+      name: 'Bash',
+      input: { command: 'echo hello' },
+      // No toolResult
+    }
+    renderMessage(message)
+    expect(screen.getByText('Running...')).toBeInTheDocument()
+  })
+
+  it('shows error styling for error tool_results in merged card', () => {
+    const message: Message = {
+      type: 'tool_use',
+      content: '',
+      index: 5,
+      id: 'toolu-1',
+      name: 'Bash',
+      input: { command: 'bad' },
+      toolResult: { content: 'command not found', name: 'Bash', is_error: true },
+    }
+    const { container } = renderMessage(message)
+    expect(container.querySelector('.tool-result-section--error')).toBeInTheDocument()
+    expect(screen.getByText('An error occurred')).toBeInTheDocument()
   })
 })

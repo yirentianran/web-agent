@@ -1,6 +1,6 @@
 import { useEffect, useRef, useCallback, useState, useMemo } from "react";
 import { useTranslation } from "react-i18next";
-import MessageBubble, { parseTagBlocks, hasIncompleteTag } from "./MessageBubble";
+import MessageBubble, { parseTagBlocks, hasIncompleteTag, pairToolMessages, CollapsibleBlock } from "./MessageBubble";
 import MarkdownRenderer from "./MarkdownRenderer";
 
 import StatusSpinner from "./StatusSpinner";
@@ -282,12 +282,13 @@ export default function ChatArea({
         break;
       }
     }
-    return messages.filter(
+    const deduped = messages.filter(
       (msg) =>
         msg.type !== "tool_use" ||
         msg.name !== "TodoWrite" ||
         msg.index === lastTodoWriteIndex,
     );
+    return pairToolMessages(deduped);
   }, [messages]);
 
   // Filter out invisible message types for the welcome screen check.
@@ -369,14 +370,14 @@ export default function ChatArea({
             )
           }
           const tagParts = parseTagBlocks(streamingText)
-          const hasAnalysis = tagParts.some(p => p.kind === 'analysis')
-          const hasSummary = tagParts.some(p => p.kind === 'summary')
+          const analysisItems = tagParts.filter(p => p.kind === 'analysis')
+          const summaryItems = tagParts.filter(p => p.kind === 'summary')
           const textContent = tagParts
             .filter(p => p.kind === 'text')
             .map(p => p.content)
             .join('\n')
           // If no tags found, render with MarkdownRenderer for proper formatting
-          if (!hasAnalysis && !hasSummary) {
+          if (analysisItems.length === 0 && summaryItems.length === 0) {
             return (
               <div className="message assistant-message streaming-message">
                 <div className="bubble">
@@ -389,30 +390,8 @@ export default function ChatArea({
           return (
             <div className="message assistant-message streaming-message">
               <div className="bubble">
-                {hasAnalysis && (
-                  <details className="analysis-block" open={false}>
-                    <summary>{t('message.analysis')}</summary>
-                    <div className="analysis-content">
-                      {tagParts.filter(p => p.kind === 'analysis').map((p, i) => (
-                        <div key={i} className="analysis-text">
-                          <MarkdownRenderer>{p.content}</MarkdownRenderer>
-                        </div>
-                      ))}
-                    </div>
-                  </details>
-                )}
-                {hasSummary && (
-                  <details className="summary-block" open={false}>
-                    <summary>{t('message.summary')}</summary>
-                    <div className="summary-content">
-                      {tagParts.filter(p => p.kind === 'summary').map((p, i) => (
-                        <div key={i} className="summary-text">
-                          <MarkdownRenderer>{p.content}</MarkdownRenderer>
-                        </div>
-                      ))}
-                    </div>
-                  </details>
-                )}
+                <CollapsibleBlock kind="analysis" items={analysisItems} />
+                <CollapsibleBlock kind="summary" items={summaryItems} />
                 {textContent && (
                   <MarkdownRenderer>{textContent}</MarkdownRenderer>
                 )}

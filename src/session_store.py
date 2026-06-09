@@ -320,6 +320,13 @@ class SessionStore:
                     msg["tool_use_id"] = parsed["tool_use_id"]
                 if "content" in parsed:
                     msg["result_content"] = parsed["content"]
+            if msg.get("type") == "result":
+                if "duration_ms" in parsed:
+                    msg["duration_ms"] = parsed["duration_ms"]
+                if "num_turns" in parsed:
+                    msg["num_turns"] = parsed["num_turns"]
+                if "is_error" in parsed:
+                    msg["is_error"] = parsed["is_error"]
             if msg.get("type") == "stream_event" and "event" in parsed:
                 msg["event"] = parsed["event"]
             if (

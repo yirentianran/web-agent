@@ -8,8 +8,10 @@ export interface Message {
   replay?: boolean
   is_error?: boolean  // for tool_result error flag
   duration_ms?: number
+  num_turns?: number  // for result messages
   usage?: Record<string, number>
   id?: string       // for tool_use blocks
+  tool_use_id?: string  // tool_result → tool_use link
   input?: unknown   // for tool_use blocks
   data?: unknown    // for system messages, file_result
   uuid?: string     // for stream_event
@@ -28,6 +30,12 @@ export interface Message {
   sendState?: MessageSendState
   // Heartbeat: whether the backend agent task is still running
   agent_alive?: boolean
+  // Merged tool_result data (attached by pairToolMessages)
+  toolResult?: {
+    content: string
+    is_error?: boolean
+    name?: string
+  }
 }
 
 /** Send state machine for user messages */
