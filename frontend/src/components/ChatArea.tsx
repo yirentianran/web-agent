@@ -1,6 +1,6 @@
 import { useEffect, useRef, useCallback, useState, useMemo } from "react";
 import { useTranslation } from "react-i18next";
-import MessageBubble, { parseTagBlocks, hasIncompleteTag } from "./MessageBubble";
+import MessageBubble, { parseTagBlocks, hasIncompleteTag, pairToolMessages } from "./MessageBubble";
 import MarkdownRenderer from "./MarkdownRenderer";
 
 import StatusSpinner from "./StatusSpinner";
@@ -282,12 +282,13 @@ export default function ChatArea({
         break;
       }
     }
-    return messages.filter(
+    const deduped = messages.filter(
       (msg) =>
         msg.type !== "tool_use" ||
         msg.name !== "TodoWrite" ||
         msg.index === lastTodoWriteIndex,
     );
+    return pairToolMessages(deduped);
   }, [messages]);
 
   // Filter out invisible message types for the welcome screen check.

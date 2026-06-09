@@ -189,10 +189,15 @@
     "added": "已添加：",
     "none": "(无)",
     "result": "结果：",
+    "toolRunning": "执行中...",
+    "resultEmpty": "完成（无输出）",
     "past": "过去",
     "pastLabel": "(历史)",
     "errorOccurred": "发生错误",
-    "toolErrorNoOutput": "(工具返回错误且无输出)"
+    "toolErrorNoOutput": "(工具返回错误且无输出)",
+    "showAll": "展开全部",
+    "collapse": "收起",
+    "resultUsage": "⏱ {{duration}} · {{turns}} 轮 · {{tokens}} tokens"
   },
   "spinner": {
     "timeHours": "{{count}}时",

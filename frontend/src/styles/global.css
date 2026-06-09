@@ -969,6 +969,10 @@ body {
   font-weight: 600;
 }
 
+.tool-result--error .tool-name {
+  color: inherit;
+}
+
 .tool-input,
 .tool-output {
   font-family: var(--font-mono);
@@ -1016,6 +1020,93 @@ body {
 .tool-result--resolved > summary {
   color: var(--color-resolved-error-text);
   font-weight: 400;
+}
+
+.tool-result--resolved .tool-name {
+  color: inherit;
+}
+
+/* Empty success result — non-interactive, no expand affordance */
+.tool-result--empty {
+  cursor: default;
+}
+
+.tool-result--empty .tool-summary::after {
+  content: '';
+}
+
+/* High-risk tool indicator — orange icon + name, border stays hash-based for pairing */
+.tool-message.tool-message--danger .tool-icon,
+.tool-message.tool-message--danger .tool-name {
+  color: var(--color-tool-danger, #f59e0b);
+}
+
+/* ── Tool result section inside merged tool_use card ───────────────── */
+
+.tool-result-separator {
+  height: 1px;
+  background: var(--color-border);
+  margin: 12px 0 8px;
+}
+
+.tool-result-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.tool-result-icon {
+  font-size: 13px;
+  line-height: 1;
+}
+
+.tool-result-icon--running {
+  animation: tool-pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes tool-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+.tool-result-status {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--color-text-secondary);
+  font-family: var(--font-mono);
+}
+
+.tool-result-status--error {
+  color: var(--color-tool-error-summary);
+}
+
+.tool-result-section .tool-output-markdown,
+.tool-result-section .tool-output-json {
+  margin-left: 0;
+}
+
+.tool-result-empty {
+  font-size: 12px;
+  color: var(--color-text-secondary);
+  font-style: italic;
+  padding: 4px 0;
+}
+
+/* Result usage footer — compact metrics line */
+.result-footer {
+  padding: 4px 0;
+  text-align: right;
+}
+
+.result-footer__text {
+  font-size: 11px;
+  color: var(--color-text-secondary);
+  font-family: var(--font-mono);
+}
+
+.result-footer--error .result-footer__text {
+  color: var(--color-error);
 }
 
 /* Thinking block — collapsed by default inside assistant bubbles */
@@ -1163,7 +1254,8 @@ body {
 }
 
 /* Tool message — improved display */
-.tool-message .tool-summary {
+.tool-message .tool-summary,
+.tool-result .tool-summary {
   display: flex;
   align-items: center;
   gap: 6px;
@@ -1173,22 +1265,26 @@ body {
   cursor: pointer;
 }
 
-.tool-message .tool-summary::-webkit-details-marker {
+.tool-message .tool-summary::-webkit-details-marker,
+.tool-result .tool-summary::-webkit-details-marker {
   display: none;
 }
 
-.tool-message .tool-icon {
+.tool-message .tool-icon,
+.tool-result .tool-icon {
   font-size: 14px;
 }
 
-.tool-message .tool-name {
+.tool-message .tool-name,
+.tool-result .tool-name {
   font-weight: 600;
   font-family: var(--font-mono);
   font-size: 12px;
   color: var(--color-primary);
 }
 
-.tool-message .tool-detail {
+.tool-message .tool-detail,
+.tool-result .tool-detail {
   color: var(--color-text-secondary);
   font-size: 12px;
   overflow: hidden;
@@ -1197,11 +1293,13 @@ body {
   max-width: 400px;
 }
 
-.tool-message details[open] summary::after {
+.tool-message details[open] > .tool-summary::after,
+.tool-result details[open] > .tool-summary::after {
   content: ' ▾';
 }
 
-.tool-message details:not([open]) summary::after {
+.tool-message details:not([open]) > .tool-summary::after,
+.tool-result details:not([open]) > .tool-summary::after {
   content: ' ▸';
 }
 
@@ -4930,5 +5028,42 @@ body {
 .sfp-item-del:disabled {
   opacity: 0.4;
   cursor: not-allowed;
+}
+
+/* ── Large tool result folding ──────────────────────────── */
+
+.tool-output-collapsed {
+  max-height: 300px;
+  overflow: hidden;
+  position: relative;
+}
+
+.tool-output-collapsed::after {
+  content: '';
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 60px;
+  background: linear-gradient(transparent, var(--color-surface));
+  pointer-events: none;
+}
+
+.tool-output-expand-btn {
+  display: block;
+  width: 100%;
+  padding: 6px;
+  background: none;
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  font-size: 12px;
+  margin-top: 4px;
+}
+
+.tool-output-expand-btn:hover {
+  color: var(--color-text);
+  background: var(--color-surface-hover);
 }
 

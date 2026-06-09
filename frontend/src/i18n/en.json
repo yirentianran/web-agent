@@ -189,10 +189,15 @@
     "added": "Added:",
     "none": "(none)",
     "result": "Result:",
+    "toolRunning": "Running...",
+    "resultEmpty": "Done (no output)",
     "past": "past",
     "pastLabel": "(past)",
     "errorOccurred": "An error occurred",
-    "toolErrorNoOutput": "(Tool returned an error with no output)"
+    "toolErrorNoOutput": "(Tool returned an error with no output)",
+    "showAll": "Show all",
+    "collapse": "Collapse",
+    "resultUsage": "⏱ {{duration}} · {{turns}} turns · {{tokens}} tokens"
   },
   "spinner": {
     "timeHours": "{{count}}h",

@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import type { Message } from '../lib/types'
 import MarkdownRenderer from './MarkdownRenderer'
@@ -21,6 +22,9 @@ function isValidFilename(name: string | undefined | null): boolean {
 
 const DISABLED_TOOLS = ['WebSearch', 'WebFetch'] as const
 
+// Only these system subtypes are user-visible; everything else is internal
+const VISIBLE_SYSTEM_SUBTYPES = new Set<string>([])
+
 const TOOL_ICONS: Record<string, string> = {
   Read: '📖',
   Write: '✏️',
@@ -32,6 +36,45 @@ const TOOL_ICONS: Record<string, string> = {
   WebSearch: '🔍',
   Agent: '🤖',
   Skill: '',
+}
+
+const DANGER_TOOLS = new Set(['Bash', 'Write', 'Edit'])
+
+/** Pair tool_use with tool_result messages — merges results into their parent tool_use cards. */
+export function pairToolMessages(messages: Message[]): Message[] {
+  // Collect tool_use ids first so we only pair results that have a matching tool_use
+  const toolUseIds = new Set<string>()
+  for (const msg of messages) {
+    if (msg.type === 'tool_use' && msg.id) {
+      toolUseIds.add(msg.id)
+    }
+  }
+
+  const resultMap = new Map<string, Message>()
+  for (const msg of messages) {
+    if (msg.type === 'tool_result' && msg.tool_use_id && toolUseIds.has(msg.tool_use_id)) {
+      resultMap.set(msg.tool_use_id, msg)
+    }
+  }
+
+  return messages
+    .filter(msg => !(msg.type === 'tool_result' && msg.tool_use_id && resultMap.has(msg.tool_use_id)))
+    .map(msg => {
+      if (msg.type === 'tool_use' && msg.id && msg.name !== 'AskUserQuestion') {
+        const result = resultMap.get(msg.id)
+        if (result) {
+          return {
+            ...msg,
+            toolResult: {
+              content: result.content || '',
+              is_error: result.is_error,
+              name: result.name,
+            },
+          }
+        }
+      }
+      return msg
+    })
 }
 
 function getToolIcon(name?: string): string {
@@ -109,30 +152,6 @@ function formatEditContent(input: Record<string, unknown>): FormattedEditContent
   }
 }
 
-// ── Thinking block parser ────────────────────────────────────────
-
-function parseThinkingBlocks(text: string): Array<{ kind: 'thinking' | 'text'; content: string }> {
-  const parts: Array<{ kind: 'thinking' | 'text'; content: string }> = []
-  const matches = [...text.matchAll(/\[thinking\]([\s\S]*?)\[\/thinking\]/g)]
-
-  if (matches.length === 0) {
-    return [{ kind: 'text', content: text }]
-  }
-
-  let lastIndex = 0
-  for (const match of matches) {
-    if (match.index! > lastIndex) {
-      parts.push({ kind: 'text', content: text.slice(lastIndex, match.index!) })
-    }
-    parts.push({ kind: 'thinking', content: match[1].trim() })
-    lastIndex = match.index! + match[0].length
-  }
-  if (lastIndex < text.length) {
-    parts.push({ kind: 'text', content: text.slice(lastIndex) })
-  }
-  return parts
-}
-
 // ── Analysis / Summary tag parser ────────────────────────────────
 
 export type TagBlock = { kind: 'analysis' | 'summary' | 'text'; content: string }
@@ -176,6 +195,36 @@ export function hasIncompleteTag(text: string): boolean {
   return openAnalysis !== closeAnalysis || openSummary !== closeSummary
 }
 
+type BlockKind = 'thinking' | 'analysis' | 'summary' | 'text'
+interface BlockPart { kind: BlockKind; content: string }
+
+function parseAssistantContent(text: string): BlockPart[] {
+  const parts: BlockPart[] = []
+  const pattern = /\[thinking\]([\s\S]*?)\[\/thinking\]|<(analysis|summary)>([\s\S]*?)<\/\2>/g
+  let lastIndex = 0
+  let match: RegExpExecArray | null
+  while ((match = pattern.exec(text)) !== null) {
+    if (match.index > lastIndex) {
+      const before = text.slice(lastIndex, match.index).trim()
+      if (before) parts.push({ kind: 'text', content: before })
+    }
+    if (match[1] !== undefined) {
+      const thinking = match[1].trim()
+      if (thinking) parts.push({ kind: 'thinking', content: thinking })
+    } else {
+      const kind = match[2] as 'analysis' | 'summary'
+      const content = match[3].trim()
+      if (content) parts.push({ kind, content })
+    }
+    lastIndex = match.index + match[0].length
+  }
+  if (lastIndex < text.length) {
+    const remaining = text.slice(lastIndex).trim()
+    if (remaining) parts.push({ kind: 'text', content: remaining })
+  }
+  return parts
+}
+
 interface MessageBubbleProps {
   message: Message
   sessionId: string
@@ -185,6 +234,82 @@ interface MessageBubbleProps {
   lastTodoWriteIndex?: number
   lastUserMsgIndex?: number
   authToken?: string | null
+}
+
+const COLLAPSE_THRESHOLD = 5000
+
+function formatJson(raw: string): string {
+  try {
+    return JSON.stringify(JSON.parse(raw), null, 2)
+  } catch {
+    return raw
+  }
+}
+
+function ToolResultContent({ content, isJson }: { content: string; isJson: boolean }) {
+  const { t } = useTranslation()
+  const [expanded, setExpanded] = useState(false)
+  const displayContent = isJson ? formatJson(content) : content
+  const isLarge = displayContent.length > COLLAPSE_THRESHOLD
+  const visibleContent = isLarge && !expanded ? displayContent.slice(0, COLLAPSE_THRESHOLD) + '…' : displayContent
+
+  return (
+    <>
+      {isJson ? (
+        <pre className={`tool-output tool-output-json${isLarge && !expanded ? ' tool-output-collapsed' : ''}`}><code>{visibleContent}</code></pre>
+      ) : (
+        <div className={`tool-output-markdown${isLarge && !expanded ? ' tool-output-collapsed' : ''}`}>
+          <MarkdownRenderer>{visibleContent}</MarkdownRenderer>
+        </div>
+      )}
+      {isLarge && (
+        <button className="tool-output-expand-btn" onClick={() => setExpanded(e => !e)}>
+          {expanded ? t('message.collapse') : t('message.showAll')}
+        </button>
+      )}
+    </>
+  )
+}
+
+function ToolResultSection({ toolResult }: { toolResult?: Message['toolResult'] }) {
+  const { t } = useTranslation()
+
+  if (!toolResult) {
+    return (
+      <div className="tool-result-section tool-result-section--running">
+        <div className="tool-result-separator" />
+        <div className="tool-result-header">
+          <span className="tool-result-icon tool-result-icon--running">⏳</span>
+          <span className="tool-result-status">{t('message.toolRunning')}</span>
+        </div>
+      </div>
+    )
+  }
+
+  const content = toolResult.content || ''
+  const isEmpty = !content && !toolResult.is_error
+  const isJson = /^\s*[{[]/.test(content)
+
+  return (
+    <div className={`tool-result-section${toolResult.is_error ? ' tool-result-section--error' : ''}`}>
+      <div className="tool-result-separator" />
+      <div className="tool-result-header">
+        <span className="tool-result-icon">
+          {toolResult.is_error ? '✗' : '✓'}
+        </span>
+        <span className={`tool-result-status${toolResult.is_error ? ' tool-result-status--error' : ''}`}>
+          {toolResult.is_error
+            ? t('message.errorOccurred')
+            : t('message.result')}
+        </span>
+      </div>
+      {isEmpty ? (
+        <div className="tool-result-empty">{t('message.resultEmpty')}</div>
+      ) : (
+        <ToolResultContent content={content} isJson={isJson} />
+      )}
+    </div>
+  )
 }
 
 export default function MessageBubble({ message, sessionId, onAnswer, onFileClick, onResend, lastTodoWriteIndex, lastUserMsgIndex, authToken }: MessageBubbleProps) {
@@ -227,32 +352,10 @@ export default function MessageBubble({ message, sessionId, onAnswer, onFileClic
   }
 
   if (message.type === 'system') {
-    // Filter out internal system messages that shouldn't be displayed
-    // - hook_started/response: shown as spinners in ChatArea
-    // - init: internal initialization confirmation
-    // - session_state_changed: used to update UI state, not displayed
-    // - task_started / task_started.*: internal SDK task notifications
-    // - progress: internal task progress updates
-    // - interrupt/can_use_tool/initialize: SDK internal notifications
-    // - set_permission_mode/hook_callback: permission and hook callbacks
-    // - mcp_message/mcp_reconnect/mcp_toggle: MCP server notifications
-    // - rewind_files/stop_task: internal task control
-    // - success/error: task completion notifications (handled elsewhere)
-    // - status: TaskNotificationMessage status updates
-    const hiddenSubtypes = [
-      'hook_started', 'hook_response', 'hook_error',
-      'init', 'session_state_changed', 'session_cancelled',
-      'task_started', 'task_updated', 'task_notification', 'progress',
-      'interrupt', 'can_use_tool', 'initialize',
-      'set_permission_mode', 'hook_callback',
-      'mcp_message', 'mcp_reconnect', 'mcp_toggle',
-      'rewind_files', 'stop_task',
-      'success', 'error', 'status',
-    ]
+    // Only show explicitly whitelisted subtypes; hide everything else
+    // to prevent internal SDK messages from leaking into the chat.
     const subtype = message.subtype || ''
-    if (hiddenSubtypes.includes(subtype) || subtype.startsWith('task_started.') || subtype.startsWith('task_')) {
-      return null
-    }
+    if (!VISIBLE_SYSTEM_SUBTYPES.has(subtype)) return null
     const displayText = message.content
       || (message.subtype ? `[${message.subtype}]` : '')
       || (message.data ? JSON.stringify(message.data) : '')
@@ -293,8 +396,12 @@ export default function MessageBubble({ message, sessionId, onAnswer, onFileClic
       if (!input) return null
       const { command, description } = formatBashCommand(input)
       if (!command) return null
+      const isDanger = DANGER_TOOLS.has(message.name || '')
       return (
-        <details className="message tool-message" open={false}>
+        <details
+          className={`message tool-message${isDanger ? ' tool-message--danger' : ''}`}
+          open={false}
+        >
           <summary className="tool-summary">
             <span className="tool-icon">{getToolIcon(message.name)}</span>
             <span className="tool-name">{message.name}</span>
@@ -302,6 +409,7 @@ export default function MessageBubble({ message, sessionId, onAnswer, onFileClic
           </summary>
           {description && <div className="tool-description">{description}</div>}
           <pre className="tool-input"><code>{command}</code></pre>
+          <ToolResultSection toolResult={message.toolResult} />
         </details>
       )
     }
@@ -309,8 +417,12 @@ export default function MessageBubble({ message, sessionId, onAnswer, onFileClic
     // Write tool_use: show file path + content
     if (message.name === 'Write' && input) {
       const { content, filePath } = formatFileContent(input)
+      const isDanger = DANGER_TOOLS.has('Write')
       return (
-        <details className="message tool-message" open={false}>
+        <details
+          className={`message tool-message${isDanger ? ' tool-message--danger' : ''}`}
+          open={false}
+        >
           <summary className="tool-summary">
             <span className="tool-icon">{getToolIcon(message.name)}</span>
             <span className="tool-name">{message.name}</span>
@@ -318,6 +430,7 @@ export default function MessageBubble({ message, sessionId, onAnswer, onFileClic
           </summary>
           {filePath && <div className="tool-description">{filePath}</div>}
           <pre className="tool-input"><code>{content}</code></pre>
+          <ToolResultSection toolResult={message.toolResult} />
         </details>
       )
     }
@@ -325,8 +438,12 @@ export default function MessageBubble({ message, sessionId, onAnswer, onFileClic
     // Edit tool_use: show old_string → new_string diff
     if (message.name === 'Edit' && input) {
       const { filePath, oldContent, newContent } = formatEditContent(input)
+      const isDanger = DANGER_TOOLS.has('Edit')
       return (
-        <details className="message tool-message" open={false}>
+        <details
+          className={`message tool-message${isDanger ? ' tool-message--danger' : ''}`}
+          open={false}
+        >
           <summary className="tool-summary">
             <span className="tool-icon">{getToolIcon(message.name)}</span>
             <span className="tool-name">{message.name}</span>
@@ -343,18 +460,24 @@ export default function MessageBubble({ message, sessionId, onAnswer, onFileClic
               <pre><code>{newContent || t('message.none')}</code></pre>
             </div>
           </div>
+          <ToolResultSection toolResult={message.toolResult} />
         </details>
       )
     }
 
+    const isGenericDanger = DANGER_TOOLS.has(message.name || '')
     return (
-      <details className="message tool-message" open={false}>
+      <details
+        className={`message tool-message${isGenericDanger ? ' tool-message--danger' : ''}`}
+        open={false}
+      >
         <summary className="tool-summary">
           <span className="tool-icon">{getToolIcon(message.name)}</span>
           <span className="tool-name">{message.name || 'unknown'}</span>
           {summary && <span className="tool-detail">{summary}</span>}
         </summary>
         <pre className="tool-input">{JSON.stringify(message.input, null, 2)}</pre>
+        <ToolResultSection toolResult={message.toolResult} />
       </details>
     )
   }
@@ -362,23 +485,35 @@ export default function MessageBubble({ message, sessionId, onAnswer, onFileClic
   if (message.type === 'tool_result') {
     const rawContent = message.content || ''
     // Hide empty tool results (e.g., TaskOutput with no content) unless it's an error
-    if (!rawContent && !message.is_error) return null
-    const displayContent = rawContent || (message.is_error ? t('message.toolErrorNoOutput') : '')
+    const isEmpty = !rawContent && !message.is_error
+    const displayContent = rawContent || (message.is_error ? t('message.toolErrorNoOutput') : (isEmpty ? t('message.resultEmpty') : ''))
     const isJson = /^\s*[{[]/.test(rawContent)
     const isResolved = message.is_error && lastUserMsgIndex !== undefined && lastUserMsgIndex > message.index
+
+    // Empty success result — show non-interactive indicator, no details to expand
+    if (isEmpty) {
+      return (
+        <div className="message tool-result tool-result--empty">
+          <span className="tool-summary">
+            <span className="tool-icon">{getToolIcon(message.name)}</span>
+            <span className="tool-name">{message.name || 'unknown'}</span>
+            <span className="tool-detail">{t('message.resultEmpty')}</span>
+          </span>
+        </div>
+      )
+    }
+
     return (
       <details
         className={`message tool-result${message.is_error ? ' tool-result--error' : ''}${isResolved ? ' tool-result--resolved' : ''}`}
         open={message.is_error ? true : undefined}
       >
-        <summary>{t('message.result')} {message.name || 'unknown'}{isResolved ? ` ${t('message.pastLabel')}` : ''}</summary>
-        {isJson ? (
-          <pre className="tool-output tool-output-json"><code>{displayContent}</code></pre>
-        ) : (
-          <div className="tool-output-markdown">
-            <MarkdownRenderer>{displayContent}</MarkdownRenderer>
-          </div>
-        )}
+        <summary className="tool-summary">
+          <span className="tool-icon">{getToolIcon(message.name)}</span>
+          <span className="tool-name">{message.name || 'unknown'}</span>
+          <span className="tool-detail">{t('message.result')}{isResolved ? ` ${t('message.pastLabel')}` : ''}</span>
+        </summary>
+        <ToolResultContent content={displayContent} isJson={isJson} />
       </details>
     )
   }
@@ -397,7 +532,22 @@ export default function MessageBubble({ message, sessionId, onAnswer, onFileClic
   }
 
   if (message.type === 'result') {
-    return null
+    const dur = message.duration_ms
+    const turns = message.num_turns
+    const usage = message.usage
+    if (!dur && !usage) return null
+    const durStr = dur != null ? `${(dur / 1000).toFixed(1)}s` : '?'
+    const turnsStr = turns != null ? String(turns) : '?'
+    const tokenStr = usage?.input_tokens != null && usage?.output_tokens != null
+      ? `${((usage.input_tokens + usage.output_tokens) / 1000).toFixed(1)}K`
+      : '?'
+    return (
+      <div className={`message result-footer${message.is_error ? ' result-footer--error' : ''}`}>
+        <span className="result-footer__text">
+          {t('message.resultUsage', { duration: durStr, turns: turnsStr, tokens: tokenStr })}
+        </span>
+      </div>
+    )
   }
 
   if (message.type === 'file_upload') {
@@ -477,6 +627,11 @@ export default function MessageBubble({ message, sessionId, onAnswer, onFileClic
     return null
   }
 
+  // auth_error — handled in useWebSocket for reconnect, not displayed
+  if (message.type === 'auth_error') {
+    return null
+  }
+
   // heartbeat — invisible in message list; used by ChatArea for staleness detection
   if (message.type === 'heartbeat') {
     return null
@@ -488,24 +643,13 @@ export default function MessageBubble({ message, sessionId, onAnswer, onFileClic
     return null
   }
 
-  const thinkingParts = parseThinkingBlocks(message.content)
-  const hasThinking = thinkingParts.some(p => p.kind === 'thinking')
+  const blocks = parseAssistantContent(message.content)
+  const hasThinking = blocks.some(b => b.kind === 'thinking')
+  const hasAnalysis = blocks.some(b => b.kind === 'analysis')
+  const hasSummary = blocks.some(b => b.kind === 'summary')
 
-  // For each text part, further parse analysis/summary tags
-  const tagParts = thinkingParts.flatMap(p => {
-    if (p.kind === 'thinking') return [p]
-    return parseTagBlocks(p.content).map(tp => ({
-      kind: tp.kind as 'thinking' | 'analysis' | 'summary' | 'text',
-      content: tp.content,
-    }))
-  })
-
-  const hasAnalysis = tagParts.some(p => p.kind === 'analysis')
-  const hasSummary = tagParts.some(p => p.kind === 'summary')
-
-  // Combine remaining text parts (text + thinking that stay visible)
-  const textContent = tagParts
-    .filter(p => p.kind === 'text')
+  const textContent = blocks
+    .filter(b => b.kind === 'text')
     .map(p => p.content)
     .join('\n')
 
@@ -516,7 +660,7 @@ export default function MessageBubble({ message, sessionId, onAnswer, onFileClic
           <details className="thinking-block" open={false}>
             <summary>{t('message.thinking')}</summary>
             <div className="thinking-content">
-              {tagParts.filter(p => p.kind === 'thinking').map((p, i) => (
+              {blocks.filter(b => b.kind === 'thinking').map((p, i) => (
                 <div key={i} className="thinking-text">{p.content}</div>
               ))}
             </div>
@@ -526,7 +670,7 @@ export default function MessageBubble({ message, sessionId, onAnswer, onFileClic
           <details className="analysis-block" open={false}>
             <summary>{t('message.analysis')}</summary>
             <div className="analysis-content">
-              {tagParts.filter(p => p.kind === 'analysis').map((p, i) => (
+              {blocks.filter(b => b.kind === 'analysis').map((p, i) => (
                 <div key={i} className="analysis-text">
                   <MarkdownRenderer>{p.content}</MarkdownRenderer>
                 </div>
@@ -538,7 +682,7 @@ export default function MessageBubble({ message, sessionId, onAnswer, onFileClic
           <details className="summary-block" open={false}>
             <summary>{t('message.summary')}</summary>
             <div className="summary-content">
-              {tagParts.filter(p => p.kind === 'summary').map((p, i) => (
+              {blocks.filter(b => b.kind === 'summary').map((p, i) => (
                 <div key={i} className="summary-text">
                   <MarkdownRenderer>{p.content}</MarkdownRenderer>
                 </div>

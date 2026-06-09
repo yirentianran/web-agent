@@ -45,16 +45,17 @@ def process_content_blocks(
         ToolUseBlock = None
         ToolResultBlock = None
 
-    # Build tool_use_names mapping if not provided (from SDK ToolUseBlock or dict)
+    # Build tool_use_names mapping — always scan blocks so callers can pass
+    # a shared dict that accumulates names across multiple messages.
     if tool_use_names is None:
         tool_use_names = {}
-        for block in blocks:
-            # SDK dataclass
-            if ToolUseBlock and isinstance(block, ToolUseBlock):
-                tool_use_names[block.id] = block.name
-            # JSON dict
-            elif isinstance(block, dict) and block.get("type") == "tool_use":
-                tool_use_names[block.get("id", "")] = block.get("name", "")
+    for block in blocks:
+        # SDK dataclass
+        if ToolUseBlock and isinstance(block, ToolUseBlock):
+            tool_use_names[block.id] = block.name
+        # JSON dict
+        elif isinstance(block, dict) and block.get("type") == "tool_use":
+            tool_use_names[block.get("id", "")] = block.get("name", "")
 
     for block in blocks:
         # ── SDK dataclass handling ──────────────────────────────
@@ -73,7 +74,17 @@ def process_content_blocks(
             tool_name = tool_use_names.get(block.tool_use_id, "unknown")
             content_val: str
             if isinstance(block.content, list):
-                content_val = json.dumps(block.content, ensure_ascii=False)
+                text_parts_mcp: list[str] = []
+                has_non_text = False
+                for item in block.content:
+                    if isinstance(item, dict) and item.get("type") == "text":
+                        text_parts_mcp.append(item.get("text", ""))
+                    else:
+                        has_non_text = True
+                if text_parts_mcp and not has_non_text:
+                    content_val = "\n".join(text_parts_mcp)
+                else:
+                    content_val = json.dumps(block.content, ensure_ascii=False, indent=2)
             elif block.content is None:
                 content_val = ""
             else:
@@ -112,11 +123,26 @@ def process_content_blocks(
                 })
             elif bt == "tool_result":
                 tool_name = tool_use_names.get(block.get("tool_use_id", ""), "unknown")
+                raw_content = block.get("content", "")
+                if isinstance(raw_content, list):
+                    text_parts_mcp2: list[str] = []
+                    has_non_text = False
+                    for item in raw_content:
+                        if isinstance(item, dict) and item.get("type") == "text":
+                            text_parts_mcp2.append(item.get("text", ""))
+                        else:
+                            has_non_text = True
+                    if text_parts_mcp2 and not has_non_text:
+                        content_val2: str = "\n".join(text_parts_mcp2)
+                    else:
+                        content_val2 = json.dumps(raw_content, ensure_ascii=False, indent=2)
+                else:
+                    content_val2 = raw_content if isinstance(raw_content, str) else str(raw_content)
                 emit({
                     "type": "tool_result",
                     "name": tool_name,
                     "tool_use_id": block.get("tool_use_id", ""),
-                    "content": block.get("content", ""),
+                    "content": content_val2,
                 })
 
         # ── Unknown block type ───────────────────────────────────
