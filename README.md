@@ -36,9 +36,10 @@ Backend at `http://127.0.0.1:8000`, frontend at `http://127.0.0.1:3000`. Open th
 
 ### UX
 
-- Dark / light theme toggle, system-aware default
-- Internationalization — English and Chinese
-- Stale-session auto-recovery
+- Dark / light theme toggle with system-aware default
+- Internationalization (English / Chinese)
+- Tool execution cards with syntax highlighting, copy-to-clipboard, and content-type detection (JSON, Markdown, HTML, Bash terminal)
+- Stale-session auto-recovery and WebSocket reconnection
 
 ## Environment Variables
 
@@ -46,21 +47,15 @@ Backend at `http://127.0.0.1:8000`, frontend at `http://127.0.0.1:3000`. Open th
 |----------|---------|-------------|
 | `ANTHROPIC_AUTH_TOKEN` | — | API key (required). Per-user override: `ANTHROPIC_AUTH_TOKEN_<USERID>` |
 | `ANTHROPIC_BASE_URL` | — | Custom API endpoint (DeepSeek, Bailian, etc.) |
-| `MODEL` | — | Main agent model (required, e.g. `claude-sonnet-4-6`) |
+| `MODEL` | — | Main agent model (required) |
 | `FLASH_MODEL` | `MODEL` | Lightweight tasks: title gen, instinct extraction |
-| `PROD` | `false` | Serve frontend static files from backend |
 | `ENFORCE_AUTH` | `false` | Require JWT auth for all endpoints |
 | `JWT_SECRET` | auto | JWT signing secret (set in production) |
+| `PROD` | `false` | Serve frontend static files from backend |
 | `CONTAINER_MODE` | `false` | Enable per-user Docker container isolation |
-| `CONTAINER_IDLE_TTL` | `1800` | Idle seconds before stopping a container |
-| `HOST_DATA_ROOT` | — | Absolute host data path (required when main server runs in Docker) |
 | `DATA_ROOT` | `./data` | Runtime data directory |
-| `AGENT_TASK_TIMEOUT` | `600` | Max agent task duration (seconds) |
-| `MAX_TURNS` | `200` | Max conversation turns per task |
-| `MAX_UPLOAD_BYTES` | `200 MB` | Max upload file size |
-| `MCP_ENCRYPTION_KEY` | — | Key for encrypting MCP credentials at rest |
 
-> See `.env.example` for all variables: logging, sandbox, prompt limits, resource quotas.
+> See `.env.example` for all variables: sandbox, logging, prompt limits, resource quotas, Docker registry mirrors.
 
 ## Architecture
 
@@ -72,6 +67,17 @@ Browser (React) ── REST / WebSocket ──► FastAPI (main_server.py)
                                            ├── Skills, MCP, Tasks, Evolution
                                            ├── Container Manager (Docker, optional)
                                            └── Agent SDK (subprocess)
+```
+
+### Frontend
+
+```
+frontend/src/
+├── components/    # React components: MessageBubble, ChatArea, SettingsMenu, …
+├── hooks/         # useWebSocket, useCopyToClipboard, useStreamingText, …
+├── lib/           # types, api client, todos parser
+├── i18n/          # en.json, zh.json
+└── styles/        # global.css with CSS custom properties
 ```
 
 ## API
@@ -117,6 +123,8 @@ uv run mypy src/                       # type check
 cd frontend && npm test                # tests
 npx tsc --noEmit                       # type check
 ```
+
+See [CLAUDE.md](CLAUDE.md) for full dev command reference and [CONTRIBUTING.md](CONTRIBUTING.md) for contribution guidelines.
 
 ## Deployment
 
