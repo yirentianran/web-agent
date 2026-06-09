@@ -1277,7 +1277,7 @@ describe('parseTagBlocks', () => {
 
   it('handles empty input', () => {
     const result = parseTagBlocks('')
-    expect(result).toEqual([{ kind: 'text', content: '' }])
+    expect(result).toEqual([])
   })
 
   it('preserves markdown inside tags', () => {

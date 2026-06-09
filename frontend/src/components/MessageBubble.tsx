@@ -22,9 +22,6 @@ function isValidFilename(name: string | undefined | null): boolean {
 
 const DISABLED_TOOLS = ['WebSearch', 'WebFetch'] as const
 
-// Only these system subtypes are user-visible; everything else is internal
-const VISIBLE_SYSTEM_SUBTYPES = new Set<string>([])
-
 const TOOL_ICONS: Record<string, string> = {
   Read: '📖',
   Write: '✏️',
@@ -152,53 +149,14 @@ function formatEditContent(input: Record<string, unknown>): FormattedEditContent
   }
 }
 
-// ── Analysis / Summary tag parser ────────────────────────────────
+// ── Unified block parser ──────────────────────────────────────────
 
 export type TagBlock = { kind: 'analysis' | 'summary' | 'text'; content: string }
-
-export function parseTagBlocks(text: string): TagBlock[] {
-  const parts: TagBlock[] = []
-  const pattern = /<(analysis|summary)>([\s\S]*?)<\/\1>/g
-
-  let lastIndex = 0
-  let match: RegExpExecArray | null
-  while ((match = pattern.exec(text)) !== null) {
-    if (match.index > lastIndex) {
-      const trimmed = text.slice(lastIndex, match.index).trim()
-      if (trimmed) {
-        parts.push({ kind: 'text', content: trimmed })
-      }
-    }
-    const tagContent = match[2].trim()
-    if (tagContent) {
-      parts.push({ kind: match[1] as 'analysis' | 'summary', content: tagContent })
-    }
-    lastIndex = match.index + match[0].length
-  }
-  if (lastIndex < text.length) {
-    const trimmed = text.slice(lastIndex).trim()
-    if (trimmed) {
-      parts.push({ kind: 'text', content: trimmed })
-    }
-  }
-  if (parts.length === 0) {
-    return [{ kind: 'text', content: text }]
-  }
-  return parts
-}
-
-export function hasIncompleteTag(text: string): boolean {
-  const openAnalysis = (text.match(/<analysis>/g) || []).length
-  const closeAnalysis = (text.match(/<\/analysis>/g) || []).length
-  const openSummary = (text.match(/<summary>/g) || []).length
-  const closeSummary = (text.match(/<\/summary>/g) || []).length
-  return openAnalysis !== closeAnalysis || openSummary !== closeSummary
-}
-
 type BlockKind = 'thinking' | 'analysis' | 'summary' | 'text'
 interface BlockPart { kind: BlockKind; content: string }
 
-function parseAssistantContent(text: string): BlockPart[] {
+/** Parse [thinking], <analysis>, and <summary> blocks from text. */
+function parseBlocks(text: string): BlockPart[] {
   const parts: BlockPart[] = []
   const pattern = /\[thinking\]([\s\S]*?)\[\/thinking\]|<(analysis|summary)>([\s\S]*?)<\/\2>/g
   let lastIndex = 0
@@ -225,6 +183,28 @@ function parseAssistantContent(text: string): BlockPart[] {
   return parts
 }
 
+/** Split text into analysis/summary/text blocks. Used by ChatArea streaming. */
+export function parseTagBlocks(text: string): TagBlock[] {
+  return parseBlocks(text)
+    .filter(b => b.kind !== 'thinking')
+    .map(b => ({ kind: b.kind as 'analysis' | 'summary' | 'text', content: b.content }))
+}
+
+/** Check if text has unclosed <analysis> or <summary> tags. */
+export function hasIncompleteTag(text: string): boolean {
+  const openAnalysis = (text.match(/<analysis>/g) || []).length
+  const closeAnalysis = (text.match(/<\/analysis>/g) || []).length
+  const openSummary = (text.match(/<summary>/g) || []).length
+  const closeSummary = (text.match(/<\/summary>/g) || []).length
+  return openAnalysis !== closeAnalysis || openSummary !== closeSummary
+}
+
+// ── Shared helpers ────────────────────────────────────────────────
+
+function isResolvedMessage(message: Message, lastUserMsgIndex?: number): boolean {
+  return lastUserMsgIndex !== undefined && lastUserMsgIndex > message.index
+}
+
 interface MessageBubbleProps {
   message: Message
   sessionId: string
@@ -244,6 +224,33 @@ function formatJson(raw: string): string {
   } catch {
     return raw
   }
+}
+
+// ── Shared tool card wrapper ──────────────────────────────────────
+
+interface ToolCardProps {
+  name: string
+  summary: string
+  toolResult?: Message['toolResult']
+  children: React.ReactNode
+}
+
+function ToolCard({ name, summary, toolResult, children }: ToolCardProps) {
+  const isDanger = DANGER_TOOLS.has(name)
+  return (
+    <details
+      className={`message tool-message${isDanger ? ' tool-message--danger' : ''}`}
+      open={false}
+    >
+      <summary className="tool-summary">
+        <span className="tool-icon">{getToolIcon(name)}</span>
+        <span className="tool-name">{name}</span>
+        {summary && <span className="tool-detail">{summary}</span>}
+      </summary>
+      {children}
+      <ToolResultSection toolResult={toolResult} />
+    </details>
+  )
 }
 
 function ToolResultContent({ content, isJson }: { content: string; isJson: boolean }) {
@@ -312,6 +319,32 @@ function ToolResultSection({ toolResult }: { toolResult?: Message['toolResult'] 
   )
 }
 
+// ── Shared collapsible block (thinking / analysis / summary) ──────
+
+interface CollapsibleBlockProps {
+  kind: 'thinking' | 'analysis' | 'summary'
+  items: Array<{ content: string }>
+}
+
+export function CollapsibleBlock({ kind, items }: CollapsibleBlockProps) {
+  const { t } = useTranslation()
+  if (items.length === 0) return null
+  const labelKey = kind === 'thinking' ? 'message.thinking' : kind === 'analysis' ? 'message.analysis' : 'message.summary'
+  const useMarkdown = kind !== 'thinking'
+  return (
+    <details className={`${kind}-block`} open={false}>
+      <summary>{t(labelKey)}</summary>
+      <div className={`${kind}-content`}>
+        {items.map((item, i) => (
+          <div key={i} className={`${kind}-text`}>
+            {useMarkdown ? <MarkdownRenderer>{item.content}</MarkdownRenderer> : item.content}
+          </div>
+        ))}
+      </div>
+    </details>
+  )
+}
+
 export default function MessageBubble({ message, sessionId, onAnswer, onFileClick, onResend, lastTodoWriteIndex, lastUserMsgIndex, authToken }: MessageBubbleProps) {
   const { t } = useTranslation()
   if (message.type === 'user') {
@@ -352,18 +385,7 @@ export default function MessageBubble({ message, sessionId, onAnswer, onFileClic
   }
 
   if (message.type === 'system') {
-    // Only show explicitly whitelisted subtypes; hide everything else
-    // to prevent internal SDK messages from leaking into the chat.
-    const subtype = message.subtype || ''
-    if (!VISIBLE_SYSTEM_SUBTYPES.has(subtype)) return null
-    const displayText = message.content
-      || (message.subtype ? `[${message.subtype}]` : '')
-      || (message.data ? JSON.stringify(message.data) : '')
-    return (
-      <div className="message system-message">
-        <span className="system-text">{displayText}</span>
-      </div>
-    )
+    return null
   }
 
   if (message.type === 'tool_use') {
@@ -396,59 +418,30 @@ export default function MessageBubble({ message, sessionId, onAnswer, onFileClic
       if (!input) return null
       const { command, description } = formatBashCommand(input)
       if (!command) return null
-      const isDanger = DANGER_TOOLS.has(message.name || '')
       return (
-        <details
-          className={`message tool-message${isDanger ? ' tool-message--danger' : ''}`}
-          open={false}
-        >
-          <summary className="tool-summary">
-            <span className="tool-icon">{getToolIcon(message.name)}</span>
-            <span className="tool-name">{message.name}</span>
-            {summary && <span className="tool-detail">{summary}</span>}
-          </summary>
+        <ToolCard name="Bash" summary={summary} toolResult={message.toolResult}>
           {description && <div className="tool-description">{description}</div>}
           <pre className="tool-input"><code>{command}</code></pre>
-          <ToolResultSection toolResult={message.toolResult} />
-        </details>
+        </ToolCard>
       )
     }
 
     // Write tool_use: show file path + content
     if (message.name === 'Write' && input) {
       const { content, filePath } = formatFileContent(input)
-      const isDanger = DANGER_TOOLS.has('Write')
       return (
-        <details
-          className={`message tool-message${isDanger ? ' tool-message--danger' : ''}`}
-          open={false}
-        >
-          <summary className="tool-summary">
-            <span className="tool-icon">{getToolIcon(message.name)}</span>
-            <span className="tool-name">{message.name}</span>
-            {summary && <span className="tool-detail">{summary}</span>}
-          </summary>
+        <ToolCard name="Write" summary={summary} toolResult={message.toolResult}>
           {filePath && <div className="tool-description">{filePath}</div>}
           <pre className="tool-input"><code>{content}</code></pre>
-          <ToolResultSection toolResult={message.toolResult} />
-        </details>
+        </ToolCard>
       )
     }
 
     // Edit tool_use: show old_string → new_string diff
     if (message.name === 'Edit' && input) {
       const { filePath, oldContent, newContent } = formatEditContent(input)
-      const isDanger = DANGER_TOOLS.has('Edit')
       return (
-        <details
-          className={`message tool-message${isDanger ? ' tool-message--danger' : ''}`}
-          open={false}
-        >
-          <summary className="tool-summary">
-            <span className="tool-icon">{getToolIcon(message.name)}</span>
-            <span className="tool-name">{message.name}</span>
-            {filePath && <span className="tool-detail">{filePath}</span>}
-          </summary>
+        <ToolCard name="Edit" summary={summary} toolResult={message.toolResult}>
           {filePath && <div className="tool-description">{filePath}</div>}
           <div className="tool-edit-content">
             <div className="tool-edit-old">
@@ -460,25 +453,14 @@ export default function MessageBubble({ message, sessionId, onAnswer, onFileClic
               <pre><code>{newContent || t('message.none')}</code></pre>
             </div>
           </div>
-          <ToolResultSection toolResult={message.toolResult} />
-        </details>
+        </ToolCard>
       )
     }
 
-    const isGenericDanger = DANGER_TOOLS.has(message.name || '')
     return (
-      <details
-        className={`message tool-message${isGenericDanger ? ' tool-message--danger' : ''}`}
-        open={false}
-      >
-        <summary className="tool-summary">
-          <span className="tool-icon">{getToolIcon(message.name)}</span>
-          <span className="tool-name">{message.name || 'unknown'}</span>
-          {summary && <span className="tool-detail">{summary}</span>}
-        </summary>
+      <ToolCard name={message.name || 'unknown'} summary={summary} toolResult={message.toolResult}>
         <pre className="tool-input">{JSON.stringify(message.input, null, 2)}</pre>
-        <ToolResultSection toolResult={message.toolResult} />
-      </details>
+      </ToolCard>
     )
   }
 
@@ -488,7 +470,7 @@ export default function MessageBubble({ message, sessionId, onAnswer, onFileClic
     const isEmpty = !rawContent && !message.is_error
     const displayContent = rawContent || (message.is_error ? t('message.toolErrorNoOutput') : (isEmpty ? t('message.resultEmpty') : ''))
     const isJson = /^\s*[{[]/.test(rawContent)
-    const isResolved = message.is_error && lastUserMsgIndex !== undefined && lastUserMsgIndex > message.index
+    const isResolved = message.is_error && isResolvedMessage(message, lastUserMsgIndex)
 
     // Empty success result — show non-interactive indicator, no details to expand
     if (isEmpty) {
@@ -520,7 +502,7 @@ export default function MessageBubble({ message, sessionId, onAnswer, onFileClic
 
   if (message.type === 'error') {
     const errorText = message.content || message.message || t('message.errorOccurred')
-    const isResolved = lastUserMsgIndex !== undefined && lastUserMsgIndex > message.index
+    const isResolved = isResolvedMessage(message, lastUserMsgIndex)
     return (
       <div className={`message error-message${isResolved ? ' error-message--resolved' : ''}`}>
         <div className="bubble error">
@@ -643,11 +625,10 @@ export default function MessageBubble({ message, sessionId, onAnswer, onFileClic
     return null
   }
 
-  const blocks = parseAssistantContent(message.content)
-  const hasThinking = blocks.some(b => b.kind === 'thinking')
-  const hasAnalysis = blocks.some(b => b.kind === 'analysis')
-  const hasSummary = blocks.some(b => b.kind === 'summary')
-
+  const blocks = parseBlocks(message.content)
+  const thinkingItems = blocks.filter(b => b.kind === 'thinking')
+  const analysisItems = blocks.filter(b => b.kind === 'analysis')
+  const summaryItems = blocks.filter(b => b.kind === 'summary')
   const textContent = blocks
     .filter(b => b.kind === 'text')
     .map(p => p.content)
@@ -656,40 +637,9 @@ export default function MessageBubble({ message, sessionId, onAnswer, onFileClic
   return (
     <div className="message assistant-message">
       <div className="bubble">
-        {hasThinking && (
-          <details className="thinking-block" open={false}>
-            <summary>{t('message.thinking')}</summary>
-            <div className="thinking-content">
-              {blocks.filter(b => b.kind === 'thinking').map((p, i) => (
-                <div key={i} className="thinking-text">{p.content}</div>
-              ))}
-            </div>
-          </details>
-        )}
-        {hasAnalysis && (
-          <details className="analysis-block" open={false}>
-            <summary>{t('message.analysis')}</summary>
-            <div className="analysis-content">
-              {blocks.filter(b => b.kind === 'analysis').map((p, i) => (
-                <div key={i} className="analysis-text">
-                  <MarkdownRenderer>{p.content}</MarkdownRenderer>
-                </div>
-              ))}
-            </div>
-          </details>
-        )}
-        {hasSummary && (
-          <details className="summary-block" open={false}>
-            <summary>{t('message.summary')}</summary>
-            <div className="summary-content">
-              {blocks.filter(b => b.kind === 'summary').map((p, i) => (
-                <div key={i} className="summary-text">
-                  <MarkdownRenderer>{p.content}</MarkdownRenderer>
-                </div>
-              ))}
-            </div>
-          </details>
-        )}
+        <CollapsibleBlock kind="thinking" items={thinkingItems} />
+        <CollapsibleBlock kind="analysis" items={analysisItems} />
+        <CollapsibleBlock kind="summary" items={summaryItems} />
         {textContent && (
           <MarkdownRenderer>{textContent}</MarkdownRenderer>
         )}
