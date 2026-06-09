@@ -10,6 +10,23 @@ Multi-user web agent built with FastAPI (backend) and React (frontend). Each use
 - **Frontend** (`frontend/src/`) — React SPA with Vite, communicating via REST + WebSocket
 - **Data** (`data/`) — Per-user session files, message buffers, uploads, outputs (never committed)
 
+### Frontend Architecture
+
+```
+frontend/src/
+├── components/        # Feature components
+│   ├── MessageBubble.tsx    # Tool cards, Markdown/HTML rendering, tool-result pairing
+│   ├── ChatArea.tsx         # Message list, streaming, session switching
+│   ├── MarkdownRenderer.tsx # react-markdown with code fences, syntax highlighting
+│   └── ...
+├── hooks/             # Shared hooks (useWebSocket, useCopyToClipboard, …)
+├── lib/               # types, api client (apiFetch), todos parser
+├── i18n/              # en.json, zh.json — always update both
+└── styles/            # global.css with CSS custom properties
+```
+
+Key rendering pipeline: `MessageBubble` → `ToolResultContent` (content-type detection: HTML → direct render, Markdown → direct render, JSON/Bash/text → code fence) → `MarkdownRenderer` (react-markdown + highlight.js)
+
 ## Key Files
 
 | File | Purpose |
@@ -32,6 +49,8 @@ Multi-user web agent built with FastAPI (backend) and React (frontend). Each use
 | `src/agent_logger.py` | L3 agent execution logging |
 | `src/semantic_search.py` | FTS5 search over sessions and wiki pages |
 | `frontend/src/App.tsx` | Main React app: session state, routing, auth |
+| `frontend/src/components/MessageBubble.tsx` | Tool cards, content rendering, tool-result pairing |
+| `frontend/src/components/MarkdownRenderer.tsx` | Markdown rendering with code fences and syntax highlighting |
 | `frontend/src/hooks/useWebSocket.ts` | WebSocket hook for real-time communication |
 | `frontend/src/lib/api.ts` | `apiFetch` wrapper (auto CSRF header, credentials) |
 | `frontend/src/components/SettingsMenu.tsx` | Admin menu: dashboard, users, MCP, evolution |
