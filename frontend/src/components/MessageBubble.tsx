@@ -6,6 +6,7 @@ import { FileCardList } from './FileCards'
 import AskUserQuestionCard from './AskUserQuestionCard'
 import TodoWriteViz from './TodoWriteViz'
 import { parseTodoWriteInput } from '../lib/todos'
+import { useCopyToClipboard } from '../hooks/useCopyToClipboard'
 
 
 // ── Filename validation ──────────────────────────────────────────
@@ -218,12 +219,36 @@ interface MessageBubbleProps {
 
 const COLLAPSE_THRESHOLD = 5000
 
-function formatJson(raw: string): string {
-  try {
-    return JSON.stringify(JSON.parse(raw), null, 2)
-  } catch {
-    return raw
-  }
+// ── Shared copy button ──────────────────────────────────────────
+
+function CopyButton({ content }: { content: string }) {
+  const { t } = useTranslation()
+  const { copied, copy } = useCopyToClipboard()
+
+  return (
+    <button className="tool-output-copy-btn" onClick={() => copy(content)}>
+      {copied ? t('message.resultCopied') : t('message.copyResult')}
+    </button>
+  )
+}
+
+// ── File extension → highlight language ──────────────────────────
+
+const LANG_MAP: Record<string, string> = {
+  ts: 'typescript', tsx: 'tsx', js: 'javascript', jsx: 'jsx',
+  py: 'python', rs: 'rust', go: 'go', java: 'java', rb: 'ruby',
+  php: 'php', css: 'css', scss: 'scss', html: 'html', htm: 'html',
+  json: 'json', yaml: 'yaml', yml: 'yaml', toml: 'toml', xml: 'xml',
+  sql: 'sql', sh: 'bash', bash: 'bash', zsh: 'bash',
+  md: 'markdown', c: 'c', cpp: 'cpp', h: 'c', hpp: 'cpp',
+  vue: 'html', svelte: 'html', svg: 'xml',
+}
+
+function detectLanguage(filePath?: string | null): string | undefined {
+  if (!filePath) return undefined
+  const ext = filePath.split('.').pop()?.toLowerCase()
+  if (!ext) return undefined
+  return LANG_MAP[ext]
 }
 
 // ── Shared tool card wrapper ──────────────────────────────────────
@@ -253,31 +278,6 @@ function ToolCard({ name, summary, toolResult, children }: ToolCardProps) {
   )
 }
 
-function ToolResultContent({ content, isJson }: { content: string; isJson: boolean }) {
-  const { t } = useTranslation()
-  const [expanded, setExpanded] = useState(false)
-  const displayContent = isJson ? formatJson(content) : content
-  const isLarge = displayContent.length > COLLAPSE_THRESHOLD
-  const visibleContent = isLarge && !expanded ? displayContent.slice(0, COLLAPSE_THRESHOLD) + '…' : displayContent
-
-  return (
-    <>
-      {isJson ? (
-        <pre className={`tool-output tool-output-json${isLarge && !expanded ? ' tool-output-collapsed' : ''}`}><code>{visibleContent}</code></pre>
-      ) : (
-        <div className={`tool-output-markdown${isLarge && !expanded ? ' tool-output-collapsed' : ''}`}>
-          <MarkdownRenderer>{visibleContent}</MarkdownRenderer>
-        </div>
-      )}
-      {isLarge && (
-        <button className="tool-output-expand-btn" onClick={() => setExpanded(e => !e)}>
-          {expanded ? t('message.collapse') : t('message.showAll')}
-        </button>
-      )}
-    </>
-  )
-}
-
 function ToolResultSection({ toolResult }: { toolResult?: Message['toolResult'] }) {
   const { t } = useTranslation()
 
@@ -295,7 +295,6 @@ function ToolResultSection({ toolResult }: { toolResult?: Message['toolResult'] 
 
   const content = toolResult.content || ''
   const isEmpty = !content && !toolResult.is_error
-  const isJson = /^\s*[{[]/.test(content)
 
   return (
     <div className={`tool-result-section${toolResult.is_error ? ' tool-result-section--error' : ''}`}>
@@ -313,7 +312,93 @@ function ToolResultSection({ toolResult }: { toolResult?: Message['toolResult'] 
       {isEmpty ? (
         <div className="tool-result-empty">{t('message.resultEmpty')}</div>
       ) : (
-        <ToolResultContent content={content} isJson={isJson} />
+        <ToolResultContent content={content} isBashResult={toolResult.name === 'Bash'} />
+      )}
+    </div>
+  )
+}
+
+// ── Shared tool content renderer (input + output) ───────────────
+
+function ToolResultContent({ content, isBashResult, language }: { content: string; isBashResult?: boolean; language?: string }) {
+  const { t } = useTranslation()
+  const [expanded, setExpanded] = useState(false)
+
+  const isInput = language !== undefined
+  const isMarkdown = !isInput && /^(#{1,6}\s|\*[\*\*]|__|\s*[-*+]\s|\s*\d+\.\s|\[.+?\]\(.+?\)|\s*>\s|\s*\|)/m.test(content.trim())
+  const isHtml = !isInput && /<(!DOCTYPE|[a-z]+\b[^>]*\/?>)/i.test(content.trim())
+
+  if (isHtml) {
+    return (
+      <div className="tool-output-wrapper">
+        <div className="tool-output-header">
+          <CopyButton content={content} />
+        </div>
+        <div className="tool-output-markdown">
+          <MarkdownRenderer allowHtml>{content}</MarkdownRenderer>
+        </div>
+      </div>
+    )
+  }
+
+  if (isMarkdown) {
+    const isLarge = content.length > COLLAPSE_THRESHOLD
+    const visibleContent = isLarge && !expanded
+      ? content.slice(0, COLLAPSE_THRESHOLD) + '…'
+      : content
+
+    return (
+      <div className="tool-output-wrapper">
+        <div className="tool-output-header">
+          <CopyButton content={content} />
+        </div>
+        <div className={`tool-output-markdown${isLarge && !expanded ? ' tool-output-collapsed' : ''}`}>
+          <MarkdownRenderer>{visibleContent}</MarkdownRenderer>
+        </div>
+        {isLarge && (
+          <button className="tool-output-expand-btn" onClick={() => setExpanded(e => !e)}>
+            {expanded ? t('message.collapse') : t('message.showAll')}
+          </button>
+        )}
+      </div>
+    )
+  }
+
+  const isJson = !isInput && /^\s*[{[]/.test(content.trim())
+
+  let displayContent: string
+  if (isInput) {
+    displayContent = '```' + (language || '') + '\n' + content + '\n```'
+  } else if (isJson) {
+    if (expanded) {
+      try {
+        displayContent = '```json\n' + JSON.stringify(JSON.parse(content), null, 2) + '\n```'
+      } catch {
+        displayContent = '```text\n' + content + '\n```'
+      }
+    } else {
+      displayContent = '```json\n' + content + '\n```'
+    }
+  } else if (isBashResult) {
+    displayContent = '```bash\n' + content + '\n```'
+  } else {
+    displayContent = '```text\n' + content + '\n```'
+  }
+
+  const isLarge = !isInput && displayContent.length > COLLAPSE_THRESHOLD
+  const visibleContent = isLarge && !expanded
+    ? displayContent.slice(0, COLLAPSE_THRESHOLD) + '…'
+    : displayContent
+
+  return (
+    <div className={isBashResult ? 'tool-output-wrapper tool-output-terminal' : 'tool-output-wrapper'}>
+      <div className={`tool-output-markdown${isLarge && !expanded ? ' tool-output-collapsed' : ''}`}>
+        <MarkdownRenderer>{visibleContent}</MarkdownRenderer>
+      </div>
+      {isLarge && (
+        <button className="tool-output-expand-btn" onClick={() => setExpanded(e => !e)}>
+          {expanded ? t('message.collapse') : t('message.showAll')}
+        </button>
       )}
     </div>
   )
@@ -421,7 +506,7 @@ export default function MessageBubble({ message, sessionId, onAnswer, onFileClic
       return (
         <ToolCard name="Bash" summary={summary} toolResult={message.toolResult}>
           {description && <div className="tool-description">{description}</div>}
-          <pre className="tool-input"><code>{command}</code></pre>
+          <ToolResultContent content={command} language="bash" />
         </ToolCard>
       )
     }
@@ -432,7 +517,7 @@ export default function MessageBubble({ message, sessionId, onAnswer, onFileClic
       return (
         <ToolCard name="Write" summary={summary} toolResult={message.toolResult}>
           {filePath && <div className="tool-description">{filePath}</div>}
-          <pre className="tool-input"><code>{content}</code></pre>
+          <ToolResultContent content={content} language={detectLanguage(filePath)} />
         </ToolCard>
       )
     }
@@ -440,17 +525,18 @@ export default function MessageBubble({ message, sessionId, onAnswer, onFileClic
     // Edit tool_use: show old_string → new_string diff
     if (message.name === 'Edit' && input) {
       const { filePath, oldContent, newContent } = formatEditContent(input)
+      const lang = detectLanguage(filePath)
       return (
         <ToolCard name="Edit" summary={summary} toolResult={message.toolResult}>
           {filePath && <div className="tool-description">{filePath}</div>}
           <div className="tool-edit-content">
             <div className="tool-edit-old">
               <span className="tool-edit-label">{t('message.removed')}</span>
-              <pre><code>{oldContent || t('message.none')}</code></pre>
+              <ToolResultContent content={oldContent || t('message.none')} language={lang} />
             </div>
             <div className="tool-edit-new">
               <span className="tool-edit-label">{t('message.added')}</span>
-              <pre><code>{newContent || t('message.none')}</code></pre>
+              <ToolResultContent content={newContent || t('message.none')} language={lang} />
             </div>
           </div>
         </ToolCard>
@@ -459,7 +545,7 @@ export default function MessageBubble({ message, sessionId, onAnswer, onFileClic
 
     return (
       <ToolCard name={message.name || 'unknown'} summary={summary} toolResult={message.toolResult}>
-        <pre className="tool-input">{JSON.stringify(message.input, null, 2)}</pre>
+        <ToolResultContent content={JSON.stringify(message.input, null, 2)} language="json" />
       </ToolCard>
     )
   }
@@ -469,7 +555,6 @@ export default function MessageBubble({ message, sessionId, onAnswer, onFileClic
     // Hide empty tool results (e.g., TaskOutput with no content) unless it's an error
     const isEmpty = !rawContent && !message.is_error
     const displayContent = rawContent || (message.is_error ? t('message.toolErrorNoOutput') : (isEmpty ? t('message.resultEmpty') : ''))
-    const isJson = /^\s*[{[]/.test(rawContent)
     const isResolved = message.is_error && isResolvedMessage(message, lastUserMsgIndex)
 
     // Empty success result — show non-interactive indicator, no details to expand
@@ -495,7 +580,7 @@ export default function MessageBubble({ message, sessionId, onAnswer, onFileClic
           <span className="tool-name">{message.name || 'unknown'}</span>
           <span className="tool-detail">{t('message.result')}{isResolved ? ` ${t('message.pastLabel')}` : ''}</span>
         </summary>
-        <ToolResultContent content={displayContent} isJson={isJson} />
+        <ToolResultContent content={displayContent} isBashResult={message.name === 'Bash'} />
       </details>
     )
   }

@@ -1,11 +1,14 @@
-import { useState, useCallback, useMemo, type ReactNode } from 'react'
+import { useCallback, useMemo, type ReactNode } from 'react'
 import { useTranslation } from 'react-i18next'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import rehypeHighlight from 'rehype-highlight'
+import rehypeRaw from 'rehype-raw'
+import { useCopyToClipboard } from '../hooks/useCopyToClipboard'
 
 interface MarkdownRendererProps {
   children: string
+  allowHtml?: boolean
 }
 
 /** Upgrade outer fences to 4 backticks when nested code blocks are detected. */
@@ -55,11 +58,6 @@ function fixNestedCodeBlocks(text: string): string {
   return modified ? result.join('\n') : text
 }
 
-function copyToClipboard(text: string): Promise<void> {
-  return navigator.clipboard.writeText(text)
-}
-
-/** Extract plain text from React children (may be string, number, or element tree). */
 function extractText(children: ReactNode): string {
   if (typeof children === 'string') return children
   if (typeof children === 'number') return String(children)
@@ -72,18 +70,14 @@ function extractText(children: ReactNode): string {
 
 function CodeBlock({ className, children, node: _node, ...props }: React.ComponentProps<'code'> & { node?: unknown }) {
   const { t } = useTranslation()
-  const [copied, setCopied] = useState(false)
+  const { copied, copy } = useCopyToClipboard()
   const match = /language-(\w+)/.exec(className || '')
   const language = match ? match[1] : ''
   const isBlock = !!match
 
   const handleCopy = useCallback(() => {
-    const text = extractText(children)
-    copyToClipboard(text).then(() => {
-      setCopied(true)
-      setTimeout(() => setCopied(false), 2000)
-    }).catch(() => {})
-  }, [children])
+    copy(extractText(children))
+  }, [children, copy])
 
   if (!isBlock) {
     return (
@@ -120,12 +114,13 @@ function PreBlock({ children, node: _node }: React.ComponentProps<'pre'> & { nod
   return <>{children}</>
 }
 
-export default function MarkdownRenderer({ children }: MarkdownRendererProps) {
+export default function MarkdownRenderer({ children, allowHtml = false }: MarkdownRendererProps) {
   const processed = useMemo(() => fixNestedCodeBlocks(children), [children])
+  const rehypePlugins = allowHtml ? [rehypeRaw, rehypeHighlight] : [rehypeHighlight]
   return (
     <ReactMarkdown
       remarkPlugins={[remarkGfm]}
-      rehypePlugins={[rehypeHighlight]}
+      rehypePlugins={rehypePlugins as any}
       components={{
         code: CodeBlock as any,
         pre: PreBlock as any,

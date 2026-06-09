@@ -197,6 +197,8 @@
     "toolErrorNoOutput": "(工具返回错误且无输出)",
     "showAll": "展开全部",
     "collapse": "收起",
+    "copyResult": "复制",
+    "resultCopied": "已复制",
     "resultUsage": "⏱ {{duration}} · {{turns}} 轮 · {{tokens}} tokens"
   },
   "spinner": {

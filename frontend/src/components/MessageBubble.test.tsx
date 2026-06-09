@@ -476,19 +476,21 @@ describe('MessageBubble - result message (Session completed)', () => {
 })
 
 describe('MessageBubble - tool result rendering', () => {
-  it('renders tool_result content as Markdown, not plain pre', () => {
+  it('renders tool_result content in code block', () => {
     const message: Message = {
       type: 'tool_result',
-      content: '**bold text** and `code`',
+      content: 'some output text',
       index: 5,
       name: 'Read',
     }
 
-    renderMessage(message)
+    const { container } = renderMessage(message)
 
-    // Bold should be rendered as <strong>, not plain text
-    const strong = screen.getByRole('strong')
-    expect(strong).toHaveTextContent('bold text')
+    // All content goes through code fence → .code-block
+    const details = container.querySelector('details.tool-result')
+    expect(details).toBeInTheDocument()
+    // Content should be in a code block (fenced by ```)
+    expect(details!.innerHTML).toContain('code-block')
   })
 
   it('renders JSON tool result as formatted code block', () => {
@@ -862,7 +864,7 @@ describe('MessageBubble - Bash tool_use rendering', () => {
     expect(screen.getByText('analyze excel file')).toBeInTheDocument()
 
     // Command should have real newlines, not \\n literals
-    const codeBlock = container.querySelector('.tool-input code')
+    const codeBlock = container.querySelector('.code-block-pre code')
     expect(codeBlock?.textContent).toContain('\n')
     expect(codeBlock?.textContent).not.toContain('\\n')
   })
@@ -1118,7 +1120,7 @@ describe('MessageBubble - Write tool_use rendering', () => {
     expect(summary?.textContent).toContain('script.py')
 
     // Content should have real newlines, not \\n literals
-    const codeBlock = container.querySelector('.tool-input code')
+    const codeBlock = container.querySelector('.code-block-pre code')
     expect(codeBlock?.textContent).toContain('\n')
     expect(codeBlock?.textContent).not.toContain('\\n')
   })
@@ -1558,9 +1560,12 @@ describe('MessageBubble - merged tool execution card', () => {
       input: { command: 'echo hello' },
       toolResult: { content: 'hello', name: 'Bash' },
     }
-    renderMessage(message)
+    const { container } = renderMessage(message)
     expect(screen.getByText('Result:')).toBeInTheDocument()
-    expect(screen.getByText('hello')).toBeInTheDocument()
+    // "hello" appears in both input (echo hello) and output — verify output section specifically
+    const resultSection = container.querySelector('.tool-result-section')
+    expect(resultSection).toBeInTheDocument()
+    expect(resultSection!.textContent).toContain('hello')
   })
 
   it('shows running indicator when tool_use has no toolResult', () => {
