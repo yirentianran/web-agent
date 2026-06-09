@@ -19,6 +19,23 @@ function isValidFilename(name: string | undefined | null): boolean {
   return true
 }
 
+// ── Duration formatting ──────────────────────────────────────────
+
+const UNITS_ZH = { sec: '秒', min: '分', hr: '时' }
+const UNITS_EN = { sec: 's', min: 'm', hr: 'h' }
+
+function fmtDuration(ms: number, lang: string): string {
+  const u = lang === 'zh' ? UNITS_ZH : UNITS_EN
+  const totalSec = ms / 1000
+  if (totalSec < 60) return `${(Math.round(totalSec * 10) / 10)}${u.sec}`
+  const totalMin = Math.floor(totalSec / 60)
+  const sec = Math.floor(totalSec % 60)
+  if (totalMin < 60) return `${totalMin}${u.min} ${sec}${u.sec}`
+  const hr = Math.floor(totalMin / 60)
+  const min = totalMin % 60
+  return `${hr}${u.hr} ${min}${u.min}`
+}
+
 // ── Tool display helpers ─────────────────────────────────────────
 
 const DISABLED_TOOLS = ['WebSearch', 'WebFetch'] as const
@@ -431,7 +448,7 @@ export function CollapsibleBlock({ kind, items }: CollapsibleBlockProps) {
 }
 
 export default function MessageBubble({ message, sessionId, onAnswer, onFileClick, onResend, lastTodoWriteIndex, lastUserMsgIndex, authToken }: MessageBubbleProps) {
-  const { t } = useTranslation()
+  const { t, i18n } = useTranslation()
   if (message.type === 'user') {
     const files = (message.data as Array<{ filename: string; size?: number }> | undefined) || []
     if ((!message.content || !message.content.trim()) && files.length === 0) return null
@@ -603,7 +620,7 @@ export default function MessageBubble({ message, sessionId, onAnswer, onFileClic
     const turns = message.num_turns
     const usage = message.usage
     if (!dur && !usage) return null
-    const durStr = dur != null ? `${(dur / 1000).toFixed(1)}s` : '?'
+    const durStr = dur != null ? fmtDuration(dur, i18n.language) : '?'
     const turnsStr = turns != null ? String(turns) : '?'
     const tokenStr = usage?.input_tokens != null && usage?.output_tokens != null
       ? `${((usage.input_tokens + usage.output_tokens) / 1000).toFixed(1)}K`

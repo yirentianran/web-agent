@@ -213,7 +213,9 @@ class ContainerBridge:
                         delta = event.get("delta", {})
                         if isinstance(delta, dict) and delta.get("type") == "text_delta":
                             accumulated_text += delta.get("text", "")
-                    # Record tool observations from stream events
+                    # Record tool observations from stream events.
+                    # Use data["seq"] (the stream_event's seq) as message_seq,
+                    # since the nested event dict doesn't carry its own seq.
                     if self._tool_observer is not None and isinstance(event, dict):
                         event_type = event.get("type", "")
                         if event_type == "tool_use":
@@ -221,6 +223,7 @@ class ContainerBridge:
                                 event.get("id", ""),
                                 event.get("name", ""),
                                 event.get("input", {}),
+                                message_seq=data.get("seq"),
                             )
                         elif event_type == "tool_result":
                             await self._tool_observer.on_tool_result(

@@ -7,7 +7,7 @@ interface Props {
   loading: boolean;
   error: string | null;
   onFilterChange: (filters: { session_id?: string; event_type?: string }) => void;
-  fetchSessionMessages: (sessionId: string) => Promise<SessionMessage[]>;
+  fetchSessionMessages: (sessionId: string, aroundSeq?: number, context?: number) => Promise<SessionMessage[]>;
 }
 
 const EVENT_TYPES = [
@@ -70,7 +70,7 @@ function ObsDetail({
 }: {
   item: ObservationItem
   onBack: () => void
-  fetchSessionMessages: (sessionId: string) => Promise<SessionMessage[]>
+  fetchSessionMessages: (sessionId: string, aroundSeq?: number, context?: number) => Promise<SessionMessage[]>
 }) {
   const { t } = useTranslation();
   const [messages, setMessages] = useState<SessionMessage[]>([])
@@ -78,11 +78,11 @@ function ObsDetail({
 
   useEffect(() => {
     setMsgsLoading(true)
-    fetchSessionMessages(item.session_id)
+    fetchSessionMessages(item.session_id, item.message_seq ?? undefined, 5)
       .then(setMessages)
       .catch(() => setMessages([]))
       .finally(() => setMsgsLoading(false))
-  }, [item.session_id, fetchSessionMessages])
+  }, [item.session_id, item.message_seq, fetchSessionMessages])
 
   return (
     <div className="obs-detail">
@@ -144,6 +144,9 @@ function ObsDetail({
 
       <div className="obs-detail-block">
         <h4>{t('evolutionMonitor.sessionMessages')} ({messages.length})</h4>
+        {item.message_seq != null && (
+          <div className="evo-context-hint">±5 messages around seq #{item.message_seq}</div>
+        )}
         {msgsLoading && <div className="evo-loading">{t('common.loading')}</div>}
         {!msgsLoading && messages.length === 0 && (
           <div className="evo-empty" style={{ padding: '1rem' }}>{t('evolutionMonitor.noMessages')}</div>

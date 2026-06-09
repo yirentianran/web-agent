@@ -340,17 +340,28 @@ class SessionStore:
         return msg
 
     async def get_messages_for_session(
-        self, session_id: str, limit: int = 50, offset: int = 0
+        self, session_id: str, limit: int = 50, offset: int = 0,
+        min_seq: int | None = None, max_seq: int | None = None,
     ) -> list[dict[str, Any]]:
-        """Get recent messages for a session without user verification (admin use)."""
+        """Get recent messages for a session without user verification (admin use).
+        Optionally filter by seq range (min_seq, max_seq) for context-aware loading."""
+        conditions = ["m.session_id = ?"]
+        params: list[Any] = [session_id]
+        if min_seq is not None:
+            conditions.append("m.seq >= ?")
+            params.append(min_seq)
+        if max_seq is not None:
+            conditions.append("m.seq <= ?")
+            params.append(max_seq)
+        where = " AND ".join(conditions)
         async with self.db.connection() as conn:
             cursor = await conn.execute(
-                """SELECT m.type, m.subtype, m.name, m.content, m.payload, m.usage, m.seq
+                f"""SELECT m.type, m.subtype, m.name, m.content, m.payload, m.usage, m.seq
                    FROM messages m
-                   WHERE m.session_id = ?
+                   WHERE {where}
                    ORDER BY m.seq DESC
                    LIMIT ? OFFSET ?""",
-                (session_id, limit, offset),
+                params + [limit, offset],
             )
             rows = await cursor.fetchall()
 
