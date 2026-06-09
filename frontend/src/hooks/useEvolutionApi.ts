@@ -75,6 +75,7 @@ export interface ObservationItem {
   error_message: string
   duration_ms: number
   created_at: number
+  message_seq: number | null
 }
 
 export interface SessionMessage {
@@ -121,7 +122,7 @@ export interface EvolutionApi {
   fetchStats: (days?: number) => Promise<void>
   fetchInstincts: (params?: { domain?: string; scope?: string; page?: number }) => Promise<void>
   fetchObservations: (params?: { session_id?: string; event_type?: string; page?: number }) => Promise<void>
-  fetchSessionMessages: (sessionId: string) => Promise<SessionMessage[]>
+  fetchSessionMessages: (sessionId: string, aroundSeq?: number, context?: number) => Promise<SessionMessage[]>
   refetch: () => void
 }
 
@@ -272,10 +273,16 @@ export function useEvolutionApi(statusFilter?: string, page: number = 1) {
   )
 
   const fetchSessionMessages = useCallback(
-    (sessionId: string): Promise<SessionMessage[]> =>
-      fetchJson<SessionMessage[]>(
-        `/api/admin/sessions/${sessionId}/messages`,
-      ),
+    (sessionId: string, aroundSeq?: number, context?: number): Promise<SessionMessage[]> => {
+      const params = new URLSearchParams()
+      if (aroundSeq !== undefined && aroundSeq !== null) {
+        params.set('around_seq', String(aroundSeq))
+        params.set('context', String(context ?? 5))
+      }
+      const qs = params.toString()
+      const url = `/api/admin/sessions/${sessionId}/messages${qs ? '?' + qs : ''}`
+      return fetchJson<{ items: SessionMessage[] }>(url).then((data) => data.items)
+    },
     [],
   )
 

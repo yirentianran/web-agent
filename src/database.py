@@ -331,6 +331,14 @@ class Database:
         except Exception:
             pass
 
+        # Add message_seq column to observations for context-aware message fetching
+        try:
+            await self._conn.execute(
+                "ALTER TABLE observations ADD COLUMN message_seq INTEGER"
+            )
+        except Exception:
+            pass
+
         # Remove stored_name column (no longer needed after session isolation)
         try:
             await self._migrate_drop_stored_name()

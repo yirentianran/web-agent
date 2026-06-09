@@ -2353,24 +2353,25 @@ async def run_agent_task(
                         if dup_idx is not None:
                             generated_files[dup_idx] = generated_files[-1]
                             generated_files.pop()
-                # Record tool_use start for observation
+                # Truncate oversized tool results before persisting
+                if event.get("type") == "tool_result":
+                    from src.truncation import maybe_truncate_tool_result_content
+
+                    event["content"] = maybe_truncate_tool_result_content(event.get("content", ""))
+                await buffer.add_message(session_id, event, user_id)
+                # Record observations after buffer.add_message so we have the message seq
                 if event.get("type") == "tool_use":
                     await tool_observer.on_tool_use(
                         event.get("id", ""),
                         event.get("name", ""),
                         event.get("input", {}),
+                        message_seq=event.get("seq"),
                     )
-                # Truncate oversized tool results
-                if event.get("type") == "tool_result":
-                    from src.truncation import maybe_truncate_tool_result_content
-
-                    event["content"] = maybe_truncate_tool_result_content(event.get("content", ""))
-                    # Record tool_call_end for observation
+                elif event.get("type") == "tool_result":
                     await tool_observer.on_tool_result(
                         event.get("tool_use_id", ""),
                         is_error=event.get("is_error", False),
                     )
-                await buffer.add_message(session_id, event, user_id)
 
         # Scan session output directory for newly generated files only
         generated_files = await _scan_workspace_for_generated_files(
@@ -6435,11 +6436,21 @@ async def admin_session_messages(
     limit: int = 50,
     page: int = 1,
     page_size: int = 50,
+    around_seq: int | None = None,
+    context: int = 5,
     current_user: str = Depends(require_admin),
 ):
-    """Get session messages for admin review (no user-scope check)."""
+    """Get session messages for admin review (no user-scope check).
+    When around_seq is provided, fetches context messages before and after that seq."""
     if session_store is None:
         raise HTTPException(503, "Session store not available")
+    if around_seq is not None:
+        min_seq = max(0, around_seq - context)
+        max_seq = around_seq + context
+        msgs = await session_store.get_messages_for_session(
+            session_id, limit=context * 2 + 1, min_seq=min_seq, max_seq=max_seq,
+        )
+        return {"items": msgs}
     offset = (page - 1) * page_size
     msgs = await session_store.get_messages_for_session(session_id, limit=page_size, offset=offset)
     total = await session_store.count_messages_for_session(session_id)

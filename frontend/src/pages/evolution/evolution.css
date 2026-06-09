@@ -464,8 +464,8 @@
 .obs-table-fixed .col-session { width: 14%; }
 .obs-table-fixed .col-type   { width: 12%; }
 .obs-table-fixed .col-tool   { width: 8%; }
-.obs-table-fixed .col-input  { width: 18%; }
-.obs-table-fixed .col-output { width: 12%; }
+.obs-table-fixed .col-input  { width: 22%; }
+.obs-table-fixed .col-output { width: 8%; }
 .obs-table-fixed .col-success { width: 8%; }
 .obs-table-fixed .col-time   { width: 18%; }
 

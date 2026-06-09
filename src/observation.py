@@ -27,22 +27,41 @@ class ObservationStore:
         success: bool | None = None,
         error_message: str = "",
         duration_ms: int = 0,
+        message_seq: int | None = None,
     ) -> int:
+        # Fallback: look up latest message seq if caller didn't provide one.
+        # ToolObserver.on_tool_use already resolves seq, but other callers
+        # (session_complete, user_correct, etc.) don't.
+        if message_seq is None:
+            message_seq = await self._lookup_seq(session_id)
         async with self.db.connection() as conn:
             cursor = await conn.execute(
                 """INSERT INTO observations
                    (session_id, user_id, event_type, tool_name,
                     tool_input_summary, tool_output_summary,
-                    success, error_message, duration_ms)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    success, error_message, duration_ms, message_seq)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     session_id, user_id, event_type, tool_name,
                     tool_input_summary[:500], tool_output_summary[:500],
                     1 if success else 0 if success is not None else None,
-                    error_message[:500], duration_ms,
+                    error_message[:500], duration_ms, message_seq,
                 ),
             )
             return cursor.lastrowid
+
+    async def _lookup_seq(self, session_id: str) -> int | None:
+        try:
+            async with self.db.connection() as conn:
+                cursor = await conn.execute(
+                    "SELECT COALESCE(MAX(seq), 0) FROM messages WHERE session_id = ?",
+                    (session_id,),
+                )
+                row = await cursor.fetchone()
+                return row[0] if row and row[0] > 0 else None
+        except Exception:
+            logger.warning("Failed to lookup message seq for session %s", session_id, exc_info=True)
+            return None
 
     async def count_since(self, since_timestamp: float) -> int:
         async with self.db.connection() as conn:
@@ -60,7 +79,7 @@ class ObservationStore:
             cursor = await conn.execute(
                 """SELECT id, session_id, user_id, event_type, tool_name,
                           tool_input_summary, tool_output_summary,
-                          success, error_message, duration_ms, created_at
+                          success, error_message, duration_ms, created_at, message_seq
                    FROM observations
                    WHERE created_at > ?
                    ORDER BY created_at ASC
@@ -75,6 +94,7 @@ class ObservationStore:
                     "tool_input_summary": r[5], "tool_output_summary": r[6],
                     "success": bool(r[7]) if r[7] is not None else None,
                     "error_message": r[8], "duration_ms": r[9], "created_at": r[10],
+                    "message_seq": r[11],
                 }
                 for r in rows
             ]
@@ -107,7 +127,7 @@ class ObservationStore:
             cursor = await conn.execute(
                 f"""SELECT o.id, o.session_id, o.user_id, o.event_type, o.tool_name,
                            o.tool_input_summary, o.tool_output_summary,
-                           o.success, o.error_message, o.duration_ms, o.created_at,
+                           o.success, o.error_message, o.duration_ms, o.created_at, o.message_seq,
                            COALESCE(s.title, '') as session_title
                     FROM observations o
                     LEFT JOIN sessions s ON o.session_id = s.session_id
@@ -127,7 +147,8 @@ class ObservationStore:
                     "tool_output_summary": r[6] or "",
                     "success": bool(r[7]) if r[7] is not None else None,
                     "error_message": r[8], "duration_ms": r[9], "created_at": r[10],
-                    "session_title": r[11] or "",
+                    "message_seq": r[11],
+                    "session_title": r[12] or "",
                 }
                 for r in rows
             ],
@@ -168,18 +189,19 @@ class ToolObserver:
         self._store = store
         self._session_id = session_id
         self._user_id = user_id
-        self._starts: dict[str, tuple[str, float]] = {}
+        self._starts: dict[str, tuple[str, float, int | None]] = {}
 
-    async def on_tool_use(self, tool_use_id: str, tool_name: str, tool_input: dict) -> None:
+    async def on_tool_use(self, tool_use_id: str, tool_name: str, tool_input: dict, message_seq: int | None = None) -> None:
         if not self._store:
             return
-        self._starts[tool_use_id] = (tool_name, time.time())
+        self._starts[tool_use_id] = (tool_name, time.time(), message_seq)
         await self._store.record(
             session_id=self._session_id,
             user_id=self._user_id,
             event_type="tool_call_start",
             tool_name=tool_name,
             tool_input_summary=str(tool_input),
+            message_seq=message_seq,
         )
 
     async def on_tool_result(self, tool_use_id: str, is_error: bool = False) -> None:
@@ -188,7 +210,7 @@ class ToolObserver:
         start_info = self._starts.pop(tool_use_id, None)
         if start_info is None:
             return
-        tool_name, start_time = start_info
+        tool_name, start_time, message_seq = start_info
         duration_ms = int((time.time() - start_time) * 1000)
         await self._store.record(
             session_id=self._session_id,
@@ -197,4 +219,5 @@ class ToolObserver:
             tool_name=tool_name,
             success=not is_error,
             duration_ms=duration_ms,
+            message_seq=message_seq,
         )
