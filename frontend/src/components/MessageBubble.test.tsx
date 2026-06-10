@@ -459,7 +459,7 @@ describe('MessageBubble - result message (Session completed)', () => {
     }
 
     renderMessage(message)
-    expect(screen.getByText(/64\.5s/)).toBeInTheDocument()
+    expect(screen.getByText(/1m 4s/)).toBeInTheDocument()
   })
 
   it('still hides result message without duration or cost', () => {

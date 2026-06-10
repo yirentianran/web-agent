@@ -73,9 +73,9 @@ export function pairToolMessages(messages: Message[]): Message[] {
   }
 
   return messages
-    .filter(msg => !(msg.type === 'tool_result' && msg.tool_use_id && resultMap.has(msg.tool_use_id)))
+    .filter(msg => !(msg.type === 'tool_result' && msg.tool_use_id && resultMap.has(msg.tool_use_id)) && !(msg.type === 'tool_result' && msg.name === 'TodoWrite'))
     .map(msg => {
-      if (msg.type === 'tool_use' && msg.id && msg.name !== 'AskUserQuestion') {
+      if (msg.type === 'tool_use' && msg.id && msg.name !== 'AskUserQuestion' && msg.name !== 'TodoWrite') {
         const result = resultMap.get(msg.id)
         if (result) {
           return {
@@ -402,13 +402,13 @@ function ToolResultContent({ content, isBashResult, language }: { content: strin
     displayContent = '```text\n' + content + '\n```'
   }
 
-  const isLarge = !isInput && displayContent.length > COLLAPSE_THRESHOLD
+  const isLarge = displayContent.length > COLLAPSE_THRESHOLD
   const visibleContent = isLarge && !expanded
     ? displayContent.slice(0, COLLAPSE_THRESHOLD) + '…'
     : displayContent
 
   return (
-    <div className={isBashResult ? 'tool-output-wrapper tool-output-terminal' : 'tool-output-wrapper'}>
+    <div className="tool-output-wrapper">
       <div className={`tool-output-markdown${isLarge && !expanded ? ' tool-output-collapsed' : ''}`}>
         <MarkdownRenderer>{visibleContent}</MarkdownRenderer>
       </div>
