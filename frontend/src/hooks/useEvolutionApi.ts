@@ -122,6 +122,8 @@ export interface EvolutionApi {
   fetchStats: (days?: number) => Promise<void>
   fetchInstincts: (params?: { domain?: string; scope?: string; page?: number }) => Promise<void>
   fetchObservations: (params?: { session_id?: string; event_type?: string; page?: number }) => Promise<void>
+  extractResult: AsyncState<{ extracted: number; clusters: number; applied: number; proposed: number; skipped?: boolean } | null>
+  extractNow: () => Promise<void>
   fetchSessionMessages: (sessionId: string, aroundSeq?: number, context?: number) => Promise<SessionMessage[]>
   refetch: () => void
 }
@@ -286,6 +288,42 @@ export function useEvolutionApi(statusFilter?: string, page: number = 1) {
     [],
   )
 
+  // --- Extract state ---
+  const [extractResult, setExtractResult] = useState<
+    AsyncState<{ extracted: number; clusters: number; applied: number; proposed: number; skipped?: boolean } | null>
+  >({ data: null, loading: false, error: null })
+
+  const extractNow = useCallback(async () => {
+    setExtractResult({ data: null, loading: true, error: null })
+    try {
+      const headers: Record<string, string> = {
+        'Content-Type': 'application/json',
+        ...csrfHeaders(),
+      }
+      const resp = await fetch(`${API_BASE}/extract`, {
+        method: 'POST',
+        headers,
+        credentials: 'same-origin',
+      })
+      if (!resp.ok) {
+        const detail = await resp
+          .json()
+          .then((b) => b.detail)
+          .catch(() => resp.statusText)
+        throw new Error(typeof detail === 'string' ? detail : resp.statusText)
+      }
+      const data = await resp.json()
+      setExtractResult({ data, loading: false, error: null })
+      setRefreshKey((k) => k + 1)
+    } catch (e: unknown) {
+      setExtractResult({
+        data: null,
+        loading: false,
+        error: e instanceof Error ? e.message : 'Unknown error',
+      })
+    }
+  }, [])
+
   const refetch = useCallback(() => {
     setRefreshKey((k) => k + 1)
   }, [])
@@ -296,6 +334,8 @@ export function useEvolutionApi(statusFilter?: string, page: number = 1) {
       stats,
       instincts,
       observations,
+      extractResult,
+      extractNow,
       fetchDetail,
       fetchDiff,
       review,
@@ -305,7 +345,8 @@ export function useEvolutionApi(statusFilter?: string, page: number = 1) {
       fetchSessionMessages,
       refetch,
     }),
-    [overview, stats, instincts, observations, fetchDetail, fetchDiff, review,
+    [overview, stats, instincts, observations, extractResult, extractNow,
+     fetchDetail, fetchDiff, review,
      fetchStats, fetchInstincts, fetchObservations, fetchSessionMessages, refetch],
   )
 }

@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { StatsCards } from './evolution/StatsCards';
@@ -36,6 +36,36 @@ export default function EvolutionPage() {
     loadData(timeRange);
   }, [timeRange]);
 
+  // Refresh data when extraction completes successfully
+  const prevExtractLoading = useRef(api.extractResult.loading);
+  useEffect(() => {
+    if (prevExtractLoading.current && !api.extractResult.loading && !api.extractResult.error) {
+      loadData(timeRange);
+    }
+    prevExtractLoading.current = api.extractResult.loading;
+  }, [api.extractResult.loading, api.extractResult.error, timeRange, loadData]);
+
+  const handleExtract = useCallback(() => {
+    api.extractNow();
+  }, [api.extractNow]);
+
+  const extractMsg: string | null = api.extractResult.error
+    ? api.extractResult.error
+    : api.extractResult.data
+      ? api.extractResult.data.skipped
+        ? t('evolutionMonitor.extractSkipped')
+        : t('evolutionMonitor.extractResult', {
+            instincts: api.extractResult.data.extracted,
+            clusters: api.extractResult.data.clusters,
+          })
+      : null;
+
+  const extractBannerType = api.extractResult.error
+    ? 'error'
+    : api.extractResult.data && !api.extractResult.data.skipped
+      ? 'success'
+      : null;
+
   const handleInstinctFilter = useCallback(
     (filters: { domain?: string; scope?: string }) => {
       api.fetchInstincts(filters);
@@ -68,9 +98,22 @@ export default function EvolutionPage() {
             {t('evolutionMonitor.backToOverview')}
           </button>
           <div className="evolution-header-title-group skills-header-title-group">
+            <button
+              className="mcp-add-btn"
+              onClick={handleExtract}
+              disabled={api.extractResult.loading}
+              type="button"
+            >
+              {api.extractResult.loading ? t('evolutionMonitor.extracting') : t('evolutionMonitor.extractNow')}
+            </button>
             <h2>{t('evolutionMonitor.title')}</h2>
           </div>
         </div>
+        {extractBannerType && (
+          <div className={`mcp-feedback-banner mcp-feedback-banner--${extractBannerType}`}>
+            {extractMsg}
+          </div>
+        )}
         <EvolutionDetail evolutionId={detailId} api={api} />
       </div>
     );
@@ -87,9 +130,22 @@ export default function EvolutionPage() {
           {t('common.back')}
         </button>
         <div className="evolution-header-title-group skills-header-title-group">
+          <button
+            className="mcp-add-btn"
+            onClick={handleExtract}
+            disabled={api.extractResult.loading}
+            type="button"
+          >
+            {api.extractResult.loading ? t('evolutionMonitor.extracting') : t('evolutionMonitor.extractNow')}
+          </button>
           <h2>{t('evolutionMonitor.title')}</h2>
         </div>
       </div>
+      {extractBannerType && (
+        <div className={`mcp-feedback-banner mcp-feedback-banner--${extractBannerType}`}>
+          {extractMsg}
+        </div>
+      )}
 
       {/* Time range selector */}
       <div className="time-range-bar">

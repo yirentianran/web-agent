@@ -7,7 +7,13 @@ and JSON dict blocks ({"type": "text", ...}) from container WebSocket.
 from __future__ import annotations
 
 import json
+import re
 from typing import Any, Callable
+
+
+def strip_thinking_blocks(text: str) -> str:
+    """Remove [thinking]...[/thinking] blocks and their content, return clean text."""
+    return re.sub(r"\[thinking\].*?\[/thinking\]", "", text, flags=re.DOTALL).strip()
 
 
 def process_content_blocks(
