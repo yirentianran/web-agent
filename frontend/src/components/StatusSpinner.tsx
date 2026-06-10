@@ -3,8 +3,6 @@ import { useTranslation } from "react-i18next";
 import type { TFunction } from "i18next";
 import "./StatusSpinner.css";
 
-const STALE_THRESHOLD_SEC = 30;
-
 export function formatElapsed(seconds: number, t: TFunction): string {
   const h = Math.floor(seconds / 3600);
   const m = Math.floor((seconds % 3600) / 60);
@@ -47,12 +45,11 @@ export default function StatusSpinner({
     return () => clearInterval(interval);
   }, [startTime]);
 
-  const isStale = elapsed > STALE_THRESHOLD_SEC * 1000;
   const elapsedSec = Math.floor(elapsed / 1000);
 
   return (
     <div
-      className={`status-spinner status-spinner--${variant}${isStale ? " status-spinner--stale" : ""}`}
+      className={`status-spinner status-spinner--${variant}`}
     >
       <div className="status-spinner__dots">
         <span />
@@ -66,7 +63,6 @@ export default function StatusSpinner({
           <span
             className="status-spinner__elapsed"
             data-testid="elapsed"
-            data-stale={isStale}
           >
             {formatElapsed(elapsedSec, t)}
           </span>

@@ -1132,30 +1132,6 @@ body {
 
 /* ── Bash terminal output ─────────────────────────────────────── */
 
-.tool-output-terminal {
-  background: #1e1e2e;
-  border-radius: 6px;
-  padding: 8px;
-}
-
-.tool-output-terminal .tool-output-markdown {
-  color: #cdd6f4;
-}
-
-.tool-output-terminal .tool-output-markdown .code-block {
-  background: transparent;
-}
-
-.tool-output-terminal .tool-output-copy-btn {
-  background: rgba(255, 255, 255, 0.08);
-  border-color: rgba(255, 255, 255, 0.15);
-  color: #a6adc8;
-}
-
-.tool-output-terminal .tool-output-copy-btn:hover {
-  border-color: rgba(255, 255, 255, 0.35);
-  color: #cdd6f4;
-}
 
 /* Result usage footer — compact metrics line */
 .result-footer {

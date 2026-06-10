@@ -62,15 +62,6 @@
   margin-left: 4px;
 }
 
-.status-spinner__elapsed[data-stale="true"] {
-  color: #f59e0b;
-  opacity: 1;
-}
-
-.status-spinner--stale {
-  animation: status-spinner-pulse 2s ease-in-out infinite;
-}
-
 @keyframes status-spinner-bounce {
   0%, 80%, 100% {
     transform: scale(0.6);
@@ -80,9 +71,4 @@
     transform: scale(1);
     opacity: 1;
   }
-}
-
-@keyframes status-spinner-pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.6; }
 }

@@ -103,24 +103,6 @@ describe("StatusSpinner component", () => {
     expect(elapsedEl).toHaveTextContent("3s");
   });
 
-  it("shows stale styling after 30 seconds", () => {
-    const startTime = fakeNow - 35000;
-
-    render(<StatusSpinner text="Agent is working" startTime={startTime} />);
-
-    const container = screen.getByText("Agent is working").parentElement!;
-    expect(container).toHaveClass("status-spinner--stale");
-  });
-
-  it("does not show stale styling for fresh sessions", () => {
-    const startTime = fakeNow - 10000;
-
-    render(<StatusSpinner text="Agent is working" startTime={startTime} />);
-
-    const container = screen.getByText("Agent is working").parentElement!;
-    expect(container).not.toHaveClass("status-spinner--stale");
-  });
-
   it("does not show elapsed time when startTime is undefined", () => {
     render(<StatusSpinner text="Agent is working" />);
 
