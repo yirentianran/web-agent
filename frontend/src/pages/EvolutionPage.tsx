@@ -22,28 +22,34 @@ const TIME_RANGES: { days: number; labelKey: string }[] = [
 export default function EvolutionPage() {
   const { t } = useTranslation();
   const navigate = useNavigate();
-  const api = useEvolutionApi();
   const [activeTab, setActiveTab] = useState<TabId>('evolutions');
   const [detailId, setDetailId] = useState<number | null>(null);
   const [timeRange, setTimeRange] = useState(7);
+  const [evolutionPage, setEvolutionPage] = useState(1);
+  const [instinctPage, setInstinctPage] = useState(1);
+  const [obsPage, setObsPage] = useState(1);
+  const api = useEvolutionApi(undefined, evolutionPage);
   const loadData = useCallback((days: number) => {
     api.fetchStats(days);
-    api.fetchInstincts({});
-    api.fetchObservations({});
-  }, [api]);
+    api.fetchInstincts({ page: instinctPage });
+    api.fetchObservations({ page: obsPage });
+  }, [api, instinctPage, obsPage]);
 
   useEffect(() => {
     loadData(timeRange);
-  }, [timeRange]);
+  }, [timeRange]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Refresh data when extraction completes successfully
   const prevExtractLoading = useRef(api.extractResult.loading);
   useEffect(() => {
     if (prevExtractLoading.current && !api.extractResult.loading && !api.extractResult.error) {
+      setEvolutionPage(1);
+      setInstinctPage(1);
+      setObsPage(1);
       loadData(timeRange);
     }
     prevExtractLoading.current = api.extractResult.loading;
-  }, [api.extractResult.loading, api.extractResult.error, timeRange, loadData]);
+  }, [api.extractResult.loading, api.extractResult.error, timeRange]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleExtract = useCallback(() => {
     api.extractNow();
@@ -68,17 +74,43 @@ export default function EvolutionPage() {
 
   const handleInstinctFilter = useCallback(
     (filters: { domain?: string; scope?: string }) => {
-      api.fetchInstincts(filters);
+      setInstinctPage(1);
+      api.fetchInstincts({ ...filters, page: 1 });
     },
     [api.fetchInstincts]
   );
 
   const handleObsFilter = useCallback(
     (filters: { session_id?: string; event_type?: string }) => {
-      api.fetchObservations(filters);
+      setObsPage(1);
+      api.fetchObservations({ ...filters, page: 1 });
     },
     [api.fetchObservations]
   );
+
+  const handleTimeRangeChange = useCallback((days: number) => {
+    setTimeRange(days);
+    setEvolutionPage(1);
+    setInstinctPage(1);
+    setObsPage(1);
+  }, []);
+
+  const handleEvolutionPageChange = useCallback((p: number) => {
+    setEvolutionPage(p);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }, []);
+
+  const handleInstinctPageChange = useCallback((p: number) => {
+    setInstinctPage(p);
+    api.fetchInstincts({ page: p });
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }, [api]);
+
+  const handleObsPageChange = useCallback((p: number) => {
+    setObsPage(p);
+    api.fetchObservations({ page: p });
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }, [api]);
 
   const TABS: { id: TabId; labelKey: string }[] = [
     { id: 'evolutions', labelKey: 'evolutionMonitor.evolutionsTab' },
@@ -153,7 +185,7 @@ export default function EvolutionPage() {
           <button
             key={days}
             className={`time-range-btn ${timeRange === days ? 'active' : ''}`}
-            onClick={() => setTimeRange(days)}
+            onClick={() => handleTimeRangeChange(days)}
           >
             {t(labelKey)}
           </button>
@@ -180,6 +212,9 @@ export default function EvolutionPage() {
           data={api.overview.data}
           loading={api.overview.loading}
           error={api.overview.error}
+          page={evolutionPage}
+          pageSize={20}
+          onPageChange={handleEvolutionPageChange}
           onRowClick={(item) => setDetailId(item.id)}
         />
       )}
@@ -188,6 +223,9 @@ export default function EvolutionPage() {
           data={api.instincts.data}
           loading={api.instincts.loading}
           error={api.instincts.error}
+          page={instinctPage}
+          pageSize={20}
+          onPageChange={handleInstinctPageChange}
           onFilterChange={handleInstinctFilter}
         />
       )}
@@ -196,6 +234,9 @@ export default function EvolutionPage() {
           data={api.observations.data}
           loading={api.observations.loading}
           error={api.observations.error}
+          page={obsPage}
+          pageSize={50}
+          onPageChange={handleObsPageChange}
           onFilterChange={handleObsFilter}
           fetchSessionMessages={api.fetchSessionMessages}
         />
