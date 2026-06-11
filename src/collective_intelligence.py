@@ -28,7 +28,7 @@ class CollectiveIntelligenceEngine:
         self._skill_manager = SkillManager(db)
         self._evo_log_store = EvolutionLogStore(db)
 
-    async def start_background_jobs(self) -> None:
+    async def start_background_jobs(self) -> "CollectiveIntelligenceEngine":
         """Start the instinct evolution background loops."""
         from src.instinct_extractor import InstinctExtractor, InstinctStore
         from src.observation import ObservationStore
@@ -52,6 +52,7 @@ class CollectiveIntelligenceEngine:
         asyncio.create_task(self._daily_eval_loop())
 
         logger.info("Collective intelligence background jobs started")
+        return self
 
     async def _extraction_loop(self) -> None:
         import asyncio as _asyncio

@@ -148,10 +148,10 @@ export default function SkillsPanel({ authToken: _authToken, userId, userRole, o
 
       {embedded && (
         <div className="skills-upload-area">
-          <label className="skills-upload-btn">
+          <button className="mcp-add-btn" onClick={() => zipInputRef.current?.click()} disabled={uploading} type="button">
             Upload Skill (ZIP)
-            <input ref={zipInputRef} type="file" accept=".zip" style={{ display: 'none' }} onChange={handleFileSelect} disabled={uploading} />
-          </label>
+          </button>
+          <input ref={zipInputRef} type="file" accept=".zip" style={{ display: 'none' }} onChange={handleFileSelect} disabled={uploading} />
         </div>
       )}
 

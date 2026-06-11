@@ -6,8 +6,16 @@ interface Props {
   data: { items: ObservationItem[]; total: number; page: number } | null;
   loading: boolean;
   error: string | null;
+  page: number;
+  pageSize: number;
+  onPageChange: (page: number) => void;
   onFilterChange: (filters: { session_id?: string; event_type?: string }) => void;
   fetchSessionMessages: (sessionId: string, aroundSeq?: number, context?: number) => Promise<SessionMessage[]>;
+}
+
+const pageBtnStyle: React.CSSProperties = {
+  padding: '4px 10px', border: '1px solid var(--color-border)',
+  borderRadius: 4, background: 'var(--color-surface)', cursor: 'pointer',
 }
 
 const EVENT_TYPES = [
@@ -159,15 +167,18 @@ function ObsDetail({
   );
 }
 
-export const ObservationBrowser: React.FC<Props> = ({ data, loading, error, onFilterChange, fetchSessionMessages }) => {
+export const ObservationBrowser: React.FC<Props> = ({ data, loading, error, page, pageSize, onPageChange, onFilterChange, fetchSessionMessages }) => {
   const { t } = useTranslation();
   const [sessionId, setSessionId] = useState('');
   const [eventType, setEventType] = useState('');
   const [selectedObs, setSelectedObs] = useState<ObservationItem | null>(null);
 
-  const handleFilter = () => onFilterChange(
-    { session_id: sessionId || undefined, event_type: eventType || undefined }
-  );
+  const handleFilter = () => {
+    onFilterChange(
+      { session_id: sessionId || undefined, event_type: eventType || undefined }
+    );
+    onPageChange(1);
+  };
 
   if (selectedObs) {
     return <ObsDetail item={selectedObs} onBack={() => setSelectedObs(null)} fetchSessionMessages={fetchSessionMessages} />;
@@ -245,9 +256,42 @@ export const ObservationBrowser: React.FC<Props> = ({ data, loading, error, onFi
               ))}
             </tbody>
           </table>
-          <div className="evo-pagination">Total: {data.total}</div>
+          <Pagination page={page} total={data.total} pageSize={pageSize} onPageChange={onPageChange} />
         </>
       )}
     </div>
   );
 };
+
+function Pagination({
+  page, total, pageSize, onPageChange,
+}: {
+  page: number; total: number; pageSize: number; onPageChange: (p: number) => void;
+}) {
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
+  if (totalPages <= 1) return null;
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 6, justifyContent: 'center', padding: 16, fontSize: '0.85rem' }}>
+      <button disabled={page <= 1} onClick={() => onPageChange(page - 1)} style={pageBtnStyle}>←</button>
+      {Array.from({ length: Math.min(5, totalPages) }, (_, i) => {
+        const start = Math.max(1, Math.min(page - 2, totalPages - 4));
+        const p = start + i;
+        if (p > totalPages) return null;
+        return (
+          <button
+            key={p}
+            onClick={() => onPageChange(p)}
+            style={{
+              ...pageBtnStyle,
+              ...(p === page ? { background: 'var(--color-primary)', color: '#fff', borderColor: 'var(--color-primary)' } : {}),
+            }}
+          >
+            {p}
+          </button>
+        );
+      })}
+      <button disabled={page >= totalPages} onClick={() => onPageChange(page + 1)} style={pageBtnStyle}>→</button>
+      <span style={{ color: 'var(--color-muted)', marginLeft: 12 }}>{total} total</span>
+    </div>
+  );
+}

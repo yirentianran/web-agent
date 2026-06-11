@@ -134,10 +134,10 @@ export default function SkillsPage({ authToken: _authToken, userId, userRole, on
       <div className="skills-header detail-header">
         <button className="skills-back-btn detail-back-btn" onClick={onBack} type="button">{t('common.back')}</button>
         <div className="skills-header-title-group">
-          <label className="skills-upload-btn">
+          <button className="mcp-add-btn" onClick={() => zipInputRef.current?.click()} disabled={uploading} type="button">
             {uploading ? t('skills.uploadingSkill') : t('skills.uploadSkill')}
-            <input ref={zipInputRef} type="file" accept=".zip" style={{ display: 'none' }} onChange={handleFileSelect} disabled={uploading} />
-          </label>
+          </button>
+          <input ref={zipInputRef} type="file" accept=".zip" style={{ display: 'none' }} onChange={handleFileSelect} disabled={uploading} />
           <h2>{t('skills.title')}</h2>
         </div>
       </div>

@@ -127,6 +127,14 @@ if not _skill_feedback_logger.handlers:
     _skill_feedback_logger.addHandler(_stream)
     _skill_feedback_logger.addHandler(_file)
 
+# Ensure all src.* loggers (instinct_extractor, etc.) write to the shared file
+_src_logger = logging.getLogger("src")
+_src_logger.setLevel(LOG_LEVEL)
+if not _src_logger.handlers:
+    _src_logger.addHandler(_stream)
+    _src_logger.addHandler(_file)
+_src_logger.propagate = False
+
 # Resolve DATA_ROOT relative to this file's directory, not CWD
 _DATA_ROOT_ENV = os.getenv("DATA_ROOT", "/data")
 _DATA_ROOT_PATH = Path(_DATA_ROOT_ENV)
@@ -184,6 +192,7 @@ _mcp_store: MCPServerStore | None = None  # MCP server DB store
 _obs_store: Any = None  # ObservationStore for agent loop event capture
 _audit_logger: Any = None  # AuditLogger, initialized at startup
 _skill_manager: Any = None  # SkillManager, initialized at startup if DB available
+_ci_engine: Any = None  # CollectiveIntelligenceEngine, initialized at startup if DB available
 buffer = MessageBuffer()
 session_store: SessionStore | None = None  # Initialized at startup if DATA_DB_PATH set
 active_tasks: dict[str, asyncio.Task] = {}
@@ -331,7 +340,7 @@ from claude_agent_sdk.types import (
     UserMessage,
 )
 
-from src.block_processor import process_content_blocks
+from src.block_processor import process_content_blocks, strip_thinking_blocks
 from src.container_bridge import ContainerBridge, bridge_answer_futures
 
 
@@ -2042,8 +2051,7 @@ async def _generate_title_via_llm(conversation_text: str, language: str | None =
                 content = data.get("content", [])
                 if isinstance(content, list):
                     result = process_content_blocks(content, lambda _: None)
-                    # Strip thinking tags — we only want the actual text response for the title
-                    result = re.sub(r"\[thinking\].*?\[/thinking\]", "", result, flags=re.DOTALL).strip()
+                    result = strip_thinking_blocks(result)
                     if result:
                         logger.debug("[AUTO_TITLE] Extracted title: %s", result[:60])
                         return result[:100]
@@ -6346,6 +6354,19 @@ async def evolution_review(
         return {"status": "rolled_back", "message": "Evolution rolled back"}
 
 
+@app.post("/api/admin/evolution/extract")
+async def evolution_extract(current_user: str = Depends(require_admin)):
+    """Manually trigger an instinct extraction cycle."""
+    if _ci_engine is None or not hasattr(_ci_engine, "_extractor"):
+        raise HTTPException(503, "Evolution engine not initialized")
+    try:
+        result = await _ci_engine._extractor.run_once(force=True)
+        return result
+    except Exception as exc:
+        logger.exception("Manual extraction failed")
+        raise HTTPException(500, f"Extraction failed: {exc}")
+
+
 @app.get("/api/admin/instincts")
 async def list_instincts(
     domain: str = "",
@@ -6478,7 +6499,7 @@ async def _run_backfill(store) -> None:
 async def startup() -> None:
     """Start background cleanup tasks and initialize DB if configured."""
     # Initialize SQLite + SessionStore if DATA_DB_PATH is set
-    global _db, _mcp_store, buffer, session_store, _skill_manager, _obs_store
+    global _db, _mcp_store, buffer, session_store, _skill_manager, _obs_store, _ci_engine
     db_path_env = os.getenv("DATA_DB_PATH", "")
     if db_path_env:
         db_path = Path(db_path_env)

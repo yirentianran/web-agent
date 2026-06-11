@@ -5,14 +5,19 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import time
 from typing import Any
 
 import httpx
 
-from src.cost import get_flash_model
+from src.block_processor import process_content_blocks, strip_thinking_blocks
+_EXTRACTION_MODEL = os.getenv("MODEL", "")
 
 logger = logging.getLogger(__name__)
+
+_anthropic_base = os.getenv("ANTHROPIC_BASE_URL", "https://api.anthropic.com").rstrip("/")
+ANTHROPIC_MESSAGES_URL = f"{_anthropic_base}/v1/messages"
 
 EXTRACTION_PROMPT = """You are analyzing agent execution events to find patterns for improvement.
 
@@ -230,13 +235,38 @@ class InstinctExtractor:
         self.evolution_store = evolution_store
         self.skill_manager = skill_manager
         self.data_root = data_root
-        self._last_scan_at = time.time()
+        self._last_scan_at = self._load_last_scan()
         self._api_key = os.environ.get("ANTHROPIC_AUTH_TOKEN") or os.environ.get("ANTHROPIC_API_KEY", "")
+
+    def _last_scan_path(self) -> str:
+        return os.path.join(self.data_root, ".last_extraction_scan")
+
+    def _load_last_scan(self) -> float:
+        try:
+            path = self._last_scan_path()
+            if os.path.exists(path):
+                with open(path) as f:
+                    return float(f.read().strip())
+        except Exception:
+            pass
+        return 0.0  # epoch — first scan gets all events
+
+    def _save_last_scan(self) -> None:
+        try:
+            with open(self._last_scan_path(), "w") as f:
+                f.write(str(self._last_scan_at))
+        except Exception:
+            pass
 
     def _filter_significant_events(
         self, events: list[dict[str, Any]]
     ) -> list[dict[str, Any]]:
-        """Rule-based filtering: find events worth analyzing."""
+        """Rule-based filtering: find events worth analyzing.
+
+        Keeps failure/correction patterns as high-signal, plus a sample of
+        successful tool usage from each session so the LLM can discover
+        patterns beyond just errors.
+        """
         if len(events) < 3:
             return []
 
@@ -246,6 +276,12 @@ class InstinctExtractor:
             by_session.setdefault(e["session_id"], []).append(e)
 
         significant: list[dict[str, Any]] = []
+        seen_ids: set[int] = set()
+
+        def add(e: dict[str, Any]) -> None:
+            if e.get("id") and e["id"] not in seen_ids:
+                seen_ids.add(e["id"])
+                significant.append(e)
 
         for sid, sess_events in by_session.items():
             # Pattern 1: consecutive failures of same tool (2+)
@@ -258,16 +294,35 @@ class InstinctExtractor:
                     and not a.get("success")
                     and not b.get("success")
                 ):
-                    significant.extend([a, b])
+                    add(a)
+                    add(b)
 
             # Pattern 2: user_correct — grab preceding tool_call_end
             for i, e in enumerate(sess_events):
                 if e["event_type"] in ("user_correct", "user_retry"):
                     for j in range(i - 1, -1, -1):
                         if sess_events[j]["event_type"] == "tool_call_end":
-                            significant.append(sess_events[j])
+                            add(sess_events[j])
                             break
-                    significant.append(e)
+                    add(e)
+
+            # Pattern 3: sample successful tool calls from each session
+            tool_events = [
+                e for e in sess_events
+                if e["event_type"] in ("tool_call_end", "tool_call_start")
+                and e.get("tool_name")
+            ]
+            n = len(tool_events)
+            if n <= 5:
+                for e in tool_events:
+                    add(e)
+            else:
+                # Take first 2, last 2, and one from the middle
+                for e in tool_events[:2]:
+                    add(e)
+                add(tool_events[n // 2])
+                for e in tool_events[-2:]:
+                    add(e)
 
         return significant
 
@@ -305,20 +360,27 @@ class InstinctExtractor:
 
         return [e for e in events if e["session_id"] in repeated_sids]
 
-    async def run_once(self) -> dict[str, Any]:
-        """Single extraction cycle. Returns summary dict."""
+    async def run_once(self, *, force: bool = False) -> dict[str, Any]:
+        """Single extraction cycle. Returns summary dict.
+
+        Set force=True to skip the event-count threshold (manual trigger).
+        """
         if not self._api_key:
             logger.warning("API key not set (ANTHROPIC_AUTH_TOKEN / ANTHROPIC_API_KEY), skipping extraction")
             return {"extracted": 0, "clusters": 0, "applied": 0, "proposed": 0}
 
-        # 1. Check event threshold
-        new_count = await self.obs_store.count_since(self._last_scan_at)
-        if new_count < 30:
+        # 1. Check event threshold (skip when forced)
+        since = self._last_scan_at
+        if force:
+            since = 0.0  # manual trigger: scan all historical events
+        elif await self.obs_store.count_since(since) < 5:
             return {"extracted": 0, "clusters": 0, "applied": 0, "proposed": 0, "skipped": True}
 
-        # 2. Get new events
-        events = await self.obs_store.get_new_since(self._last_scan_at)
+        # 2. Get events
+        events = await self.obs_store.get_new_since(since)
         self._last_scan_at = time.time()
+        self._save_last_scan()
+        logger.info("Extraction: got %d new events since %.0f", len(events), self._last_scan_at)
 
         if not events:
             return {"extracted": 0, "clusters": 0, "applied": 0, "proposed": 0}
@@ -326,12 +388,30 @@ class InstinctExtractor:
         # 3. Filter significant events
         sig_events = self._filter_significant_events(events)
         seq_events = self._find_repeated_sequences(events)
-        all_candidates = sig_events + seq_events
+        logger.info(
+            "Extraction: %d sig events, %d repeated-seq events",
+            len(sig_events), len(seq_events),
+        )
+
+        # Deduplicate by event id, cap at 200 for LLM prompt
+        seen: set[int] = set()
+        all_candidates: list[dict[str, Any]] = []
+        for e in sig_events + seq_events:
+            eid = e.get("id")
+            if eid and eid not in seen:
+                seen.add(eid)
+                all_candidates.append(e)
+        if len(all_candidates) > 200:
+            all_candidates = all_candidates[:200]
+            logger.debug("Capped extraction candidates at 200")
 
         if not all_candidates:
+            logger.info("Extraction: no candidates after filtering — skipping LLM call")
             return {"extracted": 0, "clusters": 0, "applied": 0, "proposed": 0}
 
-        # 4. Call Haiku to extract instincts
+        logger.info("Extraction: sending %d candidates to LLM", len(all_candidates))
+
+        # 4. Call LLM to extract instincts
         events_text = json.dumps(
             [
                 {
@@ -349,22 +429,40 @@ class InstinctExtractor:
 
         async with httpx.AsyncClient() as client:
             resp = await client.post(
-                "https://api.anthropic.com/v1/messages",
+                ANTHROPIC_MESSAGES_URL,
                 headers={
                     "x-api-key": self._api_key,
                     "anthropic-version": "2023-06-01",
                     "content-type": "application/json",
                 },
                 json={
-                    "model": get_flash_model(),
-                    "max_tokens": 2000,
+                    "model": _EXTRACTION_MODEL,
+                    "max_tokens": 8000,
                     "messages": [{"role": "user", "content": prompt}],
                 },
-                timeout=60.0,
+                timeout=180.0,
             )
             resp.raise_for_status()
             data = resp.json()
-            candidates = json.loads(data["content"][0]["text"])
+            logger.info("LLM response keys: %s, stop_reason: %s", list(data.keys()), data.get("stop_reason"))
+            content_blocks = data.get("content", [])
+            logger.info("LLM content blocks (count=%d): %s", len(content_blocks), str(content_blocks)[:500])
+            raw_text = process_content_blocks(content_blocks, lambda _: None)
+            # Fallback: if content blocks gave nothing, try choices (some API formats)
+            if not raw_text and "choices" in data:
+                raw_text = data["choices"][0].get("message", {}).get("content", "")
+            # Strip thinking blocks, keep only the text response
+            raw_text = strip_thinking_blocks(raw_text)
+            # Extract JSON array from response
+            json_match = re.search(r"\[.*\]", raw_text, re.DOTALL)
+            if json_match:
+                raw_text = json_match.group(0)
+            else:
+                raw_text = raw_text.strip()
+            logger.info("LLM response text (first 300): %s", raw_text[:300])
+            if not raw_text:
+                raise RuntimeError("LLM returned empty response")
+            candidates = json.loads(raw_text)
 
         if not isinstance(candidates, list):
             candidates = []
@@ -426,22 +524,24 @@ class InstinctExtractor:
 
                 async with httpx.AsyncClient() as client:
                     gen_resp = await client.post(
-                        "https://api.anthropic.com/v1/messages",
+                        ANTHROPIC_MESSAGES_URL,
                         headers={
                             "x-api-key": self._api_key,
                             "anthropic-version": "2023-06-01",
                             "content-type": "application/json",
                         },
                         json={
-                            "model": get_flash_model(),
+                            "model": _EXTRACTION_MODEL,
                             "max_tokens": 4000,
                             "messages": [{"role": "user", "content": gen_prompt}],
                         },
-                        timeout=60.0,
+                        timeout=180.0,
                     )
                     gen_resp.raise_for_status()
                     gen_data = gen_resp.json()
-                    new_content = gen_data["content"][0]["text"]
+                    content_blocks = gen_data.get("content", [])
+                    new_content = process_content_blocks(content_blocks, lambda _: None)
+                    new_content = strip_thinking_blocks(new_content)
 
                 # Strip markdown fences if present
                 from src.text_utils import strip_markdown_fences
