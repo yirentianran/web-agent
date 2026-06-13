@@ -158,6 +158,17 @@ export default function MCPPage({ userId: _userId, authToken: _authToken, onBack
   const [actionLoading, setActionLoading] = useState<string | null>(null)
   const [saveFeedback, setSaveFeedback] = useState<{ status?: string; error?: string } | null>(null)
   const [serverStatuses, setServerStatuses] = useState<Record<string, { status?: string; error?: string }>>({})
+  const [expandedTools, setExpandedTools] = useState<Set<string>>(new Set())
+  const [toolSearch, setToolSearch] = useState<Record<string, string>>({})
+
+  const toggleExpanded = useCallback((name: string) => {
+    setExpandedTools(prev => {
+      const next = new Set(prev)
+      if (next.has(name)) next.delete(name)
+      else next.add(name)
+      return next
+    })
+  }, [])
 
   const loadServers = useCallback(async () => {
     try {
@@ -371,9 +382,55 @@ export default function MCPPage({ userId: _userId, authToken: _authToken, onBack
                   </div>
                 </div>
                 {server.description && <p className="mcp-card-desc">{server.description}</p>}
-                <div className="mcp-card-tools">
-                  <strong>{t('mcp.toolCount', { count: server.tools.length })}</strong>: {server.tools.join(', ')}
-                </div>
+                {server.tools.length > 0 && (() => {
+                  const isExpanded = expandedTools.has(server.name)
+                  const query = (toolSearch[server.name] ?? '').trim().toLowerCase()
+                  const visibleTools = query
+                    ? server.tools.filter(t => t.toLowerCase().includes(query))
+                    : isExpanded ? server.tools : server.tools.slice(0, 20)
+                  const truncated = !query && !isExpanded && server.tools.length > 20
+                  return (
+                    <div className="mcp-card-tools">
+                      <strong>{t('mcp.toolCount', { count: server.tools.length })}</strong>
+                      {query && <span> ({visibleTools.length} matching)</span>}
+                      {visibleTools.length > 0 && (
+                        <>
+                          : {visibleTools.join(', ')}
+                          {truncated && (
+                            <button
+                              className="mcp-toggle-btn"
+                              type="button"
+                              onClick={() => toggleExpanded(server.name)}
+                            >
+                              {' '}{t('mcp.showMore', { count: server.tools.length - 20 })}
+                            </button>
+                          )}
+                          {isExpanded && !query && (
+                            <button
+                              className="mcp-toggle-btn"
+                              type="button"
+                              onClick={() => toggleExpanded(server.name)}
+                            >
+                              {' '}{t('mcp.collapse')}
+                            </button>
+                          )}
+                        </>
+                      )}
+                      {query && visibleTools.length === 0 && (
+                        <span>: {t('mcp.noResults')}</span>
+                      )}
+                      <div className="mcp-tool-search-row">
+                        <input
+                          type="text"
+                          className="mcp-tool-search"
+                          placeholder={t('mcp.searchTools')}
+                          value={toolSearch[server.name] ?? ''}
+                          onChange={e => setToolSearch(prev => ({ ...prev, [server.name]: e.target.value }))}
+                        />
+                      </div>
+                    </div>
+                  )
+                })()}
                 {server.resources.length > 0 && (
                   <div className="mcp-card-resources">
                     <strong>{t('mcp.resourceCount', { count: server.resources.length })}</strong>

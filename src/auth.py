@@ -108,7 +108,7 @@ def _decode_payload(token: str) -> dict:
         ) from e
 
 
-def get_current_user(request: Request, response: Response | None = None) -> str:
+def get_current_user(request: Request, response: Response) -> str:
     """FastAPI dependency: extract and verify user from httpOnly JWT cookie.
 
     When ENFORCE_AUTH is False, tries to validate a token if present,
@@ -139,16 +139,15 @@ def get_current_user(request: Request, response: Response | None = None) -> str:
     return _maybe_renew(raw_token, payload, response)
 
 
-def _maybe_renew(token: str, payload: dict, response: Response | None) -> str:
+def _maybe_renew(token: str, payload: dict, response: Response) -> str:
     """Issue a fresh token on every authenticated request (sliding expiration)."""
     user_id: str = payload.get("sub", "")
     if not user_id:
         return user_id
 
-    if response is not None:
-        role: str = payload.get("role", "user")
-        new_token = create_token(user_id, role)
-        set_auth_cookies(response, new_token)
+    role: str = payload.get("role", "user")
+    new_token = create_token(user_id, role)
+    set_auth_cookies(response, new_token)
 
     return user_id
 

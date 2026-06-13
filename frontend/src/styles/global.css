@@ -4464,6 +4464,35 @@ body {
   color: var(--color-text-secondary);
 }
 
+.mcp-tool-search-row {
+  margin-top: 6px;
+}
+
+.mcp-tool-search {
+  width: 100%;
+  padding: 4px 8px;
+  font-size: 0.75rem;
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  background: var(--color-surface);
+  color: var(--color-text);
+  outline: none;
+}
+
+.mcp-tool-search:focus {
+  border-color: var(--color-accent);
+}
+
+.mcp-toggle-btn {
+  background: none;
+  border: none;
+  color: var(--color-accent);
+  cursor: pointer;
+  font-size: 0.75rem;
+  padding: 0 2px;
+  text-decoration: underline;
+}
+
 /* ── MCP Modal ───────────────────────────────────────────────── */
 
 .mcp-modal-overlay {
