@@ -1,0 +1,168 @@
+<h2>用户管理后台 — Admin User Management</h2>
+<p class="subtitle">挂载在 Dashboard / 用户管理路径，与现有仪表盘风格一致</p>
+
+<!-- 页面集成说明 -->
+<div style="margin-bottom:32px;padding:10px 16px;background:var(--surface-secondary, #f0f4f8);border-radius:8px;font-size:13px;color:#555;">
+  <strong>路由:</strong> /dashboard/users &nbsp;|&nbsp;
+  <strong>导航:</strong> Dashboard 侧边栏新增"用户管理"入口 &nbsp;|&nbsp;
+  <strong>权限:</strong> 仅 admin 角色可访问
+</div>
+
+<!-- 统计卡片行 -->
+<div class="section">
+  <h3 style="margin-top:0">概览卡片</h3>
+  <div style="display:flex;gap:16px;margin-bottom:24px;flex-wrap:wrap;">
+    <div class="mockup" style="flex:1;min-width:140px;text-align:center;">
+      <div class="mockup-body">
+        <div style="font-size:13px;color:#666;">总用户数</div>
+        <div style="font-size:28px;font-weight:700;">1,248</div>
+      </div>
+    </div>
+    <div class="mockup" style="flex:1;min-width:140px;text-align:center;">
+      <div class="mockup-body">
+        <div style="font-size:13px;color:#666;">管理员</div>
+        <div style="font-size:28px;font-weight:700;">6</div>
+      </div>
+    </div>
+    <div class="mockup" style="flex:1;min-width:140px;text-align:center;">
+      <div class="mockup-body">
+        <div style="font-size:13px;color:#666;">今日活跃</div>
+        <div style="font-size:28px;font-weight:700;">89</div>
+      </div>
+    </div>
+    <div class="mockup" style="flex:1;min-width:140px;text-align:center;">
+      <div class="mockup-body">
+        <div style="font-size:13px;color:#666;">已禁用</div>
+        <div style="font-size:28px;font-weight:700;">3</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- 搜索筛选栏 -->
+<div class="mockup" style="margin-bottom:24px;">
+  <div class="mockup-header">搜索 & 筛选</div>
+  <div class="mockup-body">
+    <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;">
+      <input class="mock-input" placeholder="搜索 User ID..." style="min-width:220px;">
+      <select style="padding:6px 12px;border:1px solid #d0d5dd;border-radius:6px;font-size:13px;">
+        <option>所有角色</option>
+        <option>管理员</option>
+        <option>普通用户</option>
+      </select>
+      <select style="padding:6px 12px;border:1px solid #d0d5dd;border-radius:6px;font-size:13px;">
+        <option>所有状态</option>
+        <option>活跃</option>
+        <option>已禁用</option>
+      </select>
+      <button class="mock-button">搜索</button>
+      <span style="font-size:12px;color:#999;margin-left:auto;">共 1,248 条，第 1/63 页</span>
+    </div>
+  </div>
+</div>
+
+<!-- 用户列表表格 -->
+<div class="mockup" style="margin-bottom:24px;">
+  <div class="mockup-header">用户列表</div>
+  <div class="mockup-body" style="overflow-x:auto;padding:0;">
+    <table style="width:100%;border-collapse:collapse;font-size:13px;">
+      <thead>
+        <tr style="background:#f7f8fa;border-bottom:1px solid #e2e5e9;">
+          <th style="padding:10px 14px;text-align:left;font-weight:600;white-space:nowrap;">User ID ▾</th>
+          <th style="padding:10px 14px;text-align:left;font-weight:600;white-space:nowrap;">角色 ▾</th>
+          <th style="padding:10px 14px;text-align:left;font-weight:600;white-space:nowrap;">状态 ▾</th>
+          <th style="padding:10px 14px;text-align:right;font-weight:600;white-space:nowrap;">Token 消耗 ▾</th>
+          <th style="padding:10px 14px;text-align:right;font-weight:600;white-space:nowrap;">会话数</th>
+          <th style="padding:10px 14px;text-align:left;font-weight:600;white-space:nowrap;">注册时间 ▾</th>
+          <th style="padding:10px 14px;text-align:left;font-weight:600;white-space:nowrap;">最后活跃 ▾</th>
+          <th style="padding:10px 14px;text-align:center;font-weight:600;white-space:nowrap;">操作</th>
+        </tr>
+      </thead>
+      <tbody>
+        <!-- Row 1: Admin -->
+        <tr style="border-bottom:1px solid #eef0f3;">
+          <td style="padding:10px 14px;"><strong>admin</strong></td>
+          <td style="padding:10px 14px;"><span style="background:#e8f0fe;color:#1967d2;padding:2px 8px;border-radius:4px;font-size:12px;">管理员</span></td>
+          <td style="padding:10px 14px;"><span style="background:#e6f4ea;color:#137333;padding:2px 8px;border-radius:4px;font-size:12px;">活跃</span></td>
+          <td style="padding:10px 14px;text-align:right;">2,458,320</td>
+          <td style="padding:10px 14px;text-align:right;">143</td>
+          <td style="padding:10px 14px;color:#999;">2026-04-01</td>
+          <td style="padding:10px 14px;color:#999;">2026-05-24 14:32</td>
+          <td style="padding:10px 14px;text-align:center;"><span style="color:#999;font-size:12px;">当前用户</span></td>
+        </tr>
+        <!-- Row 2: Normal user -->
+        <tr style="border-bottom:1px solid #eef0f3;">
+          <td style="padding:10px 14px;">zhangsan</td>
+          <td style="padding:10px 14px;"><span style="background:#f1f3f4;color:#5f6368;padding:2px 8px;border-radius:4px;font-size:12px;">用户</span></td>
+          <td style="padding:10px 14px;"><span style="background:#e6f4ea;color:#137333;padding:2px 8px;border-radius:4px;font-size:12px;">活跃</span></td>
+          <td style="padding:10px 14px;text-align:right;">856,100</td>
+          <td style="padding:10px 14px;text-align:right;">67</td>
+          <td style="padding:10px 14px;color:#999;">2026-04-15</td>
+          <td style="padding:10px 14px;color:#999;">2026-05-24 10:15</td>
+          <td style="padding:10px 14px;text-align:center;white-space:nowrap;">
+            <button style="padding:3px 10px;border:1px solid #d0d5dd;border-radius:4px;background:#fff;font-size:12px;cursor:pointer;margin-right:4px;">⬆ 提升</button>
+            <button style="padding:3px 10px;border:1px solid #e2a76a;border-radius:4px;background:#fff;font-size:12px;cursor:pointer;color:#b06010;">禁用</button>
+          </td>
+        </tr>
+        <!-- Row 3: Disabled user -->
+        <tr style="border-bottom:1px solid #eef0f3;background:#fff5f5;">
+          <td style="padding:10px 14px;">wangwu</td>
+          <td style="padding:10px 14px;"><span style="background:#f1f3f4;color:#5f6368;padding:2px 8px;border-radius:4px;font-size:12px;">用户</span></td>
+          <td style="padding:10px 14px;"><span style="background:#fce8e6;color:#c5221f;padding:2px 8px;border-radius:4px;font-size:12px;">已禁用</span></td>
+          <td style="padding:10px 14px;text-align:right;">12,400</td>
+          <td style="padding:10px 14px;text-align:right;">3</td>
+          <td style="padding:10px 14px;color:#999;">2026-04-20</td>
+          <td style="padding:10px 14px;color:#999;">2026-05-10</td>
+          <td style="padding:10px 14px;text-align:center;white-space:nowrap;">
+            <span style="font-size:11px;color:#999;display:block;">由 admin 禁用</span>
+            <span style="font-size:11px;color:#999;">2026-05-10</span>
+            <button style="padding:3px 10px;border:1px solid #34a853;border-radius:4px;background:#fff;font-size:12px;cursor:pointer;margin-top:3px;color:#137333;">启用</button>
+          </td>
+        </tr>
+        <!-- Row 4 -->
+        <tr style="border-bottom:1px solid #eef0f3;">
+          <td style="padding:10px 14px;">lisi</td>
+          <td style="padding:10px 14px;"><span style="background:#f1f3f4;color:#5f6368;padding:2px 8px;border-radius:4px;font-size:12px;">用户</span></td>
+          <td style="padding:10px 14px;"><span style="background:#e6f4ea;color:#137333;padding:2px 8px;border-radius:4px;font-size:12px;">活跃</span></td>
+          <td style="padding:10px 14px;text-align:right;">234,560</td>
+          <td style="padding:10px 14px;text-align:right;">21</td>
+          <td style="padding:10px 14px;color:#999;">2026-05-01</td>
+          <td style="padding:10px 14px;color:#999;">2026-05-23 18:45</td>
+          <td style="padding:10px 14px;text-align:center;white-space:nowrap;">
+            <button style="padding:3px 10px;border:1px solid #d0d5dd;border-radius:4px;background:#fff;font-size:12px;cursor:pointer;margin-right:4px;">⬆ 提升</button>
+            <button style="padding:3px 10px;border:1px solid #e2a76a;border-radius:4px;background:#fff;font-size:12px;cursor:pointer;color:#b06010;">禁用</button>
+          </td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- 分页 -->
+<div style="display:flex;justify-content:center;align-items:center;gap:8px;margin-top:16px;">
+  <button style="padding:6px 12px;border:1px solid #d0d5dd;border-radius:6px;background:#fff;font-size:13px;cursor:pointer;">« 首页</button>
+  <button style="padding:6px 12px;border:1px solid #d0d5dd;border-radius:6px;background:#fff;font-size:13px;cursor:pointer;">‹ 上一页</button>
+  <span style="padding:6px 12px;background:#e8f0fe;border-radius:6px;font-size:13px;font-weight:600;">1</span>
+  <span style="padding:6px 12px;border:1px solid #d0d5dd;border-radius:6px;font-size:13px;cursor:pointer;">2</span>
+  <span style="padding:6px 12px;border:1px solid #d0d5dd;border-radius:6px;font-size:13px;cursor:pointer;">3</span>
+  <span style="padding:6px 12px;color:#999;">...</span>
+  <span style="padding:6px 12px;border:1px solid #d0d5dd;border-radius:6px;font-size:13px;cursor:pointer;">63</span>
+  <button style="padding:6px 12px;border:1px solid #d0d5dd;border-radius:6px;background:#fff;font-size:13px;cursor:pointer;">下一页 ›</button>
+  <button style="padding:6px 12px;border:1px solid #d0d5dd;border-radius:6px;background:#fff;font-size:13px;cursor:pointer;">末页 »</button>
+</div>
+
+<!-- 操作确认弹窗示意 -->
+<div class="mockup" style="margin-top:24px;">
+  <div class="mockup-header">操作确认弹窗（以禁���为例）</div>
+  <div class="mockup-body">
+    <div style="background:#fff;border:1px solid #e2e5e9;border-radius:12px;padding:24px;max-width:400px;margin:0 auto;box-shadow:0 4px 24px rgba(0,0,0,0.08);">
+      <h4 style="margin:0 0 8px 0;font-size:16px;">禁用用户</h4>
+      <p style="color:#666;font-size:13px;margin:0 0 16px 0;">确定要禁用用户 <strong>zhangsan</strong> 吗？</p>
+      <p style="color:#999;font-size:12px;margin:0 0 20px 0;">该用户将无法登录，但所有历史数据将保留。</p>
+      <div style="display:flex;gap:8px;justify-content:flex-end;">
+        <button style="padding:8px 16px;border:1px solid #d0d5dd;border-radius:6px;background:#fff;font-size:13px;cursor:pointer;">取消</button>
+        <button style="padding:8px 16px;border:none;border-radius:6px;background:#c5221f;color:#fff;font-size:13px;cursor:pointer;">确认禁用</button>
+      </div>
+    </div>
+  </div>
+</div>

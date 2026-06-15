@@ -1,0 +1,191 @@
+<h2>改进后的进化监控仪表盘</h2>
+<p class="subtitle">对比当前版本，标注了 6 处改进。查看后告诉我是否方向正确。</p>
+
+<div class="section">
+  <h3>一、顶部：时间选择器 + 统计卡片</h3>
+  <div class="mockup">
+    <div class="mockup-header">新增：时间范围选择器（改善 #4）</div>
+    <div class="mockup-body">
+      <div style="display:flex; gap:8px; margin-bottom:16px;">
+        <button class="mock-button" style="background:#4f46e5;color:#fff;">今日</button>
+        <button class="mock-button">最近 7 天</button>
+        <button class="mock-button">最近 30 天</button>
+        <button class="mock-button">全部</button>
+        <span style="margin-left:auto; font-size:13px; color:#6b7280;">🔄 每 30 秒自动刷新（改善 #6）</span>
+      </div>
+      <div style="display:grid; grid-template-columns: repeat(4, 1fr); gap:12px;">
+        <div class="placeholder" style="text-align:center;">
+          <div style="font-size:24px; font-weight:700;">28</div>
+          <div style="font-size:12px; color:#6b7280;">今日事件</div>
+          <div style="font-size:11px; color:#22c55e;">↑ 40% vs 昨日</div>
+        </div>
+        <div class="placeholder" style="text-align:center;">
+          <div style="font-size:24px; font-weight:700;">0</div>
+          <div style="font-size:12px; color:#6b7280;">活跃本能</div>
+        </div>
+        <div class="placeholder" style="text-align:center;">
+          <div style="font-size:24px; font-weight:700;">0</div>
+          <div style="font-size:12px; color:#6b7280;">待审核</div>
+        </div>
+        <div class="placeholder" style="text-align:center;">
+          <div style="font-size:24px; font-weight:700;">0</div>
+          <div style="font-size:12px; color:#6b7280;">本周自动应用</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <h3>二、漏斗图：统一时间口径（改善 #2）</h3>
+  <div class="mockup">
+    <div class="mockup-header">修复：漏斗所有段使用同一时间窗口的数据</div>
+    <div class="mockup-body">
+      <div style="display:flex; align-items:center; justify-content:center; gap:16px; padding:20px;">
+        <div style="text-align:center;">
+          <div style="font-size:20px; font-weight:700;">28</div>
+          <div style="font-size:12px; color:#6b7280;">观测事件</div>
+          <div style="background:#e0e7ff; height:4px; width:120px; margin-top:4px; border-radius:2px;"><div style="background:#4f46e5; height:4px; width:100%; border-radius:2px;"></div></div>
+        </div>
+        <span style="color:#9ca3af; font-size:20px;">→</span>
+        <div style="text-align:center;">
+          <div style="font-size:20px; font-weight:700;">0</div>
+          <div style="font-size:12px; color:#6b7280;">活跃本能</div>
+          <div style="background:#e0e7ff; height:4px; width:120px; margin-top:4px; border-radius:2px;"><div style="background:#4f46e5; height:4px; width:0%; border-radius:2px;"></div></div>
+        </div>
+        <span style="color:#9ca3af; font-size:20px;">→</span>
+        <div style="text-align:center;">
+          <div style="font-size:20px; font-weight:700;">0</div>
+          <div style="font-size:12px; color:#6b7280;">活跃进化</div>
+          <div style="background:#e0e7ff; height:4px; width:120px; margin-top:4px; border-radius:2px;"><div style="background:#4f46e5; height:4px; width:0%; border-radius:2px;"></div></div>
+        </div>
+        <span style="color:#9ca3af; font-size:20px;">→</span>
+        <div style="text-align:center;">
+          <div style="font-size:20px; font-weight:700;">0</div>
+          <div style="font-size:12px; color:#6b7280;">待定提议</div>
+          <div style="background:#e0e7ff; height:4px; width:120px; margin-top:4px; border-radius:2px;"><div style="background:#4f46e5; height:4px; width:0%; border-radius:2px;"></div></div>
+        </div>
+      </div>
+      <p style="font-size:11px; color:#9ca3af; text-align:center; margin-top:8px;">* 以上数据均为「最近 7 天」窗口</p>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <h3>三、进化表格：补全字段（改善 #5）</h3>
+  <div class="mockup">
+    <div class="mockup-header">新增：本能数、综合分数、活跃天数列</div>
+    <div class="mockup-body">
+      <table style="width:100%; border-collapse:collapse; font-size:13px;">
+        <thead>
+          <tr style="border-bottom:2px solid #e5e7eb; text-align:left;">
+            <th style="padding:8px;">技能</th>
+            <th style="padding:8px;">版本</th>
+            <th style="padding:8px;">本能数</th>
+            <th style="padding:8px;">综合分数</th>
+            <th style="padding:8px;">活跃天数</th>
+            <th style="padding:8px;">状态</th>
+            <th style="padding:8px;">创建</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr style="border-bottom:1px solid #f3f4f6;">
+            <td style="padding:8px;">xiaoai-reply</td>
+            <td style="padding:8px;">v1 → v2</td>
+            <td style="padding:8px;">3</td>
+            <td style="padding:8px;"><span style="color:#22c55e;">0.85</span></td>
+            <td style="padding:8px;">12 天</td>
+            <td style="padding:8px;"><span class="evo-badge status-active" style="background:#dcfce7; color:#166534; padding:2px 8px; border-radius:10px; font-size:11px;">active</span></td>
+            <td style="padding:8px;">5/24</td>
+          </tr>
+          <tr style="border-bottom:1px solid #f3f4f6;">
+            <td style="padding:8px;">sample-skill</td>
+            <td style="padding:8px;">v1 → v2</td>
+            <td style="padding:8px;">2</td>
+            <td style="padding:8px;"><span style="color:#f59e0b;">0.58</span></td>
+            <td style="padding:8px;">5 天</td>
+            <td style="padding:8px;"><span class="evo-badge status-review" style="background:#fef3c7; color:#92400e; padding:2px 8px; border-radius:10px; font-size:11px;">under_review</span></td>
+            <td style="padding:8px;">5/21</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <h3>四、信号分解：真实基线（改善 #1）</h3>
+  <div class="mockup">
+    <div class="mockup-header">修复：基线来自进化前的真实快照，而非硬编码常量</div>
+    <div class="mockup-body">
+      <div style="display:grid; grid-template-columns: repeat(3, 1fr); gap:12px;">
+        <div class="placeholder">
+          <div style="font-size:12px; color:#6b7280;">会话成功率</div>
+          <div style="font-size:20px; font-weight:700;">85% <span style="font-size:12px; color:#22c55e;">↑ +6.3%</span></div>
+          <div style="font-size:11px; color:#9ca3af;">基线: 80% (进化前 7 日均值)</div>
+        </div>
+        <div class="placeholder">
+          <div style="font-size:12px; color:#6b7280;">日均工具调用</div>
+          <div style="font-size:20px; font-weight:700;">32 <span style="font-size:12px; color:#22c55e;">↑ +28%</span></div>
+          <div style="font-size:11px; color:#9ca3af;">基线: 25 (进化前 7 日均值)</div>
+        </div>
+        <div class="placeholder">
+          <div style="font-size:12px; color:#6b7280;">工具成功率</div>
+          <div style="font-size:20px; font-weight:700;">92% <span style="font-size:12px; color:#ef4444;">↓ -3.2%</span></div>
+          <div style="font-size:11px; color:#9ca3af;">基线: 95% (进化前 7 日均值)</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <h3>五、事件浏览器：展示工具参数（改善 #3）</h3>
+  <div class="mockup">
+    <div class="mockup-header">新增：tool_input_summary、tool_output_summary 字段展示</div>
+    <div class="mockup-body">
+      <table style="width:100%; border-collapse:collapse; font-size:13px;">
+        <thead>
+          <tr style="border-bottom:2px solid #e5e7eb; text-align:left;">
+            <th style="padding:6px;">ID</th>
+            <th style="padding:6px;">类型</th>
+            <th style="padding:6px;">工具</th>
+            <th style="padding:6px;">输入</th>
+            <th style="padding:6px;">输出/状态</th>
+            <th style="padding:6px;">时间</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr style="border-bottom:1px solid #f3f4f6;">
+            <td style="padding:6px;">27</td>
+            <td style="padding:6px;"><span style="background:#dbeafe; color:#1d4ed8; padding:1px 6px; border-radius:8px; font-size:11px;">tool_call_start</span></td>
+            <td style="padding:6px;">Skill</td>
+            <td style="padding:6px; max-width:200px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="{'skill': 'xiaoai-reply'}">{'skill': 'xiaoai-reply'}</td>
+            <td style="padding:6px;">—</td>
+            <td style="padding:6px; font-size:11px;">18:56</td>
+          </tr>
+          <tr style="border-bottom:1px solid #f3f4f6;">
+            <td style="padding:6px;">28</td>
+            <td style="padding:6px;"><span style="background:#dcfce7; color:#166534; padding:1px 6px; border-radius:8px; font-size:11px;">session_complete</span></td>
+            <td style="padding:6px;">—</td>
+            <td style="padding:6px;">—</td>
+            <td style="padding:6px;">✅ 成功</td>
+            <td style="padding:6px; font-size:11px;">18:56</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<div style="margin-top:24px; padding:16px; background:#f0fdf4; border-radius:8px; border-left:4px solid #22c55e;">
+  <h3 style="margin:0 0 4px;">后端改动要点</h3>
+  <p style="margin:0; font-size:13px; color:#374151;">
+    1. evolution_log 表新增 <code>baseline_metrics</code> JSON 字段存储进化前真实基线<br>
+    2. <code>/api/admin/observations</code> 返回 <code>tool_input_summary</code> 和 <code>tool_output_summary</code><br>
+    3. <code>/api/admin/evolution/stats</code> 接受 <code>days</code> 参数控制时间窗口<br>
+    4. 新增 <code>/api/admin/evolution/{id}/baseline</code> 返回进化前快照数据
+  </p>
+</div>
+
+<p class="subtitle" style="margin-top:24px;">👆 这是整体改进方向。请告诉我：哪些地方需要调整？布局、字段、数据口径等方面都可以。</p>

@@ -1,0 +1,163 @@
+<h2>用户管理 — 参考 Dashboard 风格</h2>
+<p class="subtitle">路由 /users，独立页面。复用项目现有的 detail-page / ranking-panel / ranking-table 样式体系</p>
+
+<!-- 页面结构说明 -->
+<div style="margin-bottom:28px;padding:8px 14px;background:#f5f5f5;border-radius:6px;font-size:12px;color:#666;font-family:monospace;">
+  CSS 类名复用：detail-page → detail-header → detail-back-btn → ranking-panel → ranking-table<br>
+  颜色变量：--color-surface / --color-border / --color-text / --color-text-muted
+</div>
+
+<!-- 页面主体：模拟 .detail-page 布局 -->
+<div style="display:flex;flex-direction:column;gap:20px;padding:24px 32px;background:#f8fafc;border-radius:12px;border:1px solid #e2e8f0;">
+
+  <!-- .detail-header -->
+  <div style="display:flex;align-items:center;gap:16px;">
+    <button style="padding:6px 14px;border:1px solid #e2e8f0;border-radius:6px;background:#fff;color:#718096;font-size:13px;cursor:pointer;">← 返回</button>
+    <h2 style="font-size:1.25rem;font-weight:600;color:#1a202c;margin:0;">用户管理</h2>
+  </div>
+
+  <!-- 搜索栏：.ranking-panel -->
+  <div style="background:#fff;border:1px solid #e2e8f0;border-radius:12px;padding:16px 20px;">
+    <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
+      <input placeholder="搜索 User ID..." style="padding:7px 12px;border:1px solid #e2e8f0;border-radius:6px;font-size:13px;width:200px;background:#fff;color:#1a202c;">
+      <select style="padding:7px 12px;border:1px solid #e2e8f0;border-radius:6px;font-size:13px;background:#fff;color:#1a202c;">
+        <option>全部角色</option><option>管理员</option><option>普通用户</option>
+      </select>
+      <select style="padding:7px 12px;border:1px solid #e2e8f0;border-radius:6px;font-size:13px;background:#fff;color:#1a202c;">
+        <option>全部状态</option><option>活跃</option><option>已禁用</option>
+      </select>
+      <button style="padding:7px 18px;border:1px solid #3b82f6;border-radius:6px;background:#eff6ff;color:#3b82f6;font-size:13px;cursor:pointer;font-weight:500;">搜索</button>
+      <span style="margin-left:auto;font-size:12px;color:#718096;">共 1,248 个用户</span>
+    </div>
+  </div>
+
+  <!-- 用户表格：.ranking-panel -->
+  <div style="background:#fff;border:1px solid #e2e8f0;border-radius:12px;padding:20px;">
+    <h3 style="font-size:0.9375rem;font-weight:600;color:#1a202c;margin:0 0 16px 0;">用户列表</h3>
+    <table style="width:100%;border-collapse:collapse;font-size:0.8125rem;">
+      <thead>
+        <tr>
+          <th style="padding:8px 12px;text-align:left;font-weight:600;color:#718096;border-bottom:1px solid #e2e8f0;">User ID</th>
+          <th style="padding:8px 12px;text-align:left;font-weight:600;color:#718096;border-bottom:1px solid #e2e8f0;">角色</th>
+          <th style="padding:8px 12px;text-align:left;font-weight:600;color:#718096;border-bottom:1px solid #e2e8f0;">状态</th>
+          <th style="padding:8px 12px;text-align:right;font-weight:600;color:#718096;border-bottom:1px solid #e2e8f0;">Token</th>
+          <th style="padding:8px 12px;text-align:right;font-weight:600;color:#718096;border-bottom:1px solid #e2e8f0;">会话</th>
+          <th style="padding:8px 12px;text-align:left;font-weight:600;color:#718096;border-bottom:1px solid #e2e8f0;">注册时间</th>
+          <th style="padding:8px 12px;text-align:left;font-weight:600;color:#718096;border-bottom:1px solid #e2e8f0;">最后活跃</th>
+          <th style="padding:8px 12px;text-align:center;font-weight:600;color:#718096;border-bottom:1px solid #e2e8f0;">操作</th>
+        </tr>
+      </thead>
+      <tbody>
+        <!-- Admin row -->
+        <tr>
+          <td style="padding:8px 12px;border-bottom:1px solid #e2e8f0;font-weight:500;">admin</td>
+          <td style="padding:8px 12px;border-bottom:1px solid #e2e8f0;">
+            <span style="background:#dbeafe;color:#3b82f6;padding:1px 8px;border-radius:4px;font-size:12px;">管理员</span>
+          </td>
+          <td style="padding:8px 12px;border-bottom:1px solid #e2e8f0;">
+            <span style="background:#dcfce7;color:#15803d;padding:1px 8px;border-radius:4px;font-size:12px;">活跃</span>
+          </td>
+          <td style="padding:8px 12px;border-bottom:1px solid #e2e8f0;text-align:right;font-family:monospace;font-size:0.75rem;">2.46M</td>
+          <td style="padding:8px 12px;border-bottom:1px solid #e2e8f0;text-align:right;">143</td>
+          <td style="padding:8px 12px;border-bottom:1px solid #e2e8f0;color:#718096;">2026-04-01</td>
+          <td style="padding:8px 12px;border-bottom:1px solid #e2e8f0;color:#718096;">2026-05-24 14:32</td>
+          <td style="padding:8px 12px;border-bottom:1px solid #e2e8f0;text-align:center;color:#718096;font-size:12px;">当前用户</td>
+        </tr>
+        <!-- Normal user -->
+        <tr>
+          <td style="padding:8px 12px;border-bottom:1px solid #e2e8f0;">zhangsan</td>
+          <td style="padding:8px 12px;border-bottom:1px solid #e2e8f0;">
+            <span style="background:#f1f5f9;color:#64748b;padding:1px 8px;border-radius:4px;font-size:12px;">用户</span>
+          </td>
+          <td style="padding:8px 12px;border-bottom:1px solid #e2e8f0;">
+            <span style="background:#dcfce7;color:#15803d;padding:1px 8px;border-radius:4px;font-size:12px;">活跃</span>
+          </td>
+          <td style="padding:8px 12px;border-bottom:1px solid #e2e8f0;text-align:right;font-family:monospace;font-size:0.75rem;">856.1K</td>
+          <td style="padding:8px 12px;border-bottom:1px solid #e2e8f0;text-align:right;">67</td>
+          <td style="padding:8px 12px;border-bottom:1px solid #e2e8f0;color:#718096;">2026-04-15</td>
+          <td style="padding:8px 12px;border-bottom:1px solid #e2e8f0;color:#718096;">2026-05-24 10:15</td>
+          <td style="padding:8px 12px;border-bottom:1px solid #e2e8f0;text-align:center;white-space:nowrap;">
+            <button style="padding:4px 10px;border:1px solid #e2e8f0;border-radius:4px;background:#fff;font-size:12px;cursor:pointer;color:#3b82f6;margin-right:4px;">提升</button>
+            <button style="padding:4px 10px;border:1px solid #e2e8f0;border-radius:4px;background:#fff;font-size:12px;cursor:pointer;color:#b45309;">禁用</button>
+          </td>
+        </tr>
+        <!-- Disabled user -->
+        <tr style="background:#fef2f2;">
+          <td style="padding:8px 12px;border-bottom:1px solid #e2e8f0;">wangwu</td>
+          <td style="padding:8px 12px;border-bottom:1px solid #e2e8f0;">
+            <span style="background:#f1f5f9;color:#64748b;padding:1px 8px;border-radius:4px;font-size:12px;">用户</span>
+          </td>
+          <td style="padding:8px 12px;border-bottom:1px solid #e2e8f0;">
+            <span style="background:#fee2e2;color:#dc2626;padding:1px 8px;border-radius:4px;font-size:12px;">已禁用</span>
+          </td>
+          <td style="padding:8px 12px;border-bottom:1px solid #e2e8f0;text-align:right;font-family:monospace;font-size:0.75rem;">12.4K</td>
+          <td style="padding:8px 12px;border-bottom:1px solid #e2e8f0;text-align:right;">3</td>
+          <td style="padding:8px 12px;border-bottom:1px solid #e2e8f0;color:#718096;">2026-04-20</td>
+          <td style="padding:8px 12px;border-bottom:1px solid #e2e8f0;color:#718096;">2026-05-10</td>
+          <td style="padding:8px 12px;border-bottom:1px solid #e2e8f0;text-align:center;">
+            <span style="font-size:11px;color:#718096;display:block;">admin 于 05-10 禁用</span>
+            <button style="padding:4px 10px;border:1px solid #e2e8f0;border-radius:4px;background:#fff;font-size:12px;cursor:pointer;color:#15803d;margin-top:3px;">启用</button>
+          </td>
+        </tr>
+        <!-- More rows -->
+        <tr>
+          <td style="padding:8px 12px;border-bottom:1px solid #e2e8f0;">lisi</td>
+          <td style="padding:8px 12px;border-bottom:1px solid #e2e8f0;">
+            <span style="background:#f1f5f9;color:#64748b;padding:1px 8px;border-radius:4px;font-size:12px;">用户</span>
+          </td>
+          <td style="padding:8px 12px;border-bottom:1px solid #e2e8f0;">
+            <span style="background:#dcfce7;color:#15803d;padding:1px 8px;border-radius:4px;font-size:12px;">活跃</span>
+          </td>
+          <td style="padding:8px 12px;border-bottom:1px solid #e2e8f0;text-align:right;font-family:monospace;font-size:0.75rem;">234.6K</td>
+          <td style="padding:8px 12px;border-bottom:1px solid #e2e8f0;text-align:right;">21</td>
+          <td style="padding:8px 12px;border-bottom:1px solid #e2e8f0;color:#718096;">2026-05-01</td>
+          <td style="padding:8px 12px;border-bottom:1px solid #e2e8f0;color:#718096;">2026-05-23 18:45</td>
+          <td style="padding:8px 12px;border-bottom:1px solid #e2e8f0;text-align:center;white-space:nowrap;">
+            <button style="padding:4px 10px;border:1px solid #e2e8f0;border-radius:4px;background:#fff;font-size:12px;cursor:pointer;color:#3b82f6;margin-right:4px;">提升</button>
+            <button style="padding:4px 10px;border:1px solid #e2e8f0;border-radius:4px;background:#fff;font-size:12px;cursor:pointer;color:#b45309;">禁用</button>
+          </td>
+        </tr>
+      </tbody>
+    </table>
+
+    <!-- 分页 -->
+    <div style="display:flex;justify-content:center;align-items:center;gap:4px;margin-top:16px;">
+      <button style="padding:5px 10px;border:1px solid #e2e8f0;border-radius:6px;background:#fff;font-size:12px;color:#64748b;cursor:pointer;">‹</button>
+      <span style="padding:5px 10px;background:#eff6ff;color:#3b82f6;border-radius:6px;font-size:12px;font-weight:600;">1</span>
+      <span style="padding:5px 10px;border-radius:6px;font-size:12px;color:#64748b;cursor:pointer;">2</span>
+      <span style="padding:5px 10px;font-size:12px;color:#64748b;">...</span>
+      <span style="padding:5px 10px;border-radius:6px;font-size:12px;color:#64748b;cursor:pointer;">63</span>
+      <button style="padding:5px 10px;border:1px solid #e2e8f0;border-radius:6px;background:#fff;font-size:12px;color:#64748b;cursor:pointer;">›</button>
+    </div>
+  </div>
+
+  <!-- 确认弹窗：ranking-panel 风格 -->
+  <div style="background:#fff;border:1px solid #e2e8f0;border-radius:12px;padding:20px;">
+    <h3 style="font-size:0.9375rem;font-weight:600;color:#1a202c;margin:0 0 16px 0;">操作确认</h3>
+    <div style="display:flex;gap:16px;">
+      <div style="flex:1;padding:16px;background:#fff;border:1px solid #fee2e2;border-radius:8px;">
+        <div style="font-weight:600;font-size:14px;color:#1a202c;margin-bottom:6px;">⚠️ 禁用用户</div>
+        <div style="font-size:13px;color:#718096;margin-bottom:12px;">禁用 <strong>zhangsan</strong> 后将无法登录，所有数据保留。</div>
+        <div style="display:flex;gap:8px;justify-content:flex-end;">
+          <button style="padding:6px 14px;border:1px solid #e2e8f0;border-radius:6px;background:#fff;font-size:13px;cursor:pointer;color:#64748b;">取消</button>
+          <button style="padding:6px 14px;border:none;border-radius:6px;background:#dc2626;color:#fff;font-size:13px;cursor:pointer;">确认禁用</button>
+        </div>
+      </div>
+      <div style="flex:1;padding:16px;background:#fff;border:1px solid #e2e8f0;border-radius:8px;">
+        <div style="font-weight:600;font-size:14px;color:#1a202c;margin-bottom:6px;">⬆ 提升为管理员</div>
+        <div style="font-size:13px;color:#718096;margin-bottom:12px;">将 <strong>zhangsan</strong> 提升为管理员，获得全部管理权限。</div>
+        <div style="display:flex;gap:8px;justify-content:flex-end;">
+          <button style="padding:6px 14px;border:1px solid #e2e8f0;border-radius:6px;background:#fff;font-size:13px;cursor:pointer;color:#64748b;">取消</button>
+          <button style="padding:6px 14px;border:none;border-radius:6px;background:#3b82f6;color:#fff;font-size:13px;cursor:pointer;">确认提升</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<div style="margin-top:20px;padding:10px 16px;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:6px;font-size:12px;color:#15803d;">
+  ✅ 使用项目已有的 CSS 变量和组件模式：.detail-page + .ranking-panel + .ranking-table<br>
+  ✅ 颜色来自 CSS 变量：蓝色 #3b82f6（primary）、红色 #dc2626（danger）、灰色 #718096（muted）<br>
+  ✅ 徽章参考技能徽章样式（--color-skill-badge-*-bg / text）
+</div>

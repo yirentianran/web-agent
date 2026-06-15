@@ -1,0 +1,359 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Tool Pairing Demo — 缩进 + 左边框色</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background: #f5f5f5;
+    display: flex;
+    justify-content: center;
+    padding: 40px 16px;
+  }
+
+  .chat {
+    width: 100%;
+    max-width: 640px;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .msg { padding: 6px 0; }
+
+  .user-msg {
+    display: flex;
+    justify-content: flex-end;
+  }
+
+  .user-bubble {
+    background: #3b82f6;
+    color: #fff;
+    padding: 10px 16px;
+    border-radius: 14px 14px 4px 14px;
+    max-width: 80%;
+    font-size: 14px;
+    line-height: 1.5;
+  }
+
+  .assistant-bubble {
+    background: #fff;
+    border: 1px solid #e5e7eb;
+    border-radius: 8px;
+    padding: 12px 16px;
+    font-size: 14px;
+    line-height: 1.6;
+  }
+
+  /* ── Tool use card ─────────────────────────── */
+  .tool-use {
+    background: #fff;
+    border: 1px solid #e5e7eb;
+    border-radius: 8px;
+    padding: 8px 12px;
+  }
+
+  .tool-use summary {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 13px;
+    color: #6b7280;
+    cursor: pointer;
+    list-style: none;
+  }
+
+  .tool-use summary::-webkit-details-marker { display: none; }
+  .tool-use summary::after {
+    content: ' ▸';
+    font-size: 11px;
+  }
+  .tool-use[open] summary::after {
+    content: ' ▾';
+  }
+
+  .tool-icon { font-size: 14px; flex-shrink: 0; }
+
+  .tool-name {
+    font-weight: 600;
+    font-family: 'SF Mono', 'Fira Code', monospace;
+    font-size: 12px;
+    color: #3b82f6;
+  }
+
+  .tool-detail {
+    color: #6b7280;
+    font-size: 12px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 320px;
+  }
+
+  .tool-input {
+    background: #1e1e1e;
+    color: #d4d4d4;
+    padding: 10px;
+    border-radius: 6px;
+    margin-top: 8px;
+    font-family: 'SF Mono', 'Fira Code', monospace;
+    font-size: 13px;
+    white-space: pre-wrap;
+    overflow-x: auto;
+    max-height: 200px;
+    overflow-y: auto;
+  }
+
+  /* ── Tool result card — indented variant ────── */
+  .tool-result {
+    margin-left: 24px;
+    background: #fff;
+    border: 1px solid #e5e7eb;
+    border-left: 3px solid #3b82f6;   /* fallback, overridden by inline style */
+    border-radius: 0 8px 8px 0;
+    padding: 8px 12px;
+  }
+
+  .tool-result summary {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 13px;
+    color: #6b7280;
+    cursor: pointer;
+    list-style: none;
+  }
+  .tool-result summary::-webkit-details-marker { display: none; }
+  .tool-result summary::after {
+    content: ' ▸';
+    font-size: 11px;
+  }
+  .tool-result[open] summary::after {
+    content: ' ▾';
+  }
+
+  .tool-output {
+    font-family: 'SF Mono', 'Fira Code', monospace;
+    font-size: 12px;
+    background: #1e1e1e;
+    color: #d4d4d4;
+    padding: 10px;
+    border-radius: 6px;
+    margin-top: 8px;
+    overflow-x: auto;
+    white-space: pre-wrap;
+    max-height: 300px;
+    overflow-y: auto;
+  }
+
+  /* ── Section label ─────────────────────────── */
+  .section-label {
+    font-size: 11px;
+    font-weight: 600;
+    color: #9ca3af;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    padding: 20px 0 6px 0;
+  }
+
+  .section-label:first-child { padding-top: 0; }
+</style>
+</head>
+<body>
+
+<div class="chat">
+
+  <!-- ============================================================ -->
+  <!-- 场景 1: 正常配对                                                     -->
+  <!-- ============================================================ -->
+  <div class="section-label">场景 1 — 正常一对一配对</div>
+
+  <div class="msg"><div class="user-bubble">帮我查一下天气，再搜一下相关新闻</div></div>
+
+  <div class="msg">
+    <details class="tool-use" open>
+      <summary>
+        <span class="tool-icon">📖</span>
+        <span class="tool-name">Read</span>
+        <span class="tool-detail">weather.py</span>
+      </summary>
+      <pre class="tool-input">{
+  "path": "weather.py",
+  "limit": 50
+}</pre>
+    </details>
+  </div>
+
+  <div class="msg">
+    <details class="tool-result" style="border-left-color: #3b82f6" open>
+      <summary>
+        <span class="tool-icon">📖</span>
+        <span class="tool-name">Read</span>
+        <span class="tool-detail">结果</span>
+      </summary>
+      <pre class="tool-output">{
+  "temperature": 19.4,
+  "humidity": 72,
+  "condition": "overcast"
+}</pre>
+    </details>
+  </div>
+
+  <div class="msg">
+    <details class="tool-use">
+      <summary>
+        <span class="tool-icon">🔍</span>
+        <span class="tool-name">WebSearch</span>
+        <span class="tool-detail">杭州天气新闻</span>
+      </summary>
+      <pre class="tool-input">{"query": "杭州天气新闻 2026"}</pre>
+    </details>
+  </div>
+
+  <div class="msg">
+    <details class="tool-result" style="border-left-color: #8b5cf6" open>
+      <summary>
+        <span class="tool-icon">🔍</span>
+        <span class="tool-name">WebSearch</span>
+        <span class="tool-detail">结果</span>
+      </summary>
+      <pre class="tool-output">[
+  {"title": "杭州本周天气晴好"},
+  {"title": "浙江多地气温回升"}
+]</pre>
+    </details>
+  </div>
+
+  <div class="msg">
+    <div class="assistant-bubble">杭州今天阴天，19.4°C。相关新闻有两条……</div>
+  </div>
+
+  <!-- ============================================================ -->
+  <!-- 场景 2: 连续 2 个 tool_use → 2 个 result                          -->
+  <!-- ============================================================ -->
+  <div class="section-label">场景 2 — 连续 2 个 tool_use，然后收到 2 个 result</div>
+
+  <div class="msg"><div class="user-bubble">帮我同时查天气和新闻</div></div>
+
+  <div class="msg">
+    <details class="tool-use">
+      <summary>
+        <span class="tool-icon">⌨️</span>
+        <span class="tool-name">Bash</span>
+        <span class="tool-detail">curl api.weather.com</span>
+      </summary>
+      <pre class="tool-input">curl -s "https://api.weather.com/hangzhou"</pre>
+    </details>
+  </div>
+
+  <div class="msg">
+    <details class="tool-use">
+      <summary>
+        <span class="tool-icon">🔍</span>
+        <span class="tool-name">WebSearch</span>
+        <span class="tool-detail">杭州今日新闻</span>
+      </summary>
+      <pre class="tool-input">{"query": "杭州今日新闻"}</pre>
+    </details>
+  </div>
+
+  <!-- ← 用户视口在这里，tool_use 已滚出屏幕 -->
+
+  <div class="msg">
+    <details class="tool-result" style="border-left-color: #3b82f6" open>
+      <summary>
+        <span class="tool-icon">⌨️</span>
+        <span class="tool-name">Bash</span>
+        <span class="tool-detail">结果</span>
+      </summary>
+      <pre class="tool-output">{"temp": 19.4, "humidity": 72}</pre>
+    </details>
+  </div>
+
+  <div class="msg">
+    <details class="tool-result" style="border-left-color: #8b5cf6" open>
+      <summary>
+        <span class="tool-icon">🔍</span>
+        <span class="tool-name">WebSearch</span>
+        <span class="tool-detail">结果</span>
+      </summary>
+      <pre class="tool-output">[
+  {"title": "杭州亚运场馆改造完成"},
+  {"title": "西湖景区限流新规"}
+]</pre>
+    </details>
+  </div>
+
+  <div class="msg">
+    <div class="assistant-bubble">天气 19.4°C，今天杭州新闻有两条……</div>
+  </div>
+
+  <!-- ============================================================ -->
+  <!-- 场景 3: 嵌套调用                                                     -->
+  <!-- ============================================================ -->
+  <div class="section-label">场景 3 — 嵌套调用（Agent → WebSearch）</div>
+
+  <div class="msg"><div class="user-bubble">搜索并总结最新 AI 论文</div></div>
+
+  <div class="msg">
+    <details class="tool-use">
+      <summary>
+        <span class="tool-icon">🤖</span>
+        <span class="tool-name">Agent</span>
+        <span class="tool-detail">搜索 arxiv 论文</span>
+      </summary>
+      <pre class="tool-input">{
+  "description": "搜索 arxiv 最新 LLM 论文"
+}</pre>
+    </details>
+  </div>
+
+  <div class="msg">
+    <details class="tool-use">
+      <summary>
+        <span class="tool-icon">🔍</span>
+        <span class="tool-name">WebSearch</span>
+        <span class="tool-detail">arxiv LLM 2026</span>
+      </summary>
+      <pre class="tool-input">{"query": "arxiv LLM 2026 June"}</pre>
+    </details>
+  </div>
+
+  <div class="msg">
+    <details class="tool-result" style="border-left-color: #8b5cf6" open>
+      <summary>
+        <span class="tool-icon">🔍</span>
+        <span class="tool-name">WebSearch</span>
+        <span class="tool-detail">结果</span>
+      </summary>
+      <pre class="tool-output">[
+  {"title": "Scaling Laws for MoE"},
+  {"title": "RLAIF 2.0"}
+]</pre>
+    </details>
+  </div>
+
+  <div class="msg">
+    <details class="tool-result" style="border-left-color: #3b82f6" open>
+      <summary>
+        <span class="tool-icon">🤖</span>
+        <span class="tool-name">Agent</span>
+        <span class="tool-detail">结果</span>
+      </summary>
+      <pre class="tool-output">找到 2 篇相关论文：
+1. Scaling Laws for MoE
+2. RLAIF 2.0</pre>
+    </details>
+  </div>
+
+  <div class="msg">
+    <div class="assistant-bubble">最近 arXiv 上有两篇重要的 LLM 论文……</div>
+  </div>
+
+</div>
+
+</body>
+</html>

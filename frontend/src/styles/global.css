@@ -4458,12 +4458,7 @@ body {
   font-size: 0.875rem;
 }
 
-.mcp-card-tools {
-  margin-top: 8px;
-  font-size: 0.8rem;
-  color: var(--color-text-secondary);
-}
-
+.mcp-card-tools,
 .mcp-card-resources,
 .mcp-card-prompts {
   margin-top: 8px;
@@ -4716,7 +4711,7 @@ body {
 .mcp-json-textarea {
   width: 100%;
   box-sizing: border-box;
-  font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
+  font-family: var(--font-mono);
   font-size: 0.8125rem;
   line-height: 1.5;
   resize: vertical;
@@ -4750,7 +4745,7 @@ body {
 .mcp-preview {
   font-size: 0.75rem;
   color: var(--color-text-secondary);
-  font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
+  font-family: var(--font-mono);
   line-height: 1.4;
   flex: 1;
   min-width: 0;

@@ -1,0 +1,155 @@
+<h2>改进后的进化监控仪表盘 — 完整页面结构</h2>
+<p class="subtitle">灰色虚线框 = 保持不变 | 蓝色实线框 = 改进点</p>
+
+<!-- ===== 完整页面结构 ===== -->
+<div class="mockup">
+  <div class="mockup-header">完整仪表盘布局（进化 / 本能 / 事件 三个标签页保留）</div>
+  <div class="mockup-body">
+
+    <!-- 时间选择器 - NEW -->
+    <div style="border:2px solid #4f46e5; border-radius:8px; padding:12px; margin-bottom:12px; background:#eef2ff;">
+      <div style="font-size:11px; color:#4f46e5; font-weight:600; margin-bottom:8px;">🆕 改善 #4：时间范围选择器</div>
+      <div style="display:flex; gap:8px; align-items:center;">
+        <button class="mock-button" style="background:#4f46e5;color:#fff;">今日</button>
+        <button class="mock-button">最近 7 天</button>
+        <button class="mock-button">最近 30 天</button>
+        <button class="mock-button">全部</button>
+        <span style="margin-left:auto; font-size:12px; color:#6b7280;">🆕 改善 #6：每 30s 自动刷新</span>
+      </div>
+    </div>
+
+    <!-- Stats Cards + Funnel - 保留但改进 -->
+    <div style="display:grid; grid-template-columns: repeat(4, 1fr); gap:12px; margin-bottom:12px;">
+      <div class="placeholder" style="text-align:center; border:1px dashed #9ca3af;">
+        <div style="font-size:22px; font-weight:700;">28</div>
+        <div style="font-size:11px; color:#6b7280;">今日事件</div>
+      </div>
+      <div class="placeholder" style="text-align:center; border:1px dashed #9ca3af;">
+        <div style="font-size:22px; font-weight:700;">0</div>
+        <div style="font-size:11px; color:#6b7280;">活跃本能</div>
+      </div>
+      <div class="placeholder" style="text-align:center; border:1px dashed #9ca3af;">
+        <div style="font-size:22px; font-weight:700;">0</div>
+        <div style="font-size:11px; color:#6b7280;">待审核</div>
+      </div>
+      <div class="placeholder" style="text-align:center; border:1px dashed #9ca3af;">
+        <div style="font-size:22px; font-weight:700;">0</div>
+        <div style="font-size:11px; color:#6b7280;">本周自动应用</div>
+      </div>
+    </div>
+
+    <!-- Funnel - 改进 -->
+    <div style="border:2px solid #4f46e5; border-radius:8px; padding:12px; margin-bottom:12px; background:#eef2ff;">
+      <div style="font-size:11px; color:#4f46e5; font-weight:600; margin-bottom:8px;">🆕 改善 #2：所有段统一时间窗口</div>
+      <div style="display:flex; align-items:center; justify-content:center; gap:12px;">
+        <div style="text-align:center;"><div style="font-weight:700;">28</div><div style="font-size:10px; color:#6b7280;">观测</div></div>
+        <span style="color:#9ca3af;">→</span>
+        <div style="text-align:center;"><div style="font-weight:700;">0</div><div style="font-size:10px; color:#6b7280;">本能</div></div>
+        <span style="color:#9ca3af;">→</span>
+        <div style="text-align:center;"><div style="font-weight:700;">0</div><div style="font-size:10px; color:#6b7280;">进化</div></div>
+        <span style="color:#9ca3af;">→</span>
+        <div style="text-align:center;"><div style="font-weight:700;">0</div><div style="font-size:10px; color:#6b7280;">待定</div></div>
+      </div>
+      <p style="font-size:10px; color:#6b7280; text-align:center; margin-top:4px;">数据窗口: 最近 7 天</p>
+    </div>
+
+    <!-- TABS - 保留不变 -->
+    <div style="border:1px dashed #9ca3af; border-radius:8px; padding:12px; margin-bottom:12px;">
+      <div style="font-size:11px; color:#6b7280; margin-bottom:6px;">✅ 保持不变：三个标签页</div>
+      <div style="display:flex; gap:0;">
+        <button style="background:#e0e7ff; color:#4f46e5; padding:8px 16px; border:1px solid #c7d2fe; border-radius:6px 0 0 6px; font-weight:600;">进化</button>
+        <button style="background:#fff; color:#374151; padding:8px 16px; border:1px solid #d1d5db; border-left:none;">本能</button>
+        <button style="background:#fff; color:#374151; padding:8px 16px; border:1px solid #d1d5db; border-left:none; border-radius:0 6px 6px 0;">事件</button>
+      </div>
+    </div>
+
+    <!-- Tab 1: 进化表格 - 改进 -->
+    <div style="border:2px solid #4f46e5; border-radius:8px; padding:12px; margin-bottom:12px; background:#eef2ff;">
+      <div style="font-size:11px; color:#4f46e5; font-weight:600; margin-bottom:8px;">🆕 改善 #5：表格新增「本能数」「综合分数」「活跃天数」列</div>
+      <table style="width:100%; border-collapse:collapse; font-size:12px;">
+        <thead>
+          <tr style="border-bottom:2px solid #e5e7eb; text-align:left;">
+            <th style="padding:6px;">技能</th>
+            <th style="padding:6px;">版本</th>
+            <th style="padding:6px; color:#4f46e5;">🆕 本能数</th>
+            <th style="padding:6px; color:#4f46e5;">🆕 综合分数</th>
+            <th style="padding:6px; color:#4f46e5;">🆕 活跃天数</th>
+            <th style="padding:6px;">来源</th>
+            <th style="padding:6px;">状态</th>
+            <th style="padding:6px;">创建</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr style="border-bottom:1px solid #f3f4f6;"><td style="padding:6px;">xiaoai-reply</td><td style="padding:6px;">v1→v2</td><td style="padding:6px;">3</td><td style="padding:6px; color:#22c55e;">0.85</td><td style="padding:6px;">12 天</td><td style="padding:6px;">instinct_extractor</td><td style="padding:6px;"><span style="background:#dcfce7; color:#166534; padding:1px 6px; border-radius:8px; font-size:10px;">active</span></td><td style="padding:6px;">5/24</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <!-- 进化详情面板 -->
+    <div style="border:1px dashed #9ca3af; border-radius:8px; padding:12px; margin-bottom:12px;">
+      <div style="font-size:11px; color:#6b7280; margin-bottom:6px;">✅ 进化详情页保留：来源本能列表、分数趋势图、Monaco Diff</div>
+
+      <div style="border:2px solid #4f46e5; border-radius:6px; padding:8px; margin-bottom:8px; background:#eef2ff;">
+        <div style="font-size:10px; color:#4f46e5; font-weight:600; margin-bottom:4px;">🆕 改善 #1：信号基线改为进化前真实数据</div>
+        <div style="display:grid; grid-template-columns: repeat(3, 1fr); gap:8px;">
+          <div class="placeholder"><div style="font-size:10px; color:#6b7280;">会话成功率</div><div style="font-weight:700; font-size:16px;">85% <span style="color:#22c55e; font-size:11px;">↑ +6.3%</span></div><div style="font-size:9px; color:#9ca3af;">基线: 80% (进化前 7 日均值)</div></div>
+          <div class="placeholder"><div style="font-size:10px; color:#6b7280;">日均调用</div><div style="font-weight:700; font-size:16px;">32 <span style="color:#22c55e; font-size:11px;">↑ +28%</span></div><div style="font-size:9px; color:#9ca3af;">基线: 25 (进化前 7 日均值)</div></div>
+          <div class="placeholder"><div style="font-size:10px; color:#6b7280;">工具成功率</div><div style="font-weight:700; font-size:16px;">92% <span style="color:#ef4444; font-size:11px;">↓ -3.2%</span></div><div style="font-size:9px; color:#9ca3af;">基线: 95% (进化前 7 日均值)</div></div>
+        </div>
+      </div>
+
+      <p style="font-size:11px; color:#6b7280; margin:0;">✅ 分数趋势图 | ✅ 版本差异(Monaco Diff) | ✅ 审核操作 | ✅ 回滚时间线</p>
+    </div>
+
+    <!-- Tab 2: 本能列表 - 保留不变 -->
+    <div style="border:1px dashed #9ca3af; border-radius:8px; padding:12px; margin-bottom:12px;">
+      <div style="font-size:11px; color:#6b7280;">✅ 本能标签页：保持不变 — 按领域/范围筛选 | 标签、触发条件、动作、置信度、来源数、用户数</div>
+    </div>
+
+    <!-- Tab 3: 事件浏览器 - 改进 -->
+    <div style="border:2px solid #4f46e5; border-radius:8px; padding:12px; background:#eef2ff;">
+      <div style="font-size:11px; color:#4f46e5; font-weight:600; margin-bottom:8px;">🆕 改善 #3：新增「输入摘要」「输出/状态」列</div>
+      <table style="width:100%; border-collapse:collapse; font-size:12px;">
+        <thead>
+          <tr style="border-bottom:2px solid #e5e7eb; text-align:left;">
+            <th style="padding:6px;">ID</th><th style="padding:6px;">会话</th><th style="padding:6px;">类型</th>
+            <th style="padding:6px;">工具</th>
+            <th style="padding:6px; color:#4f46e5;">🆕 输入摘要</th>
+            <th style="padding:6px; color:#4f46e5;">🆕 输出/状态</th>
+            <th style="padding:6px;">时间</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr style="border-bottom:1px solid #f3f4f6;"><td style="padding:6px;">27</td><td style="padding:6px;">sess_727c...</td><td style="padding:6px;"><span style="background:#dbeafe; color:#1d4ed8; padding:1px 6px; border-radius:8px; font-size:10px;">tool_call_start</span></td><td style="padding:6px;">Skill</td><td style="padding:6px; font-size:11px;">{'skill': 'xiaoai-reply'}</td><td style="padding:6px;">—</td><td style="padding:6px; font-size:11px;">18:56</td></tr>
+          <tr style="border-bottom:1px solid #f3f4f6;"><td style="padding:6px;">17</td><td style="padding:6px;">sess_a9b6...</td><td style="padding:6px;"><span style="background:#dcfce7; color:#166534; padding:1px 6px; border-radius:8px; font-size:10px;">session_complete</span></td><td style="padding:6px;">—</td><td style="padding:6px;">—</td><td style="padding:6px;">✅ 成功</td><td style="padding:6px; font-size:11px;">18:00</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+  </div>
+</div>
+
+<div style="margin-top:20px; display:grid; grid-template-columns: 1fr 1fr; gap:16px;">
+  <div style="padding:12px; background:#f0fdf4; border-radius:8px; border-left:4px solid #22c55e;">
+    <h3 style="margin:0 0 4px; font-size:14px;">✅ 保留不变</h3>
+    <ul style="margin:4px 0; font-size:12px; color:#374151; padding-left:16px;">
+      <li>进化 / 本能 / 事件 三个标签页</li>
+      <li>4 张统计卡片（今日事件、活跃本能、待审核、本周自动应用）</li>
+      <li>进化详情页：来源本能列表、分数趋势图、Monaco Diff、审核操作、回滚时间线</li>
+      <li>本能列表：领域/范围筛选、表格展示</li>
+    </ul>
+  </div>
+  <div style="padding:12px; background:#eef2ff; border-radius:8px; border-left:4px solid #4f46e5;">
+    <h3 style="margin:0 0 4px; font-size:14px;">🆕 六项改进</h3>
+    <ol style="margin:4px 0; font-size:12px; color:#374151; padding-left:16px;">
+      <li>信号基线 → 进化前真实快照</li>
+      <li>漏斗 → 统一时间窗口口径</li>
+      <li>事件列表 → 展示输入/输出摘要</li>
+      <li>顶部 → 新增时间范围选择器</li>
+      <li>进化表格 → 新增本能数/分数/天数</li>
+      <li>页面 → 自动刷新（30s）</li>
+    </ol>
+  </div>
+</div>
+
+<p class="subtitle" style="margin-top:20px;">三个标签页都在，只是在现有基础上加了 6 项改进。这个方向对吗？</p>
