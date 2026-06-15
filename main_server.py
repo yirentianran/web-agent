@@ -3044,6 +3044,7 @@ async def handle_ws(websocket: WebSocket) -> None:
                 current_session_id = session_id
                 last_seen = last_index + len(history)
                 event = await buffer.subscribe(session_id)
+                last_hb_time: float = 0.0  # force immediate first heartbeat
 
                 try:
                     while True:
@@ -3143,33 +3144,26 @@ async def handle_ws(websocket: WebSocket) -> None:
                         if not ok:
                             break
 
+                    # Send heartbeat if interval has elapsed — prevents
+                    # heartbeat starvation when buffer events arrive faster
+                    # than the heartbeat interval.
+                    last_hb_time, hb_ok = await _maybe_send_heartbeat(
+                        last_hb_time, session_id, last_seen,
+                        active_tasks, buffer, websocket,
+                    )
+                    if not hb_ok:
+                        break
+
                     ws_msg = await _wait_for_ws_or_buffer(event, pending_ws_msgs, HEARTBEAT_INTERVAL)
                     if ws_msg:
                         continue  # new WS message — re-check at top
-                    # Timeout → send heartbeat
-                    task_key = f"task_{session_id}"
-                    buf_state = await buffer.get_state(session_id)
-                    if buf_state in ("completed", "error", "cancelled"):
-                        # Terminal — heartbeat is just keep-alive; don't
-                        # trigger frontend recovery by reporting dead agent.
-                        agent_alive = True
-                    else:
-                        # Only report agent_alive=True when a real
-                        # asyncio task is running. If buf_state is
-                        # "running" but no task exists (server restart),
-                        # report dead agent so the frontend triggers
-                        # recovery (which will then handle the orphan).
-                        agent_alive = task_key in active_tasks and not active_tasks[task_key].done()
-                    hb = make_heartbeat(agent_alive=agent_alive)
-                    if not await _safe_ws_send(
-                        websocket,
-                        {
-                            **hb,
-                            "index": last_seen,
-                            "replay": False,
-                            "session_id": session_id,
-                        },
-                    ):
+                    # Timeout (no buffer activity) — send heartbeat unconditionally
+                    # to guarantee at least one heartbeat per interval.
+                    last_hb_time, hb_ok = await _maybe_send_heartbeat(
+                        0.0, session_id, last_seen,
+                        active_tasks, buffer, websocket,
+                    )
+                    if not hb_ok:
                         break
                     continue
                 finally:
@@ -3299,6 +3293,7 @@ async def handle_ws(websocket: WebSocket) -> None:
             current_session_id = session_id
             last_seen = last_index + len(history)
             event = await buffer.subscribe(session_id)
+            last_hb_time = 0.0  # force immediate first heartbeat
 
             try:
                 while True:
@@ -3424,27 +3419,27 @@ async def handle_ws(websocket: WebSocket) -> None:
                             break
                         break
 
+                    # Send heartbeat if interval has elapsed — prevents
+                    # heartbeat starvation when buffer events arrive faster
+                    # than the heartbeat interval.
+                    last_hb_time, hb_ok = await _maybe_send_heartbeat(
+                        last_hb_time, session_id, last_seen,
+                        active_tasks, buffer, websocket,
+                    )
+                    if not hb_ok:
+                        break
+
                     ws_msg = await _wait_for_ws_or_buffer(event, pending_ws_msgs, HEARTBEAT_INTERVAL)
                     if ws_msg:
                         continue  # new WS message — re-check at top
-                    # Timeout → send heartbeat
-                    task_key = f"task_{session_id}"
-                    agent_alive = task_key in active_tasks and not active_tasks[task_key].done()
-                    hb = make_heartbeat(agent_alive=agent_alive)
-                    if not await _safe_ws_send(
-                        websocket,
-                        {
-                            **hb,
-                            "index": last_seen,
-                            "replay": False,
-                            "session_id": session_id,
-                        },
-                    ):
-                        # WebSocket closed — exit subscribe loop gracefully
+                    # Timeout (no buffer activity) — send heartbeat unconditionally
+                    # to guarantee at least one heartbeat per interval.
+                    last_hb_time, hb_ok = await _maybe_send_heartbeat(
+                        0.0, session_id, last_seen,
+                        active_tasks, buffer, websocket,
+                    )
+                    if not hb_ok:
                         break
-                    # Heartbeats are synthetic — do NOT increment last_seen.
-                    # Incrementing it would drift the cursor past the actual
-                    # buffer end, causing the final pull to miss messages.
                     continue
             finally:
                 buffer.unsubscribe(session_id, event)
@@ -3486,6 +3481,53 @@ async def handle_ws(websocket: WebSocket) -> None:
 
 
 # ── Helper ───────────────────────────────────────────────────────
+
+
+async def _maybe_send_heartbeat(
+    last_hb_time: float,
+    session_id: str,
+    last_seen: int,
+    active_tasks: dict,
+    buffer: MessageBuffer,
+    websocket: WebSocket,
+    interval: float = HEARTBEAT_INTERVAL,
+) -> tuple[float, bool]:
+    """Send a heartbeat if enough time has elapsed since the last one.
+
+    This prevents heartbeat starvation when buffer events arrive faster
+    than the heartbeat interval — without this check, the subscribe/recover
+    loop would ``continue`` on every buffer event and never reach the
+    timeout-based heartbeat code.
+
+    Returns (updated_last_hb_time, ok).  ``ok`` is ``False`` when the
+    WebSocket send failed — the caller should break out of its loop.
+    """
+    now = time.monotonic()
+    if now - last_hb_time < interval:
+        return last_hb_time, True
+
+    task_key = f"task_{session_id}"
+    buf_state = await buffer.get_state(session_id)
+    if buf_state in ("completed", "error", "cancelled"):
+        # Terminal — heartbeat is just keep-alive; don't
+        # trigger frontend recovery by reporting dead agent.
+        agent_alive = True
+    else:
+        agent_alive = task_key in active_tasks and not active_tasks[task_key].done()
+
+    hb = make_heartbeat(agent_alive=agent_alive)
+    ok = await _safe_ws_send(
+        websocket,
+        {
+            **hb,
+            "index": last_seen,
+            "replay": False,
+            "session_id": session_id,
+        },
+    )
+    if not ok:
+        return now, False
+    return now, True
 
 
 async def _wait_for_ws_or_buffer(event: asyncio.Event, ws_queue: asyncio.Queue, timeout: float) -> bool:
