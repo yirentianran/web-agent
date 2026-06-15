@@ -1,7 +1,6 @@
 import { useEffect, useRef, useCallback, useState, useMemo } from "react";
 import { useTranslation } from "react-i18next";
-import MessageBubble, { parseTagBlocks, hasIncompleteTag, pairToolMessages, CollapsibleBlock } from "./MessageBubble";
-import MarkdownRenderer from "./MarkdownRenderer";
+import MessageBubble, { pairToolMessages } from "./MessageBubble";
 
 import StatusSpinner from "./StatusSpinner";
 import type { Message, SessionStatus } from "../lib/types";
@@ -214,6 +213,19 @@ export default function ChatArea({
     }
   }, [sessionId, messages, scrollToBottom]);
 
+  // ── Auto-scroll during streaming text ────────────────────────────
+  // The `messages` array doesn't change during stream_event (only
+  // `streamingText` updates), so the effect above doesn't fire.
+  // ResizeObserver on the fixed-size container doesn't fire either.
+  // This effect bridges the gap — throttled to one scroll per frame.
+  useEffect(() => {
+    if (!streamingText) return;
+    const rafId = requestAnimationFrame(() => {
+      if (isUserAtBottomRef.current) scrollToBottom();
+    });
+    return () => cancelAnimationFrame(rafId);
+  }, [streamingText, scrollToBottom]);
+
   // ── Auto-follow bottom when content height changes ───────────────
   // Markdown rendering, code highlighting, and lazy-loaded media can
   // increase scrollHeight after the initial scrollToBottom call.
@@ -357,48 +369,16 @@ export default function ChatArea({
         ))}
 
         {/* Streaming text indicator — shows accumulated content_block_delta text */}
-        {/* Parse analysis/summary tags when complete, fall back to plain text when incomplete */}
-        {sessionId !== null && streamingText && streamingText.trim() && (() => {
-          const isIncomplete = hasIncompleteTag(streamingText)
-          if (isIncomplete) {
-            return (
-              <div className="message assistant-message streaming-message">
-                <div className="bubble">
-                  <span className="streaming-text">{streamingText}</span>
-                </div>
-              </div>
-            )
-          }
-          const tagParts = parseTagBlocks(streamingText)
-          const analysisItems = tagParts.filter(p => p.kind === 'analysis')
-          const summaryItems = tagParts.filter(p => p.kind === 'summary')
-          const textContent = tagParts
-            .filter(p => p.kind === 'text')
-            .map(p => p.content)
-            .join('\n')
-          // If no tags found, render with MarkdownRenderer for proper formatting
-          if (analysisItems.length === 0 && summaryItems.length === 0) {
-            return (
-              <div className="message assistant-message streaming-message">
-                <div className="bubble">
-                  <MarkdownRenderer>{textContent}</MarkdownRenderer>
-                </div>
-              </div>
-            )
-          }
-          // Render structured blocks
-          return (
-            <div className="message assistant-message streaming-message">
-              <div className="bubble">
-                <CollapsibleBlock kind="analysis" items={analysisItems} />
-                <CollapsibleBlock kind="summary" items={summaryItems} />
-                {textContent && (
-                  <MarkdownRenderer>{textContent}</MarkdownRenderer>
-                )}
-              </div>
+        {/* During streaming, render as plain text to prevent layout jitter from */}
+        {/* markdown re-parsing. Once streaming completes, streamingText clears */}
+        {/* and the full message appears in the messages array with formatting. */}
+        {sessionId !== null && streamingText && streamingText.trim() && (
+          <div className="message assistant-message streaming-message">
+            <div className="bubble">
+              <span className="streaming-text">{streamingText}</span>
             </div>
-          )
-        })()}
+          </div>
+        )}
 
         {/* Show agent spinner when session is running */}
         {sessionId !== null && isAgentRunning && (

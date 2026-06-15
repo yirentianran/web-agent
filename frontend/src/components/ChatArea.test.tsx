@@ -853,7 +853,7 @@ describe('ChatArea - streaming text with analysis/summary tags', () => {
     expect(container.querySelector('.analysis-block')).not.toBeInTheDocument()
   })
 
-  it('renders analysis block when tags are complete', () => {
+  it('renders streaming text as plain text when tags are complete', () => {
     const messages: Message[] = [
       { type: 'user', content: 'Hello', index: 0 },
     ]
@@ -869,11 +869,13 @@ describe('ChatArea - streaming text with analysis/summary tags', () => {
       />,
     )
 
-    expect(container.querySelector('details.analysis-block')).toBeInTheDocument()
+    // During streaming, always render as plain text to prevent jitter
+    // (analysis/summary blocks appear in final message, not during streaming)
     expect(container.querySelector('.streaming-text')).toBeInTheDocument()
+    expect(container.querySelector('details.analysis-block')).not.toBeInTheDocument()
   })
 
-  it('renders summary block as collapsible details', () => {
+  it('renders summary as plain text during streaming', () => {
     const messages: Message[] = [
       { type: 'user', content: 'Hello', index: 0 },
     ]
@@ -889,13 +891,12 @@ describe('ChatArea - streaming text with analysis/summary tags', () => {
       />,
     )
 
-    const details = container.querySelector('details.summary-block')
-    expect(details).toBeInTheDocument()
-    expect(details).not.toHaveAttribute('open')
-    expect(screen.getByText('Summary')).toBeInTheDocument()
+    // During streaming, always render as plain text
+    expect(container.querySelector('.streaming-text')).toBeInTheDocument()
+    expect(container.querySelector('details.summary-block')).not.toBeInTheDocument()
   })
 
-  it('renders both analysis and summary in streaming text', () => {
+  it('renders both analysis and summary as plain text during streaming', () => {
     const messages: Message[] = [
       { type: 'user', content: 'Hello', index: 0 },
     ]
@@ -911,8 +912,10 @@ describe('ChatArea - streaming text with analysis/summary tags', () => {
       />,
     )
 
-    expect(container.querySelector('details.analysis-block')).toBeInTheDocument()
-    expect(container.querySelector('.summary-block')).toBeInTheDocument()
+    // During streaming, always render as plain text
+    expect(container.querySelector('.streaming-text')).toBeInTheDocument()
+    expect(container.querySelector('details.analysis-block')).not.toBeInTheDocument()
+    expect(container.querySelector('.summary-block')).not.toBeInTheDocument()
   })
 
   it('renders plain streaming text when no tags present', () => {
