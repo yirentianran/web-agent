@@ -5528,7 +5528,11 @@ async def register_mcp_server(
     server_dict = server.model_dump()
     discover_status, discover_error = await _auto_discover_mcp_capabilities(server_dict)
 
-    await _mcp_store.create(server_dict)
+    try:
+        await _mcp_store.create(server_dict)
+    except ValueError as e:
+        # Server name already exists
+        raise HTTPException(status_code=409, detail=str(e))
     return {"status": "ok", "discover_status": discover_status, "discover_error": discover_error}
 
 
@@ -5600,6 +5604,32 @@ async def toggle_mcp_server(
     return {"status": "ok"}
 
 
+def _extract_exception_group_message(eg: ExceptionGroup) -> str:
+    """Extract meaningful error message from ExceptionGroup.
+
+    MCP clients wrap TaskGroup errors in ExceptionGroup. This function
+    unwraps them to provide a clearer error message to users.
+    """
+    messages = []
+    for exc in eg.exceptions:
+        if isinstance(exc, ExceptionGroup):
+            messages.append(_extract_exception_group_message(exc))
+        else:
+            exc_str = str(exc)
+            if exc_str:
+                messages.append(exc_str)
+            else:
+                messages.append(type(exc).__name__)
+
+    if not messages:
+        return str(eg)
+
+    combined = "; ".join(messages)
+    if len(combined) > 500:
+        combined = combined[:500] + "..."
+    return combined
+
+
 async def _connect_and_discover_mcp(
     cfg: dict[str, Any],
     timeout: float = 30.0,
@@ -5651,6 +5681,11 @@ async def _connect_and_discover_mcp(
         return ("connected", None, tool_names, resources, prompts)
     except TimeoutError:
         return ("disconnected", "Connection timed out (30s)", [], [], [])
+    except ExceptionGroup as eg:
+        # MCP clients use TaskGroup which wraps errors in ExceptionGroup.
+        # Extract the actual error message from sub-exceptions.
+        error_msg = _extract_exception_group_message(eg)
+        return ("disconnected", error_msg, [], [], [])
     except Exception as e:
         error_msg = str(e)
         if len(error_msg) > 500:
