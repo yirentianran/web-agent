@@ -1,4 +1,4 @@
-import { memo, useState } from 'react'
+import { memo, useLayoutEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import type { Message } from '../lib/types'
 import MarkdownRenderer from './MarkdownRenderer'
@@ -234,7 +234,7 @@ interface MessageBubbleProps {
   authToken?: string | null
 }
 
-const COLLAPSE_THRESHOLD = 5000
+const MAX_CONTENT_HEIGHT = 300
 
 // ── Shared copy button ──────────────────────────────────────────
 
@@ -340,10 +340,17 @@ function ToolResultSection({ toolResult }: { toolResult?: Message['toolResult'] 
 function ToolResultContent({ content, isBashResult, language }: { content: string; isBashResult?: boolean; language?: string }) {
   const { t } = useTranslation()
   const [expanded, setExpanded] = useState(false)
+  const [isLarge, setIsLarge] = useState(false)
+  const containerRef = useRef<HTMLDivElement>(null)
 
   const isInput = language !== undefined
   const isMarkdown = !isInput && /^(#{1,6}\s|\*[\*\*]|__|\s*[-*+]\s|\s*\d+\.\s|\[.+?\]\(.+?\)|\s*>\s|\s*\|)/m.test(content.trim())
   const isHtml = !isInput && /<(!DOCTYPE|[a-z]+\b[^>]*\/?>)/i.test(content.trim())
+
+  useLayoutEffect(() => {
+    if (!containerRef.current) return
+    setIsLarge(containerRef.current.scrollHeight > MAX_CONTENT_HEIGHT)
+  }, [content])
 
   if (isHtml) {
     return (
@@ -359,18 +366,16 @@ function ToolResultContent({ content, isBashResult, language }: { content: strin
   }
 
   if (isMarkdown) {
-    const isLarge = content.length > COLLAPSE_THRESHOLD
-    const visibleContent = isLarge && !expanded
-      ? content.slice(0, COLLAPSE_THRESHOLD) + '…'
-      : content
-
     return (
       <div className="tool-output-wrapper">
         <div className="tool-output-header">
           <CopyButton content={content} />
         </div>
-        <div className={`tool-output-markdown${isLarge && !expanded ? ' tool-output-collapsed' : ''}`}>
-          <MarkdownRenderer>{visibleContent}</MarkdownRenderer>
+        <div
+          ref={containerRef}
+          className={`tool-output-markdown${isLarge && !expanded ? ' tool-output-collapsed' : ''}`}
+        >
+          <MarkdownRenderer>{content}</MarkdownRenderer>
         </div>
         {isLarge && (
           <button className="tool-output-expand-btn" onClick={() => setExpanded(e => !e)}>
@@ -402,15 +407,13 @@ function ToolResultContent({ content, isBashResult, language }: { content: strin
     displayContent = '```text\n' + content + '\n```'
   }
 
-  const isLarge = displayContent.length > COLLAPSE_THRESHOLD
-  const visibleContent = isLarge && !expanded
-    ? displayContent.slice(0, COLLAPSE_THRESHOLD) + '…'
-    : displayContent
-
   return (
     <div className="tool-output-wrapper">
-      <div className={`tool-output-markdown${isLarge && !expanded ? ' tool-output-collapsed' : ''}`}>
-        <MarkdownRenderer>{visibleContent}</MarkdownRenderer>
+      <div
+        ref={containerRef}
+        className={`tool-output-markdown${isLarge && !expanded ? ' tool-output-collapsed' : ''}`}
+      >
+        <MarkdownRenderer>{displayContent}</MarkdownRenderer>
       </div>
       {isLarge && (
         <button className="tool-output-expand-btn" onClick={() => setExpanded(e => !e)}>
