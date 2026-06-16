@@ -104,10 +104,6 @@ export default function ChatArea({
   const isStreamingRef = useRef(false);
   const [agentStartTime, setAgentStartTime] = useState<number | null>(null);
 
-  // Streaming text via context — only ChatArea (the context consumer)
-  // re-renders when streaming text changes. MainLayout (memo'd) and all
-  // its other children (Header, Sidebar, InputBar, SessionFilePanel) are
-  // not re-rendered.
   const streamingText = useContext(StreamingTextContext);
 
   const prevScrollHeightRef = useRef(0);
@@ -360,24 +356,14 @@ export default function ChatArea({
   // is unreliable because agent stream events and DB-assigned seq
   // use two different numbering schemes that can interleave.
   const visibleMessages = useMemo(() => {
-    let lastTodoWriteIndex = -1;
-    for (let i = messages.length - 1; i >= 0; i--) {
-      if (
-        messages[i].type === "tool_use" &&
-        messages[i].name === "TodoWrite"
-      ) {
-        lastTodoWriteIndex = messages[i].index;
-        break;
-      }
-    }
     const deduped = messages.filter(
       (msg) =>
         msg.type !== "tool_use" ||
         msg.name !== "TodoWrite" ||
-        msg.index === lastTodoWriteIndex,
+        msg.index === (lastTodoWriteIndex ?? -1),
     );
     return pairToolMessages(deduped);
-  }, [messages]);
+  }, [messages, lastTodoWriteIndex]);
 
   // Filter out invisible message types for the welcome screen check.
   // If a session only has heartbeats / internal state messages, show the welcome screen.
@@ -433,7 +419,7 @@ export default function ChatArea({
         {sessionId !== null && (
           <MessageList
             messages={visibleMessages}
-            sessionId={sessionId || ""}
+            sessionId={sessionId}
             onAnswer={onAnswer}
             onFileClick={onFileClick}
             onResend={onResend}

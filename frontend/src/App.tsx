@@ -1619,6 +1619,11 @@ function MainApp() {
 
   const [newSessionKey, setNewSessionKey] = useState(0);
 
+  const handleSelectSession = useCallback(
+    (id: string) => navigate("/chat/" + id),
+    [navigate],
+  );
+
   const handleNewSession = useCallback(() => {
     // Reset tracking refs — no active session means input should be enabled
     clearThresholdRef.current = Number.MAX_SAFE_INTEGER;
@@ -1816,7 +1821,7 @@ function MainApp() {
             setSidebarOpen={setSidebarOpen}
             sessions={sessions}
             activeSession={urlSessionId}
-            onSelectSession={(id) => navigate("/chat/" + id)}
+            onSelectSession={handleSelectSession}
             onNewSession={handleNewSession}
             onDeleteSession={handleDeleteSession}
             onRenameSession={handleRenameSession}
