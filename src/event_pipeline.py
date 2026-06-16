@@ -97,6 +97,7 @@ def _track_write_file(event: dict[str, Any], ctx: EventContext) -> None:
     file_path = tool_input.get("file_path", "")
     if file_path:
         file_path = normalize_write_path(file_path, ctx.session_id)
+        tool_input["file_path"] = file_path  # write back so persisted event has normalized path
     if not file_path or not should_include_generated_file(Path(file_path).name):
         return
 
