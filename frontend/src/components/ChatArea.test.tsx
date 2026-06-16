@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, fireEvent, act } from '@testing-library/react'
 import '@testing-library/jest-dom/vitest'
 import ChatArea from '../components/ChatArea'
+import { StreamingTextContext } from '../lib/streaming-context'
 import type { Message } from '../lib/types'
 
 // Mock localStorage for agent start times persistence
@@ -838,14 +839,15 @@ describe('ChatArea - streaming text with analysis/summary tags', () => {
     ]
 
     const { container } = render(
-      <ChatArea
-        messages={messages}
-        sessionId="test-session"
-        sessionState="running"
-        onAnswer={() => {}}
-        scrollPositions={new Map()}
-        streamingText="<analysis>partial content"
-      />,
+      <StreamingTextContext.Provider value="<analysis>partial content">
+        <ChatArea
+          messages={messages}
+          sessionId="test-session"
+          sessionState="running"
+          onAnswer={() => {}}
+          scrollPositions={new Map()}
+        />
+      </StreamingTextContext.Provider>,
     )
 
     // Should show as plain streaming text (tag incomplete)
@@ -859,14 +861,15 @@ describe('ChatArea - streaming text with analysis/summary tags', () => {
     ]
 
     const { container } = render(
-      <ChatArea
-        messages={messages}
-        sessionId="test-session"
-        sessionState="running"
-        onAnswer={() => {}}
-        scrollPositions={new Map()}
-        streamingText="<analysis>step by step reasoning</analysis>Final answer."
-      />,
+      <StreamingTextContext.Provider value="<analysis>step by step reasoning</analysis>Final answer.">
+        <ChatArea
+          messages={messages}
+          sessionId="test-session"
+          sessionState="running"
+          onAnswer={() => {}}
+          scrollPositions={new Map()}
+        />
+      </StreamingTextContext.Provider>,
     )
 
     // During streaming, always render as plain text to prevent jitter
@@ -881,14 +884,15 @@ describe('ChatArea - streaming text with analysis/summary tags', () => {
     ]
 
     const { container } = render(
-      <ChatArea
-        messages={messages}
-        sessionId="test-session"
-        sessionState="running"
-        onAnswer={() => {}}
-        scrollPositions={new Map()}
-        streamingText="<summary>## Key Points\n- Point 1\n- Point 2</summary>"
-      />,
+      <StreamingTextContext.Provider value={`<summary>## Key Points\n- Point 1\n- Point 2</summary>`}>
+        <ChatArea
+          messages={messages}
+          sessionId="test-session"
+          sessionState="running"
+          onAnswer={() => {}}
+          scrollPositions={new Map()}
+        />
+      </StreamingTextContext.Provider>,
     )
 
     // During streaming, always render as plain text
@@ -902,14 +906,15 @@ describe('ChatArea - streaming text with analysis/summary tags', () => {
     ]
 
     const { container } = render(
-      <ChatArea
-        messages={messages}
-        sessionId="test-session"
-        sessionState="running"
-        onAnswer={() => {}}
-        scrollPositions={new Map()}
-        streamingText="<analysis>think</analysis><summary>summary</summary>done"
-      />,
+      <StreamingTextContext.Provider value="<analysis>think</analysis><summary>summary</summary>done">
+        <ChatArea
+          messages={messages}
+          sessionId="test-session"
+          sessionState="running"
+          onAnswer={() => {}}
+          scrollPositions={new Map()}
+        />
+      </StreamingTextContext.Provider>,
     )
 
     // During streaming, always render as plain text
@@ -924,14 +929,15 @@ describe('ChatArea - streaming text with analysis/summary tags', () => {
     ]
 
     const { container } = render(
-      <ChatArea
-        messages={messages}
-        sessionId="test-session"
-        sessionState="running"
-        onAnswer={() => {}}
-        scrollPositions={new Map()}
-        streamingText="Just a normal streaming response."
-      />,
+      <StreamingTextContext.Provider value="Just a normal streaming response.">
+        <ChatArea
+          messages={messages}
+          sessionId="test-session"
+          sessionState="running"
+          onAnswer={() => {}}
+          scrollPositions={new Map()}
+        />
+      </StreamingTextContext.Provider>,
     )
 
     expect(container.querySelector('.streaming-text')).toBeInTheDocument()

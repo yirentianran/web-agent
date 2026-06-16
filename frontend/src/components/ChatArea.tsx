@@ -1,9 +1,10 @@
-import { useEffect, useRef, useCallback, useState, useMemo } from "react";
+import { memo, useEffect, useRef, useCallback, useState, useMemo, useContext } from "react";
 import { useTranslation } from "react-i18next";
 import MessageBubble, { pairToolMessages } from "./MessageBubble";
 
 import StatusSpinner from "./StatusSpinner";
 import type { Message, SessionStatus } from "../lib/types";
+import { StreamingTextContext } from "../lib/streaming-context";
 
 const SCROLL_THRESHOLD = 100;
 
@@ -47,9 +48,44 @@ interface ChatAreaProps {
   onFileClick?: (filename: string) => void;
   onResend?: (message: Message) => void;
   authToken?: string | null;
-  streamingText?: string; // Accumulated streaming text from content_block_delta
   sessionLoading?: boolean;
 }
+
+interface MessageListProps {
+  messages: Message[];
+  sessionId: string;
+  onAnswer: (sessionId: string, answers: Record<string, string>) => void;
+  onFileClick?: (filename: string) => void;
+  onResend?: (message: Message) => void;
+  lastTodoWriteIndex?: number;
+  lastUserMsgIndex?: number;
+  authToken?: string | null;
+}
+
+const MessageList = memo(function MessageList({
+  messages,
+  sessionId,
+  onAnswer,
+  onFileClick,
+  onResend,
+  lastTodoWriteIndex,
+  lastUserMsgIndex,
+  authToken,
+}: MessageListProps) {
+  return messages.map((msg, i) => (
+    <MessageBubble
+      key={msg.clientMsgId ?? `${msg.index}-${i}`}
+      message={msg}
+      sessionId={sessionId}
+      onAnswer={onAnswer}
+      onFileClick={onFileClick}
+      onResend={onResend}
+      lastTodoWriteIndex={lastTodoWriteIndex}
+      lastUserMsgIndex={lastUserMsgIndex}
+      authToken={authToken}
+    />
+  ));
+});
 
 export default function ChatArea({
   messages,
@@ -60,7 +96,6 @@ export default function ChatArea({
   onFileClick,
   onResend,
   authToken,
-  streamingText,
   sessionLoading,
 }: ChatAreaProps) {
   const { t } = useTranslation();
@@ -68,6 +103,12 @@ export default function ChatArea({
   const isUserAtBottomRef = useRef(true);
   const isStreamingRef = useRef(false);
   const [agentStartTime, setAgentStartTime] = useState<number | null>(null);
+
+  // Streaming text via context — only ChatArea (the context consumer)
+  // re-renders when streaming text changes. MainLayout (memo'd) and all
+  // its other children (Header, Sidebar, InputBar, SessionFilePanel) are
+  // not re-rendered.
+  const streamingText = useContext(StreamingTextContext);
 
   const prevScrollHeightRef = useRef(0);
 
@@ -389,10 +430,9 @@ export default function ChatArea({
           </div>
         )}
 
-        {sessionId !== null && visibleMessages.map((msg, i) => (
-          <MessageBubble
-            key={msg.clientMsgId ?? `${msg.index}-${i}`}
-            message={msg}
+        {sessionId !== null && (
+          <MessageList
+            messages={visibleMessages}
             sessionId={sessionId || ""}
             onAnswer={onAnswer}
             onFileClick={onFileClick}
@@ -401,7 +441,7 @@ export default function ChatArea({
             lastUserMsgIndex={lastUserMsgIndex}
             authToken={authToken}
           />
-        ))}
+        )}
 
         {/* Streaming text indicator — shows accumulated content_block_delta text */}
         {/* During streaming, render as plain text to prevent layout jitter from */}

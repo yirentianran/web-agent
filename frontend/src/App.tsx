@@ -3,6 +3,7 @@ import {
   useCallback,
   useEffect,
   useRef,
+  memo,
   type FormEvent,
 } from "react";
 import { Routes, Route, useNavigate, useMatch, Navigate } from "react-router-dom";
@@ -30,6 +31,7 @@ import {
   useStreamingText,
   type StreamingTextState,
 } from "./hooks/useStreamingText";
+import { StreamingTextContext } from "./lib/streaming-context";
 import type { Message, SessionItem, MessageSendState, ConnectionStatus, SessionStatus } from "./lib/types";
 import { isUnconfirmed } from "./lib/types";
 import {
@@ -224,7 +226,6 @@ interface MainLayoutProps {
   handleFileClick: (filename: string) => void;
   handleResend: (message: Message) => void;
   authToken: string | null;
-  streamingText: string;
   inputBarRef: React.RefObject<InputBarHandle | null>;
   handleSend: (message: string, fileMeta?: Array<{filename: string; size: number}>, sessionId?: string) => void;
   onEnsureSession: () => Promise<string | undefined>;
@@ -241,7 +242,7 @@ interface MainLayoutProps {
   userRole: string;
 }
 
-function MainLayout({
+const MainLayout = memo(function MainLayout({
   status,
   queueFull,
   userId,
@@ -259,7 +260,6 @@ function MainLayout({
   handleFileClick,
   handleResend,
   authToken,
-  streamingText,
   inputBarRef,
   handleSend,
   onEnsureSession,
@@ -357,7 +357,6 @@ function MainLayout({
             onFileClick={handleFileClick}
             onResend={handleResend}
             authToken={authToken}
-            streamingText={streamingText}
             sessionLoading={sessionLoading}
           />
           <InputBar
@@ -397,7 +396,7 @@ function MainLayout({
       </div>
     </div>
   );
-}
+});
 
 function MainApp() {
   const { t } = useTranslation();
@@ -1742,6 +1741,7 @@ function MainApp() {
   }
 
   return (
+    <StreamingTextContext.Provider value={streamingTextState.accumulatedText}>
     <Routes>
       <Route
         path="/skills"
@@ -1826,7 +1826,6 @@ function MainApp() {
             handleFileClick={handleFileClick}
             handleResend={handleResend}
             authToken={authToken}
-            streamingText={streamingTextState.accumulatedText}
             inputBarRef={inputBarRef}
             handleSend={handleSend}
             onEnsureSession={ensureSession}
@@ -1845,6 +1844,7 @@ function MainApp() {
         }
       />
     </Routes>
+    </StreamingTextContext.Provider>
   );
 }
 
