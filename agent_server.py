@@ -366,6 +366,11 @@ class _CliRunner:
                     self._assistant_sent = True
                     self._event_queue.put(("assistant", data))
 
+                elif msg_type == "user":
+                    # Forward user messages — they carry tool_result blocks
+                    # that advance conversation state after tool execution.
+                    self._event_queue.put(("user", data))
+
                 elif msg_type == "result":
                     logger.info(
                         "CLI: result event received is_error=%s result=%s keys=%s",
@@ -390,6 +395,11 @@ class _CliRunner:
                                 "content": result_text,
                             }))
                             logger.info("CLI: fallback assistant queued (len=%d)", len(result_text))
+                    # Forward result metadata so the bridge can display duration/turns/tokens
+                    from src.agent_result import parse_agent_result
+
+                    result_meta = parse_agent_result(data)
+                    self._event_queue.put(("result", result_meta))
                     break
 
                 elif msg_type == "control_request":
@@ -674,6 +684,21 @@ async def agent_ws(websocket: WebSocket) -> None:
                                     "type": "assistant",
                                     "content": assistant_content,
                                 })
+                    elif evt_type == "user":
+                        # Forward user message (carries tool_result blocks after tool execution)
+                        message = evt_data.get("message", {})
+                        if message:
+                            content_blocks = message.get("content", [])
+                            if isinstance(content_blocks, list):
+                                for block in content_blocks:
+                                    if isinstance(block, dict) and block.get("type") == "text":
+                                        block["text"] = OutputFilter.scan(block.get("text", ""))
+                            await _ws_send({
+                                "type": "user",
+                                "message": message,
+                            })
+                    elif evt_type == "result":
+                        await _ws_send(evt_data)
                     elif evt_type == "stderr":
                         logger.info("CLI stderr: %s", evt_data)
                     elif evt_type == "exception":
