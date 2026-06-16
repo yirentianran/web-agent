@@ -1,4 +1,4 @@
-import { memo, useLayoutEffect, useRef, useState } from 'react'
+import { memo, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import type { Message } from '../lib/types'
 import MarkdownRenderer from './MarkdownRenderer'
@@ -347,9 +347,14 @@ function ToolResultContent({ content, isBashResult, language }: { content: strin
   const isMarkdown = !isInput && /^(#{1,6}\s|\*[\*\*]|__|\s*[-*+]\s|\s*\d+\.\s|\[.+?\]\(.+?\)|\s*>\s|\s*\|)/m.test(content.trim())
   const isHtml = !isInput && /<(!DOCTYPE|[a-z]+\b[^>]*\/?>)/i.test(content.trim())
 
-  useLayoutEffect(() => {
+  useEffect(() => {
+    setExpanded(false)
     if (!containerRef.current) return
-    setIsLarge(containerRef.current.scrollHeight > MAX_CONTENT_HEIGHT)
+    if (content.length < 200 && !isLarge) return
+    setIsLarge(prev => {
+      const val = containerRef.current!.scrollHeight > MAX_CONTENT_HEIGHT
+      return prev !== val ? val : prev
+    })
   }, [content])
 
   if (isHtml) {
@@ -371,17 +376,16 @@ function ToolResultContent({ content, isBashResult, language }: { content: strin
         <div className="tool-output-header">
           <CopyButton content={content} />
         </div>
-        <div
-          ref={containerRef}
-          className={`tool-output-markdown${isLarge && !expanded ? ' tool-output-collapsed' : ''}`}
+        <CollapsibleContent
+          containerRef={containerRef}
+          isLarge={isLarge}
+          expanded={expanded}
+          onToggle={() => setExpanded(e => !e)}
+          expandLabel={t('message.showAll')}
+          collapseLabel={t('message.collapse')}
         >
           <MarkdownRenderer>{content}</MarkdownRenderer>
-        </div>
-        {isLarge && (
-          <button className="tool-output-expand-btn" onClick={() => setExpanded(e => !e)}>
-            {expanded ? t('message.collapse') : t('message.showAll')}
-          </button>
-        )}
+        </CollapsibleContent>
       </div>
     )
   }
@@ -409,21 +413,47 @@ function ToolResultContent({ content, isBashResult, language }: { content: strin
 
   return (
     <div className="tool-output-wrapper">
-      <div
-        ref={containerRef}
-        className={`tool-output-markdown${isLarge && !expanded ? ' tool-output-collapsed' : ''}`}
+      <CollapsibleContent
+        containerRef={containerRef}
+        isLarge={isLarge}
+        expanded={expanded}
+        onToggle={() => setExpanded(e => !e)}
+        expandLabel={t('message.showAll')}
+        collapseLabel={t('message.collapse')}
       >
         <MarkdownRenderer>{displayContent}</MarkdownRenderer>
-      </div>
-      {isLarge && (
-        <button className="tool-output-expand-btn" onClick={() => setExpanded(e => !e)}>
-          {expanded ? t('message.collapse') : t('message.showAll')}
-        </button>
-      )}
+      </CollapsibleContent>
     </div>
   )
 }
 
+interface CollapsibleContentProps {
+  containerRef: React.RefObject<HTMLDivElement | null>
+  isLarge: boolean
+  expanded: boolean
+  onToggle: () => void
+  expandLabel: string
+  collapseLabel: string
+  children: React.ReactNode
+}
+
+function CollapsibleContent({ containerRef, isLarge, expanded, onToggle, expandLabel, collapseLabel, children }: CollapsibleContentProps) {
+  return (
+    <>
+      <div
+        ref={containerRef}
+        className={`tool-output-markdown${isLarge && !expanded ? ' tool-output-collapsed' : ''}`}
+      >
+        {children}
+      </div>
+      {isLarge && (
+        <button className="tool-output-expand-btn" onClick={onToggle}>
+          {expanded ? collapseLabel : expandLabel}
+        </button>
+      )}
+    </>
+  )
+}
 // ── Shared collapsible block (thinking / analysis / summary) ──────
 
 interface CollapsibleBlockProps {
