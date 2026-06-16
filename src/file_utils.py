@@ -9,9 +9,6 @@ from __future__ import annotations
 from pathlib import Path
 
 
-# File types that are infrastructure/intermediate — never offered as user-facing results
-IGNORED_FILE_EXTS = {".log", ".pyc", ".pyo", ".pid", ".lock"}
-
 # Filenames that indicate a programming error, not a real generated file
 INVALID_FILENAMES = {"null", "undefined", "none", ""}
 INVALID_FILENAME_STEMS = {"null", "undefined", "none"}

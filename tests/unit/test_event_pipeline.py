@@ -160,7 +160,7 @@ class TestProcessEvent:
         assert ctx.generated_files[0]["filename"] == "report.txt"
         assert ctx.generated_files[0]["download_url"] == "/dl/report.txt"
 
-    async def test_write_file_skippped_when_not_in_data_exts(self) -> None:
+    async def test_write_file_skipped_when_not_in_data_exts(self) -> None:
         """Files not in DATA_EXTS should not be added to generated_files."""
         ctx = EventContext(
             user_id="u1",
