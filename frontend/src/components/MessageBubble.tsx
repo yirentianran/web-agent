@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { memo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import type { Message } from '../lib/types'
 import MarkdownRenderer from './MarkdownRenderer'
@@ -447,7 +447,7 @@ export function CollapsibleBlock({ kind, items }: CollapsibleBlockProps) {
   )
 }
 
-export default function MessageBubble({ message, sessionId, onAnswer, onFileClick, onResend, lastTodoWriteIndex, lastUserMsgIndex, authToken }: MessageBubbleProps) {
+const MessageBubble = memo(function MessageBubble({ message, sessionId, onAnswer, onFileClick, onResend, lastTodoWriteIndex, lastUserMsgIndex, authToken }: MessageBubbleProps) {
   const { t, i18n } = useTranslation()
   if (message.type === 'user') {
     const files = (message.data as Array<{ filename: string; size?: number }> | undefined) || []
@@ -748,4 +748,6 @@ export default function MessageBubble({ message, sessionId, onAnswer, onFileClic
       </div>
     </div>
   )
-}
+});
+
+export default MessageBubble;

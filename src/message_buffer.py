@@ -172,6 +172,13 @@ class MessageBuffer:
                     msg["tool_use_id"] = parsed["tool_use_id"]
                 if msg["type"] == "stream_event" and "event" in parsed:
                     msg["event"] = parsed["event"]
+                if msg["type"] == "result":
+                    if "duration_ms" in parsed:
+                        msg["duration_ms"] = parsed["duration_ms"]
+                    if "num_turns" in parsed:
+                        msg["num_turns"] = parsed["num_turns"]
+                    if "is_error" in parsed:
+                        msg["is_error"] = parsed["is_error"]
                 if (
                     msg["type"] == "system"
                     and msg.get("subtype") == "session_state_changed"

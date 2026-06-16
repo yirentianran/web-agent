@@ -66,7 +66,10 @@ export default function ChatArea({
   const { t } = useTranslation();
   const containerRef = useRef<HTMLDivElement>(null);
   const isUserAtBottomRef = useRef(true);
+  const isStreamingRef = useRef(false);
   const [agentStartTime, setAgentStartTime] = useState<number | null>(null);
+
+  const prevScrollHeightRef = useRef(0);
 
   const handleScroll = useCallback(() => {
     const container = containerRef.current;
@@ -75,7 +78,24 @@ export default function ChatArea({
     // Detect whether user is near the bottom
     const { scrollTop, scrollHeight, clientHeight } = container;
     const distanceFromBottom = scrollHeight - scrollTop - clientHeight;
-    isUserAtBottomRef.current = distanceFromBottom <= SCROLL_THRESHOLD;
+
+    // During streaming, content growth increases scrollHeight which
+    // makes distanceFromBottom appear large even though the user didn't
+    // scroll away. Distinguish "content grew" (scrollHeight changed)
+    // from "user scrolled up" (scrollHeight unchanged, scrollTop changed).
+    if (isStreamingRef.current) {
+      const contentGrew = scrollHeight !== prevScrollHeightRef.current;
+      prevScrollHeightRef.current = scrollHeight;
+      // Only mark as "user scrolled away" when content DIDN'T grow
+      // (user explicitly scrolled up)
+      if (!contentGrew && distanceFromBottom > SCROLL_THRESHOLD) {
+        isUserAtBottomRef.current = false;
+      }
+      // If content grew and user was at bottom, keep them at bottom
+    } else {
+      prevScrollHeightRef.current = scrollHeight;
+      isUserAtBottomRef.current = distanceFromBottom <= SCROLL_THRESHOLD;
+    }
 
     // Save scroll position to localStorage for session restore
     if (sessionId) {
@@ -217,14 +237,29 @@ export default function ChatArea({
   // The `messages` array doesn't change during stream_event (only
   // `streamingText` updates), so the effect above doesn't fire.
   // ResizeObserver on the fixed-size container doesn't fire either.
-  // This effect bridges the gap — throttled to one scroll per frame.
+  //
+  // isStreamingRef prevents handleScroll from setting isUserAtBottomRef
+  // to false when scrollHeight grows due to content being added.
+  // rAF callback checks actual scroll position to decide whether to
+  // scroll, avoiding dependency on potentially-stale ref.
   useEffect(() => {
-    if (!streamingText) return;
+    if (!streamingText) {
+      isStreamingRef.current = false;
+      return;
+    }
+    isStreamingRef.current = true;
+
     const rafId = requestAnimationFrame(() => {
-      if (isUserAtBottomRef.current) scrollToBottom();
+      const container = containerRef.current;
+      if (!container) return;
+      const { scrollTop, scrollHeight, clientHeight } = container;
+      const distanceFromBottom = scrollHeight - scrollTop - clientHeight;
+      if (distanceFromBottom <= SCROLL_THRESHOLD) {
+        container.scrollTop = container.scrollHeight;
+      }
     });
     return () => cancelAnimationFrame(rafId);
-  }, [streamingText, scrollToBottom]);
+  }, [streamingText]);
 
   // ── Auto-follow bottom when content height changes ───────────────
   // Markdown rendering, code highlighting, and lazy-loaded media can
