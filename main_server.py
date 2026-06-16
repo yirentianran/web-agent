@@ -2654,6 +2654,21 @@ async def run_agent_task_container(
         agent_log = AgentLogger(user_id=user_id)
         agent_log.start_session(session_id, user_message=user_message)
 
+        from src.event_pipeline import EventContext
+
+        tool_observer = ToolObserver(_obs_store, session_id, user_id)
+        generated_files: list[dict[str, Any]] = []
+        tool_use_names: dict[str, str] = {}
+
+        ctx = EventContext(
+            user_id=user_id,
+            session_id=session_id,
+            buffer=buffer,
+            observer=tool_observer,
+            skill_manager=_skill_manager,
+            generated_files=generated_files,
+        )
+
         bridge = ContainerBridge(
             container_url=container_url,
             session_id=session_id,
@@ -2661,13 +2676,13 @@ async def run_agent_task_container(
             buffer=buffer,
             session_store=session_store,
             skill_manager=_skill_manager,
-            obs_store=_obs_store,
+            ctx=ctx,
+            model=options_dict.get("model"),
+            tool_use_names=tool_use_names,
         )
 
         start_time = time.time()
         workspace = user_workspace_dir(user_id)
-        generated_files: list[dict[str, Any]] = []
-        msg_count = 0
         # Snapshot pre-existing output files so we only emit new ones
         pre_scan_snapshot = _snapshot_output_files(workspace, session_id)
         # Build the prompt - for continuations, include history
@@ -2690,54 +2705,21 @@ async def run_agent_task_container(
             time.time() - start_time,
         )
 
-        # ── After bridge completes: scan for newly generated files ─────
-        # Workspace is a mounted host volume, so files created inside the
-        # container are visible from the host at the same paths.
-        generated_files = await _scan_workspace_for_generated_files(
-            workspace,
-            user_id,
-            session_id,
-            exclude_paths=pre_scan_snapshot,
+        from src.event_pipeline import _finish_task
+
+        await _finish_task(
+            session_id=session_id,
+            user_id=user_id,
+            buffer=buffer,
+            workspace=workspace,
+            session_store=session_store,
+            skill_manager=_skill_manager,
+            obs_store=_obs_store,
+            agent_log=agent_log,
+            pre_scan_snapshot=pre_scan_snapshot or set(),
+            result_event=bridge._result if bridge else None,
+            language=language,
         )
-
-        # Emit file_result, then title, then completion state.
-        await _emit_file_result(user_id, session_id, workspace, generated_files, buffer)
-
-        logger.info(
-            "Container task %s: completed in %.1fs",
-            session_id,
-            time.time() - start_time,
-        )
-
-        # Generate title BEFORE completion messages so the frontend sees it.
-        await _auto_generate_title(session_id, user_id, buffer, session_store, language)
-
-        # ── Completion ────────────────────────────────────────────
-        await buffer.add_message(
-            session_id,
-            {
-                "type": "system",
-                "subtype": "session_state_changed",
-                "state": "completed",
-            },
-            user_id,
-        )
-        # Emit result metadata (duration, turns, tokens) after
-        # file_result and state_change so the footer renders in order.
-        if bridge is not None and bridge._result is not None:
-            await buffer.add_message(session_id, bridge._result, user_id)
-        await buffer.mark_done(session_id)
-        agent_log.end_session(session_id, status="completed")
-        if _obs_store:
-            await _obs_store.record(
-                session_id=session_id, user_id=user_id,
-                event_type="session_complete",
-                success=True,
-            )
-        asyncio.ensure_future(_summarize_and_store_session(session_id, user_id))
-        # Scan for agent-created skills and register any not yet in DB
-        if _skill_manager is not None:
-            asyncio.ensure_future(_skill_manager.migrate_from_filesystem())
 
     except TimeoutError:
         logger.error("Container task %s: timeout", session_id)

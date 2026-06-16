@@ -29,14 +29,19 @@ import websockets
 from websockets.asyncio.client import ClientConnection
 from websockets.exceptions import ConnectionClosed
 
-from src.block_processor import process_content_blocks
-
 logger = logging.getLogger("container_bridge")
 
 # Module-level registry for AskUserQuestion Futures.
 # Key: session_id — only one question can be pending per session at a time
 # because the agent is blocked waiting for the answer.
 bridge_answer_futures: dict[str, asyncio.Future[dict]] = {}
+
+
+def _get_agent_secret() -> str:
+    """Return the agent WebSocket auth secret, matching the container's env."""
+    from src.container_manager import _agent_secret  # noqa: PLC0415
+
+    return _agent_secret
 
 
 class ContainerBridge:
@@ -50,7 +55,9 @@ class ContainerBridge:
         buffer,  # MessageBuffer (avoid circular import)
         session_store=None,
         skill_manager=None,
-        obs_store=None,  # ObservationStore for tool event recording
+        ctx=None,  # EventContext
+        model=None,  # str | None
+        tool_use_names=None,  # dict[str, str]
     ):
         self.container_url = container_url
         self.session_id = session_id
@@ -59,17 +66,16 @@ class ContainerBridge:
         self.session_store = session_store
         self.skill_manager = skill_manager
 
+        self.ctx = ctx
+        self.model = model
+        self.tool_use_names = tool_use_names or {}
+
         self._ws: ClientConnection | None = None
         self._receive_task: asyncio.Task | None = None
         self._receive_queue: asyncio.Queue = asyncio.Queue()
         self._cancel_event: asyncio.Event = asyncio.Event()
         self._error: str | None = None
-
-        if obs_store is not None:
-            from src.observation import ToolObserver
-            self._tool_observer: ToolObserver | None = ToolObserver(obs_store, session_id, user_id)
-        else:
-            self._tool_observer = None
+        self._result: dict[str, Any] | None = None
 
     async def connect(self, retries: int = 3, backoff: float = 1.0) -> None:
         """Open WebSocket to container's /ws endpoint with retry and health check."""
@@ -105,7 +111,7 @@ class ContainerBridge:
                     ping_timeout=10,
                     close_timeout=10,
                     additional_headers={
-                        "X-Agent-Token": os.getenv("AGENT_SECRET", ""),
+                        "X-Agent-Token": _get_agent_secret(),
                     },
                 )
                 logger.info(
@@ -201,80 +207,18 @@ class ContainerBridge:
                 except ImportError:
                     pass
 
-                if msg_type == "stream_event":
-                    # Truncate oversized tool results before buffering
-                    event = data.get("event", {})
-                    if isinstance(event, dict) and event.get("type") == "tool_result":
-                        from src.truncation import maybe_truncate_tool_result_content
-
-                        event["content"] = maybe_truncate_tool_result_content(event.get("content", ""))
-                    await self.buffer.add_message(self.session_id, data, self.user_id)
-                    if isinstance(event, dict) and event.get("type") == "content_block_delta":
-                        delta = event.get("delta", {})
-                        if isinstance(delta, dict) and delta.get("type") == "text_delta":
-                            accumulated_text += delta.get("text", "")
-                    # Record tool observations from stream events.
-                    # Use data["seq"] (the stream_event's seq) as message_seq,
-                    # since the nested event dict doesn't carry its own seq.
-                    if self._tool_observer is not None and isinstance(event, dict):
-                        event_type = event.get("type", "")
-                        if event_type == "tool_use":
-                            await self._tool_observer.on_tool_use(
-                                event.get("id", ""),
-                                event.get("name", ""),
-                                event.get("input", {}),
-                                message_seq=data.get("seq"),
-                            )
-                        elif event_type == "tool_result":
-                            await self._tool_observer.on_tool_result(
-                                event.get("tool_use_id", ""),
-                                is_error=event.get("is_error", False),
-                            )
-                elif msg_type == "assistant":
-                    # Transform container assistant message to frontend-compatible format.
-                    # Container now sends {"type": "assistant", "message": {role, content: [blocks]}}.
-                    msg_content = data.get("message", {})
-                    if msg_content:
-                        content_blocks = msg_content.get("content", [])
-
-                        emitted: list[dict[str, Any]] = []
-
-                        def _emit_block(d: dict[str, Any]) -> None:  # noqa: B023
-                            emitted.append(d)
-
-                        combined_text = process_content_blocks(content_blocks, _emit_block)
-
-                        for d in emitted:
-                            if self.skill_manager is not None:
-                                from src.skill_manager import record_skill_usage_from_event
-
-                                await record_skill_usage_from_event(
-                                    d, self.skill_manager,
-                                    user_id=self.user_id, session_id=self.session_id,
-                                )
-                            await self.buffer.add_message(self.session_id, d, self.user_id)
-
-                        if combined_text:
-                            await self.buffer.add_message(self.session_id, {
-                                "type": "assistant",
-                                "content": combined_text,
-                            }, self.user_id)
-                    else:
-                        # Fallback: bare content string (legacy or result-fallback path)
-                        if data.get("content"):
-                            await self.buffer.add_message(self.session_id, data, self.user_id)
-                    explicit_assistant = True
-
-                elif msg_type == "permission_check":
+                # ── Bridge-specific: bidirectional AskUserQuestion ──
+                if msg_type == "permission_check":
                     await self._handle_permission_check(data)
+                    continue
 
-                elif msg_type == "done":
+                # ── Terminal signals ──
+                if msg_type == "done":
                     logger.info("Container task done for session %s", self.session_id)
                     if accumulated_text.strip() and not explicit_assistant:
                         logger.info(
                             "Bridge emitting synthetic assistant message len=%d for session %s",
-                            len(accumulated_text),
-                            self.session_id,
+                            len(accumulated_text), self.session_id,
                         )
                         await self.buffer.add_message(self.session_id, {
                             "type": "assistant",
@@ -282,14 +226,12 @@ class ContainerBridge:
                         }, self.user_id)
                     break
 
-                elif msg_type == "error":
+                if msg_type == "error":
                     raw_msg = data.get("message", "")
                     self._error = raw_msg or "Container agent error (empty message)"
                     logger.error(
-                        "Container error for session %s: message=%r full_data=%s",
-                        self.session_id,
-                        raw_msg,
-                        json.dumps(data, default=str)[:500],
+                        "Container error for session %s: message=%r",
+                        self.session_id, raw_msg,
                     )
                     await self.buffer.add_message(self.session_id, {
                         "type": "error",
@@ -297,9 +239,34 @@ class ContainerBridge:
                     }, self.user_id)
                     break
 
-                elif msg_type == "cancelled":
+                if msg_type == "cancelled":
                     logger.info("Container task cancelled for session %s", self.session_id)
                     break
+
+                # ── Delegate everything else to shared pipeline ──
+                # Lazy import to avoid circular import (main_server imports ContainerBridge)
+                from main_server import message_to_dicts  # noqa: PLC0415
+                from src.event_pipeline import process_event  # noqa: PLC0415
+
+                for event in message_to_dicts(
+                    data, model=self.model, tool_use_names=self.tool_use_names,
+                ):
+                    if event.get("type") == "result":
+                        self._result = event
+                        continue
+
+                    # Track streaming text for synthetic assistant fallback
+                    if event["type"] == "assistant":
+                        explicit_assistant = True
+                    elif event["type"] == "stream_event":
+                        inner = event.get("event", {})
+                        if inner.get("type") == "content_block_delta":
+                            delta = inner.get("delta", {})
+                            if isinstance(delta, dict) and delta.get("type") == "text_delta":
+                                accumulated_text += delta.get("text", "")
+
+                    if self.ctx is not None:
+                        await process_event(self.ctx, event)
         finally:
             await self.close()
 
@@ -340,6 +307,10 @@ class ContainerBridge:
         2. Register a Future keyed by session_id
         3. Wait for the browser's answer (resolved by handle_ws in main_server)
         4. Forward the answer to the container
+
+        NOTE: Direct buffer write instead of process_event() because
+        process_event explicitly skips AskUserQuestion tool_use events
+        (the skip rule delegates buffering to this handler).
         """
         tool_use_id = data.get("tool_use_id", "")
         tool_input = data.get("tool_input", {})
