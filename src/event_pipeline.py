@@ -8,6 +8,7 @@ teardown live here so the two code paths stay in sync.
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -130,3 +131,71 @@ def _track_write_file(event: dict[str, Any], ctx: EventContext) -> None:
         return
 
     ctx.generated_files.append(entry)
+
+
+async def _finish_task(
+    session_id: str,
+    user_id: str,
+    buffer: Any,
+    workspace: Any,
+    session_store: Any,
+    skill_manager: Any,
+    obs_store: Any,
+    agent_log: Any,
+    pre_scan_snapshot: set[str],
+    result_event: dict[str, Any] | None,
+    language: str | None,
+) -> None:
+    """Post-loop teardown shared by container and non-container modes.
+
+    Order matters:
+    1. Scan workspace for newly generated files
+    2. Emit file_result event
+    3. Auto-generate session title
+    4. Set session state to completed
+    5. Emit result metadata (so footer renders after file cards + completed)
+    6. Mark buffer done + end agent log
+    7. Record session-complete observation + background tasks
+    """
+    from main_server import (  # noqa: PLC0415
+        _auto_generate_title,
+        _emit_file_result,
+        _scan_workspace_for_generated_files,
+        _summarize_and_store_session,
+    )
+
+    # 1. Scan for generated files
+    generated_files = await _scan_workspace_for_generated_files(
+        workspace, user_id, session_id, exclude_paths=pre_scan_snapshot,
+    )
+
+    # 2. Emit file_result
+    await _emit_file_result(user_id, session_id, workspace, generated_files, buffer)
+
+    # 3. Generate title
+    await _auto_generate_title(session_id, user_id, buffer, session_store, language)
+
+    # 4. Session completed
+    await buffer.add_message(
+        session_id,
+        {"type": "system", "subtype": "session_state_changed", "state": "completed"},
+        user_id,
+    )
+
+    # 5. Result metadata (reordered so footer renders in order)
+    if result_event is not None:
+        await buffer.add_message(session_id, result_event, user_id)
+
+    # 6. Mark done
+    await buffer.mark_done(session_id)
+    agent_log.end_session(session_id, status="completed")
+
+    # 7. Observations + background tasks
+    if obs_store:
+        await obs_store.record(
+            session_id=session_id, user_id=user_id,
+            event_type="session_complete", success=True,
+        )
+    asyncio.ensure_future(_summarize_and_store_session(session_id, user_id))
+    if skill_manager is not None:
+        asyncio.ensure_future(skill_manager.migrate_from_filesystem())

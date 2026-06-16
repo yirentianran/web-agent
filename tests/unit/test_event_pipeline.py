@@ -6,6 +6,7 @@ match the spec for skip, truncate, track, buffer, and observe steps.
 
 from __future__ import annotations
 
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -252,3 +253,225 @@ class TestProcessEvent:
             {"type": "tool_result", "tool_use_id": "tu1", "content": "ok"},
         )
         # Should not raise
+
+
+class TestMessageToDictsDictBranch:
+    """Tests for isinstance(msg, dict) branch in message_to_dicts."""
+
+    def test_assistant_dict_yields_tool_use_and_text(self):
+        from main_server import message_to_dicts
+
+        msg = {
+            "type": "assistant",
+            "message": {
+                "role": "assistant",
+                "content": [
+                    {"type": "text", "text": "Let me check."},
+                    {"type": "tool_use", "id": "tu1", "name": "Bash", "input": {"command": "ls"}},
+                ],
+            },
+        }
+        results = list(message_to_dicts(msg))
+        types = [r["type"] for r in results]
+        assert "tool_use" in types
+        assert "assistant" in types
+        assistant = next(r for r in results if r["type"] == "assistant")
+        assert assistant["content"] == "Let me check."
+        tool_use = next(r for r in results if r["type"] == "tool_use")
+        assert tool_use["name"] == "Bash"
+
+    def test_user_dict_yields_tool_result(self):
+        from main_server import message_to_dicts
+
+        msg = {
+            "type": "user",
+            "message": {
+                "role": "user",
+                "content": [
+                    {"type": "tool_result", "tool_use_id": "tu1", "content": "file.txt"},
+                ],
+            },
+        }
+        results = list(message_to_dicts(msg))
+        assert len(results) == 1
+        assert results[0]["type"] == "tool_result"
+        assert results[0]["content"] == "file.txt"
+
+    def test_stream_event_dict_yields_wrapper(self):
+        from main_server import message_to_dicts
+
+        msg = {
+            "type": "stream_event",
+            "event": {"type": "content_block_delta", "delta": {"type": "text_delta", "text": "hi"}},
+        }
+        results = list(message_to_dicts(msg))
+        assert len(results) == 1
+        assert results[0]["type"] == "stream_event"
+        assert results[0]["event"]["delta"]["text"] == "hi"
+
+    def test_result_dict_yields_parsed_result(self):
+        from main_server import message_to_dicts
+
+        msg = {
+            "type": "result",
+            "subtype": "success",
+            "duration_ms": 5000,
+            "num_turns": 3,
+            "is_error": False,
+            "result": "Done.",
+        }
+        results = list(message_to_dicts(msg))
+        assert len(results) == 1
+        assert results[0]["type"] == "result"
+        assert results[0]["duration_ms"] == 5000
+
+    def test_unknown_dict_type_is_ignored(self):
+        from main_server import message_to_dicts
+
+        msg = {"type": "unknown_xyz", "data": "abc"}
+        results = list(message_to_dicts(msg))
+        assert results == []
+
+    def test_assistant_dict_without_message_field_yields_nothing(self):
+        from main_server import message_to_dicts
+
+        msg = {"type": "assistant"}
+        results = list(message_to_dicts(msg))
+        assert results == []
+
+    def test_dict_branch_shares_tool_use_names(self):
+        from main_server import message_to_dicts
+
+        tool_use_names: dict[str, str] = {}
+        assistant_msg = {
+            "type": "assistant",
+            "message": {
+                "role": "assistant",
+                "content": [
+                    {"type": "tool_use", "id": "tu1", "name": "Bash", "input": {"command": "ls"}},
+                ],
+            },
+        }
+        list(message_to_dicts(assistant_msg, tool_use_names=tool_use_names))
+        assert tool_use_names["tu1"] == "Bash"
+
+        user_msg = {
+            "type": "user",
+            "message": {
+                "role": "user",
+                "content": [
+                    {"type": "tool_result", "tool_use_id": "tu1", "content": "ok"},
+                ],
+            },
+        }
+        results = list(message_to_dicts(user_msg, tool_use_names=tool_use_names))
+        assert results[0]["name"] == "Bash"  # resolved from shared dict
+
+
+class TestFinishTask:
+    """Test suite for _finish_task shared post-loop teardown."""
+
+    @pytest.fixture
+    def mocks(self):
+        skill_manager = MagicMock()
+        skill_manager.migrate_from_filesystem = AsyncMock()
+        return {
+            "buffer": AsyncMock(),
+            "session_store": MagicMock(),
+            "skill_manager": skill_manager,
+            "obs_store": AsyncMock(),
+            "agent_log": MagicMock(),
+        }
+
+    @pytest.mark.asyncio
+    async def test_finish_task_emits_file_result_title_and_completion(self, mocks):
+        from src.event_pipeline import _finish_task
+
+        with patch("main_server._scan_workspace_for_generated_files", new_callable=AsyncMock) as mock_scan:
+            mock_scan.return_value = []
+            with patch("main_server._emit_file_result", new_callable=AsyncMock) as mock_file:
+                with patch("main_server._auto_generate_title", new_callable=AsyncMock) as mock_title:
+                    with patch("main_server._summarize_and_store_session"):
+                        result_event = {"type": "result", "duration_ms": 5000}
+                        await _finish_task(
+                            session_id="s1", user_id="u1",
+                            buffer=mocks["buffer"],
+                            workspace=Path("/ws"),
+                            session_store=mocks["session_store"],
+                            skill_manager=mocks["skill_manager"],
+                            obs_store=mocks["obs_store"],
+                            agent_log=mocks["agent_log"],
+                            pre_scan_snapshot=set(),
+                            result_event=result_event,
+                            language=None,
+                        )
+
+                        mock_file.assert_called_once()
+                        mock_title.assert_called_once()
+
+                        # Verify completed state
+                        add_msg_calls = [c[0][1] for c in mocks["buffer"].add_message.call_args_list]
+                        assert any(m["type"] == "system" and m.get("state") == "completed" for m in add_msg_calls)
+
+                        # Verify result emitted after completed
+                        result_indices = [
+                            i for i, c in enumerate(add_msg_calls)
+                            if c.get("type") == "result"
+                        ]
+                        completed_indices = [
+                            i for i, c in enumerate(add_msg_calls)
+                            if c.get("type") == "system" and c.get("state") == "completed"
+                        ]
+                        if result_indices and completed_indices:
+                            assert result_indices[0] > completed_indices[0]
+
+                        mocks["buffer"].mark_done.assert_called_once_with("s1")
+                        mocks["agent_log"].end_session.assert_called_once_with("s1", status="completed")
+
+    @pytest.mark.asyncio
+    async def test_finish_task_none_result_skips_result_emit(self, mocks):
+        from src.event_pipeline import _finish_task
+
+        with patch("main_server._scan_workspace_for_generated_files", new_callable=AsyncMock) as mock_scan:
+            mock_scan.return_value = []
+            with patch("main_server._emit_file_result", new_callable=AsyncMock):
+                with patch("main_server._auto_generate_title", new_callable=AsyncMock):
+                    with patch("main_server._summarize_and_store_session"):
+                        await _finish_task(
+                            session_id="s1", user_id="u1",
+                            buffer=mocks["buffer"],
+                            workspace=Path("/ws"),
+                            session_store=mocks["session_store"],
+                            skill_manager=mocks["skill_manager"],
+                            obs_store=mocks["obs_store"],
+                            agent_log=mocks["agent_log"],
+                            pre_scan_snapshot=set(),
+                            result_event=None,
+                            language=None,
+                        )
+                        add_msg_calls = [c[0][1] for c in mocks["buffer"].add_message.call_args_list]
+                        assert not any(c.get("type") == "result" for c in add_msg_calls)
+
+    @pytest.mark.asyncio
+    async def test_finish_task_none_skill_manager_does_not_migrate(self, mocks):
+        from src.event_pipeline import _finish_task
+
+        with patch("main_server._scan_workspace_for_generated_files", new_callable=AsyncMock) as mock_scan:
+            mock_scan.return_value = []
+            with patch("main_server._emit_file_result", new_callable=AsyncMock):
+                with patch("main_server._auto_generate_title", new_callable=AsyncMock):
+                    with patch("main_server._summarize_and_store_session"):
+                        await _finish_task(
+                            session_id="s1", user_id="u1",
+                            buffer=mocks["buffer"],
+                            workspace=Path("/ws"),
+                            session_store=mocks["session_store"],
+                            skill_manager=None,
+                            obs_store=mocks["obs_store"],
+                            agent_log=mocks["agent_log"],
+                            pre_scan_snapshot=set(),
+                            result_event=None,
+                            language=None,
+                        )
+                        # skill_manager.migrate_from_filesystem should NOT be called
+                        # No crash should occur

@@ -2470,59 +2470,21 @@ async def run_agent_task(
                     continue
                 await process_event(ctx, event)
 
-        # Scan session output directory for newly generated files only
-        generated_files = await _scan_workspace_for_generated_files(
-            workspace,
-            user_id,
-            session_id,
-            exclude_paths=pre_scan_snapshot,
+        from src.event_pipeline import _finish_task
+
+        await _finish_task(
+            session_id=session_id,
+            user_id=user_id,
+            buffer=buffer,
+            workspace=workspace,
+            session_store=session_store,
+            skill_manager=_skill_manager,
+            obs_store=_obs_store,
+            agent_log=agent_log,
+            pre_scan_snapshot=pre_scan_snapshot or set(),
+            result_event=buffered_result,
+            language=language,
         )
-
-        # Emit "file_result", then title, then completion state.
-        # file_result is emitted BEFORE session_state_changed:completed so
-        # it appears before "Session completed" in both live streaming and
-        # DB replay.
-        await _emit_file_result(user_id, session_id, workspace, generated_files, buffer)
-
-        logger.info(
-            "Agent task %s: completed with %d messages in %.1fs",
-            session_id,
-            msg_count,
-            time.time() - start_time,
-        )
-
-        # Generate title BEFORE completion messages so the frontend's
-        # loadSessions() (triggered by "result") sees the new title.
-        await _auto_generate_title(session_id, user_id, buffer, session_store, language)
-
-        # Add state change BEFORE mark_done() so the subscribe loop's
-        # final pull (after is_done() returns True) catches the message.
-        await buffer.add_message(
-            session_id,
-            {
-                "type": "system",
-                "subtype": "session_state_changed",
-                "state": "completed",
-            },
-            user_id,
-        )
-        # Re-add the buffered SDK result AFTER file_result and state_change
-        # so "Session completed" appears as the last visible message.
-        if buffered_result is not None:
-            await buffer.add_message(session_id, buffered_result, user_id)
-        await buffer.mark_done(session_id)
-        duration_ms = (time.time() - start_time) * 1000
-        agent_log.end_session(session_id, status="completed")
-        if _obs_store:
-            await _obs_store.record(
-                session_id=session_id, user_id=user_id,
-                event_type="session_complete",
-                success=True,
-            )
-        asyncio.ensure_future(_summarize_and_store_session(session_id, user_id))
-        # Scan for agent-created skills and register any not yet in DB
-        if _skill_manager is not None:
-            asyncio.ensure_future(_skill_manager.migrate_from_filesystem())
 
     except TimeoutError:
         # Clean up the stuck CLI subprocess
