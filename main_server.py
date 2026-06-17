@@ -6507,7 +6507,7 @@ async def evolution_diff(
         from_ver = log["from_version"]
         to_ver = log["to_version"]
         skill_dir = DATA_ROOT / "shared-skills" / skill_name
-        old_file = skill_dir / f"SKILL_v{from_ver}.md"
+        old_file = skill_dir / "versions" / f"v{from_ver}" / "SKILL.md"
         old_content = old_file.read_text() if old_file.exists() else ""
         new_file = skill_dir / "SKILL.md"
         new_content = new_file.read_text() if new_file.exists() else ""
