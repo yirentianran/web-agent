@@ -21,7 +21,7 @@ import SessionFilePanel from "./components/SessionFilePanel";
 
 import MCPPage from "./components/MCPPage";
 import DashboardPage from "./components/DashboardPage";
-import EvolutionPage from "./pages/EvolutionPage";
+import EvolutionPage from "./pages/evolutionpage";
 import UsersPage from "./pages/UsersPage";
 import DesignPreviewPage from "./DesignPreviewPage";
 import SettingsPreviewPage from "./SettingsPreviewPage";

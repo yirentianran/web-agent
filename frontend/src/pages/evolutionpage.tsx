@@ -2,7 +2,6 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { StatsCards } from './evolution/StatsCards';
-import { PipelineFunnel } from './evolution/PipelineFunnel';
 import OverviewTable from './evolution/OverviewTable';
 import EvolutionDetail from './evolution/EvolutionDetail';
 import { InstinctList } from './evolution/InstinctList';
@@ -193,7 +192,6 @@ export default function EvolutionPage() {
       </div>
 
       <StatsCards stats={api.stats.data ?? null} loading={api.stats.loading} />
-      <PipelineFunnel stats={api.stats.data ?? null} />
 
       <div className="skills-tabs">
         {TABS.map(({ id, labelKey }) => (

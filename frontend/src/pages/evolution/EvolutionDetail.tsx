@@ -6,7 +6,6 @@ import type {
 import ScoreTrendChart from './ScoreTrendChart'
 import SignalBreakdown from './SignalBreakdown'
 import VersionDiff from './VersionDiff'
-import RollbackTimeline from './RollbackTimeline'
 
 interface Props {
   evolutionId: number
@@ -157,7 +156,6 @@ export default function EvolutionDetailPanel({ evolutionId, api }: Props) {
         </div>
       )}
 
-      <RollbackTimeline evolutionId={evolutionId} />
     </div>
   )
 }
