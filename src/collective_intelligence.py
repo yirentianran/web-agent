@@ -45,12 +45,7 @@ class CollectiveIntelligenceEngine:
             data_root=str(self.data_root),
         )
 
-        # Loop 1: instinct extraction every 10 minutes
         asyncio.create_task(self._extraction_loop())
-
-        # Loop 2: daily eval at 02:00
-        asyncio.create_task(self._daily_eval_loop())
-
         logger.info("Collective intelligence background jobs started")
         return self
 
@@ -69,30 +64,3 @@ class CollectiveIntelligenceEngine:
                 logger.error("Extraction cycle failed: %s", exc)
             await _asyncio.sleep(10 * 60)  # 10 minutes
 
-    async def _daily_eval_loop(self) -> None:
-        import asyncio as _asyncio
-        import time
-        from src.evolution_signals import EvolutionSignals
-
-        while True:
-            now = time.localtime()
-            seconds_until_0200 = (
-                (24 - now.tm_hour - 2) % 24 * 3600
-                - now.tm_min * 60
-                - now.tm_sec
-            )
-            if seconds_until_0200 <= 0:
-                seconds_until_0200 = 24 * 3600
-            await _asyncio.sleep(seconds_until_0200)
-
-            try:
-                signals = EvolutionSignals(
-                    self.db, self._evo_log_store, self._skill_manager
-                )
-                result = await signals.run_daily_eval()
-                logger.info(
-                    "Daily eval: %d evaluated, %d degraded, %d rolled back",
-                    result["evaluated"], result["degraded"], result["rolled_back"],
-                )
-            except Exception as exc:
-                logger.error("Daily eval failed: %s", exc)
