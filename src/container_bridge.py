@@ -146,31 +146,41 @@ class ContainerBridge:
         self._cancel_event.clear()
         self._error = None
         self._result = None
-        while not self._receive_queue.empty():
+        while True:
             try:
                 self._receive_queue.get_nowait()
             except asyncio.QueueEmpty:
                 break
 
     async def send_run(self, prompt: str, options: dict) -> None:
-        """Send the 'run' message to start an agent task."""
+        """Send the 'run' message to start an agent task.
+
+        Raises ConnectionError on WebSocket closure so the caller can reconnect.
+        """
         assert self._ws is not None, "Must call connect() first"
-        await self._ws.send(json.dumps({
-            "type": "run",
-            "prompt": prompt,
-            "session_id": self.session_id,
-            "options": options,
-        }))
+        try:
+            await self._ws.send(json.dumps({
+                "type": "run",
+                "prompt": prompt,
+                "session_id": self.session_id,
+                "options": options,
+            }))
+        except ConnectionClosed as exc:
+            self._connected = False
+            msg = f"Container WS closed during send (code={exc.code})"
+            if exc.reason:
+                msg += f": {exc.reason}"
+            raise ConnectionError(msg) from exc
 
     async def send_cancel(self) -> None:
         """Send cancel message to the container."""
         self._cancel_event.set()
-        if self._ws:
+        if self._is_connection_alive():
             await self._ws.send(json.dumps({"type": "cancel"}))
 
     async def send_answer(self, tool_use_id: str, answers: dict) -> None:
         """Forward a browser's answer back to the container."""
-        if self._ws:
+        if self._is_connection_alive():
             await self._ws.send(json.dumps({
                 "type": "answer",
                 "tool_use_id": tool_use_id,
@@ -191,6 +201,11 @@ class ContainerBridge:
             raise ConnectionError(
                 f"Container bridge for session {self.session_id} is not connected"
             )
+
+        # Lazy imports to avoid module-level circular dependency with main_server
+        from main_server import message_to_dicts  # noqa: PLC0415
+        from src.event_pipeline import process_event  # noqa: PLC0415
+        from src.container_manager import touch_user  # noqa: PLC0415
 
         self._reset_for_new_run()
         self._run_active = True
@@ -255,9 +270,8 @@ class ContainerBridge:
 
                 # Touch user activity to prevent container idle timeout
                 try:
-                    from src.container_manager import touch_user as _touch  # noqa: PLC0415
-                    _touch(self.user_id)
-                except ImportError:
+                    touch_user(self.user_id)
+                except (ImportError, NameError):
                     pass
 
                 # ── Container latency logs forwarded via WS ──
@@ -309,10 +323,6 @@ class ContainerBridge:
                     break
 
                 # ── Delegate everything else to shared pipeline ──
-                # Lazy import to avoid circular import (main_server imports ContainerBridge)
-                from main_server import message_to_dicts  # noqa: PLC0415
-                from src.event_pipeline import process_event  # noqa: PLC0415
-
                 for event in message_to_dicts(
                     data, model=self.model, tool_use_names=self.tool_use_names,
                 ):
@@ -360,6 +370,7 @@ class ContainerBridge:
                 except json.JSONDecodeError:
                     logger.warning("Invalid JSON from container: %s", raw_msg[:200])
         except ConnectionClosed as exc:
+            self._connected = False
             logger.warning(
                 "Container WS closed for session %s: code=%s reason=%s",
                 self.session_id, exc.code, exc.reason,

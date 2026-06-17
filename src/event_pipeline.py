@@ -148,14 +148,9 @@ async def _finish_task(
 ) -> None:
     """Post-loop teardown shared by container and non-container modes.
 
-    Order matters:
-    1. Scan workspace for newly generated files
-    2. Emit file_result event
-    3. Auto-generate session title
-    4. Set session state to completed
-    5. Emit result metadata (so footer renders after file cards + completed)
-    6. Mark buffer done + end agent log
-    7. Record session-complete observation + background tasks
+    State=completed is emitted before title generation so the spinner stops
+    immediately — title generation may call an LLM and adds latency that
+    isn't part of the agent's actual work.
     """
     from main_server import (  # noqa: PLC0415
         _auto_generate_title,
@@ -164,38 +159,36 @@ async def _finish_task(
         _summarize_and_store_session,
     )
 
-    # 1. Scan for generated files
     generated_files = await _scan_workspace_for_generated_files(
         workspace, user_id, session_id, exclude_paths=pre_scan_snapshot,
     )
 
-    # 2. Emit file_result
     await _emit_file_result(user_id, session_id, workspace, generated_files, buffer)
 
-    # 3. Generate title
-    await _auto_generate_title(session_id, user_id, buffer, session_store, language)
-
-    # 4. Session completed
+    # Emit completed before title generation — title gen may call an LLM
+    # and the spinner should stop before that latency.
     await buffer.add_message(
         session_id,
         {"type": "system", "subtype": "session_state_changed", "state": "completed"},
         user_id,
     )
 
-    # 5. Result metadata (reordered so footer renders in order)
+    # Result metadata — after completed so footer renders in order
     if result_event is not None:
         await buffer.add_message(session_id, result_event, user_id)
 
-    # 6. Mark done
+    await _auto_generate_title(session_id, user_id, buffer, session_store, language)
+
+    # Mark done
     await buffer.mark_done(session_id)
     agent_log.end_session(session_id, status="completed")
 
-    # 7. Observations + background tasks
+    # Observations + background tasks
     if obs_store:
         await obs_store.record(
             session_id=session_id, user_id=user_id,
             event_type="session_complete", success=True,
         )
-    asyncio.ensure_future(_summarize_and_store_session(session_id, user_id))
+    asyncio.create_task(_summarize_and_store_session(session_id, user_id))
     if skill_manager is not None:
-        asyncio.ensure_future(skill_manager.migrate_from_filesystem())
+        asyncio.create_task(skill_manager.migrate_from_filesystem())
