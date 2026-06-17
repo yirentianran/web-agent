@@ -6412,6 +6412,73 @@ async def evolution_trend(
     return trend
 
 
+@app.get("/api/admin/evolution/{evolution_id}/signals")
+async def evolution_signals(
+    evolution_id: int,
+    current_user: str = Depends(require_admin),
+):
+    """Success rate and usage signals vs. baseline (first 7 days after creation)."""
+    from src.evolution_log import EvolutionLogStore
+
+    store = EvolutionLogStore(_db)
+    log = await store.get_log(evolution_id)
+    if not log:
+        raise HTTPException(404, "Evolution record not found")
+
+    now = time.time()
+    baseline_end = log["created_at"] + 7 * 86400
+    recent_start = now - 7 * 86400
+
+    async with _db.connection() as conn:
+        # Baseline: first 7 days after evolution creation
+        bl_rows = await conn.execute_fetchall(
+            """SELECT COUNT(*) as total,
+                      SUM(CASE WHEN success = 1 THEN 1 ELSE 0 END) as success_count
+               FROM observations
+               WHERE created_at >= ? AND created_at < ?
+                 AND event_type = 'tool_call_end'
+                 AND success IS NOT NULL""",
+            (log["created_at"], baseline_end),
+        )
+        bl_total = bl_rows[0][0] if bl_rows else 0
+        bl_success = bl_rows[0][1] or 0
+        baseline_success_rate = round(bl_success / bl_total, 4) if bl_total > 0 else 1.0
+        baseline_usage = round(bl_total / 7, 1)
+
+        # Current: last 7 days
+        cur_rows = await conn.execute_fetchall(
+            """SELECT COUNT(*) as total,
+                      SUM(CASE WHEN success = 1 THEN 1 ELSE 0 END) as success_count
+               FROM observations
+               WHERE created_at >= ?
+                 AND event_type = 'tool_call_end'
+                 AND success IS NOT NULL""",
+            (recent_start,),
+        )
+        cur_total = cur_rows[0][0] if cur_rows else 0
+        cur_success = cur_rows[0][1] or 0
+        current_success_rate = round(cur_success / cur_total, 4) if cur_total > 0 else 1.0
+        current_usage = round(cur_total / 7, 1)
+
+    def _delta_pct(cur: float, base: float) -> float:
+        if base == 0:
+            return 100.0 if cur > 0 else 0.0
+        return round((cur - base) / base * 100, 1)
+
+    return {
+        "success_rate": {
+            "current": current_success_rate,
+            "baseline": baseline_success_rate,
+            "delta_pct": _delta_pct(current_success_rate, baseline_success_rate),
+        },
+        "usage_count": {
+            "current": current_usage,
+            "baseline": baseline_usage,
+            "delta_pct": _delta_pct(current_usage, baseline_usage),
+        },
+    }
+
+
 @app.get("/api/admin/evolution/{evolution_id}/diff")
 async def evolution_diff(
     evolution_id: int,
