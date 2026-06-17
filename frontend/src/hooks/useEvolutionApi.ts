@@ -23,24 +23,18 @@ export interface EvolutionItem {
 }
 
 export interface EvolutionDetail extends EvolutionItem {
-  snapshots: Snapshot[]
-  signal_breakdown: SignalBreakdown | null
   instincts?: InstinctItem[]
 }
 
-export interface Snapshot {
-  snapshot_date: string
+export interface TrendPoint {
+  date: string
+  success_rate: number
   usage_count: number
-  unique_users: number
-  avg_rating: number
-  session_success_rate: number
-  composite_score: number
 }
 
-export interface SignalBreakdown {
-  rating: { current: number; baseline: number; delta_pct: number }
-  usage: { current: number; baseline: number; delta_pct: number }
-  session_success: { current: number; baseline: number; delta_pct: number }
+export interface EvolutionSignals {
+  success_rate: { current: number; baseline: number; delta_pct: number }
+  usage_count: { current: number; baseline: number; delta_pct: number }
 }
 
 export interface EvolutionDiff {
@@ -118,6 +112,8 @@ export interface EvolutionApi {
   observations: AsyncState<{ items: ObservationItem[]; total: number; page: number }>
   fetchDetail: (id: number) => Promise<EvolutionDetail>
   fetchDiff: (id: number) => Promise<EvolutionDiff>
+  fetchTrend: (id: number, days?: number) => Promise<TrendPoint[]>
+  fetchSignals: (id: number) => Promise<EvolutionSignals>
   review: (id: number, decision: 'keep' | 'rollback' | 'discard') => Promise<void>
   fetchStats: (days?: number) => Promise<void>
   fetchInstincts: (params?: { domain?: string; scope?: string; page?: number }) => Promise<void>
@@ -324,6 +320,18 @@ export function useEvolutionApi(statusFilter?: string, page: number = 1) {
     }
   }, [])
 
+  const fetchTrend = useCallback(
+    (id: number, days: number = 30): Promise<TrendPoint[]> =>
+      fetchJson<TrendPoint[]>(`${API_BASE}/${id}/trend?days=${days}`),
+    [],
+  )
+
+  const fetchSignals = useCallback(
+    (id: number): Promise<EvolutionSignals> =>
+      fetchJson<EvolutionSignals>(`${API_BASE}/${id}/signals`),
+    [],
+  )
+
   const refetch = useCallback(() => {
     setRefreshKey((k) => k + 1)
   }, [])
@@ -338,6 +346,8 @@ export function useEvolutionApi(statusFilter?: string, page: number = 1) {
       extractNow,
       fetchDetail,
       fetchDiff,
+      fetchTrend,
+      fetchSignals,
       review,
       fetchStats,
       fetchInstincts,
@@ -346,7 +356,7 @@ export function useEvolutionApi(statusFilter?: string, page: number = 1) {
       refetch,
     }),
     [overview, stats, instincts, observations, extractResult, extractNow,
-     fetchDetail, fetchDiff, review,
+     fetchDetail, fetchDiff, fetchTrend, fetchSignals, review,
      fetchStats, fetchInstincts, fetchObservations, fetchSessionMessages, refetch],
   )
 }
