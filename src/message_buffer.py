@@ -168,8 +168,11 @@ class MessageBuffer:
                         msg["id"] = parsed["id"]
                     if "input" in parsed:
                         msg["input"] = parsed["input"]
-                if msg["type"] == "tool_result" and "tool_use_id" in parsed:
-                    msg["tool_use_id"] = parsed["tool_use_id"]
+                if msg["type"] == "tool_result":
+                    if "tool_use_id" in parsed:
+                        msg["tool_use_id"] = parsed["tool_use_id"]
+                    if "is_error" in parsed:
+                        msg["is_error"] = parsed["is_error"]
                 if msg["type"] == "stream_event" and "event" in parsed:
                     msg["event"] = parsed["event"]
                 if msg["type"] == "result":

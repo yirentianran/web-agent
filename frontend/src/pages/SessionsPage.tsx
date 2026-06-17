@@ -61,8 +61,11 @@ export default function SessionsPage() {
         input: raw.input as unknown,
         data: raw.data as unknown,
         id: raw.id as string | undefined,
+        tool_use_id: raw.tool_use_id as string | undefined,
         clientMsgId: raw.client_msg_id as string || `msg-${raw.seq}`,
         is_error: raw.is_error as boolean | undefined,
+        duration_ms: raw.duration_ms as number | undefined,
+        num_turns: raw.num_turns as number | undefined,
         usage: raw.usage as Record<string, number> | undefined,
         session_id: item.session_id,
       })))

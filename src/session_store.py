@@ -318,6 +318,8 @@ class SessionStore:
             if msg.get("type") == "tool_result":
                 if "tool_use_id" in parsed:
                     msg["tool_use_id"] = parsed["tool_use_id"]
+                if "is_error" in parsed:
+                    msg["is_error"] = parsed["is_error"]
                 if "content" in parsed:
                     msg["result_content"] = parsed["content"]
             if msg.get("type") == "result":
