@@ -6327,27 +6327,14 @@ async def evolution_overview(
             )
             instinct_map = {r[0]: r[1] for r in instinct_rows}
 
-            # Batch latest composite scores via correlated subquery
-            snap_rows = await conn.execute_fetchall(
-                f"""SELECT s.evolution_log_id, s.composite_score
-                    FROM skill_eval_snapshots s
-                    INNER JOIN (
-                        SELECT evolution_log_id, MAX(snapshot_date) AS max_date
-                        FROM skill_eval_snapshots
-                        WHERE evolution_log_id IN ({placeholders})
-                        GROUP BY evolution_log_id
-                    ) latest ON s.evolution_log_id = latest.evolution_log_id
-                    AND s.snapshot_date = latest.max_date""",
-                item_ids,
-            )
-            snap_map = {r[0]: r[1] for r in snap_rows if r[1] is not None}
+            # Composite score now computed real-time via /trend endpoint
+            snap_map: dict[int, float] = {}
 
     import time as _time
     now = _time.time()
     for item in result["items"]:
         item["instinct_count"] = instinct_map.get(item["id"], 0) if item_ids else 0
-        score = snap_map.get(item["id"]) if item_ids else None
-        item["composite_score"] = round(score, 4) if score is not None else None
+        item["composite_score"] = None
         item["days_active"] = max(1, int((now - item["created_at"]) / 86400))
 
     return result
