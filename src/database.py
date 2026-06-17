@@ -420,6 +420,12 @@ class Database:
         except Exception:
             pass
 
+        # Drop skill_eval_snapshots — replaced by real-time aggregation
+        try:
+            await self.migrate_v10()
+        except Exception:
+            pass
+
     async def _checkpoint_loop(self) -> None:
         """Periodically run a PASSIVE WAL checkpoint.
 
@@ -764,21 +770,8 @@ class Database:
                     auto_rollback_at REAL
                 );
 
-                CREATE TABLE IF NOT EXISTS skill_eval_snapshots (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    evolution_log_id INTEGER NOT NULL REFERENCES evolution_log(id),
-                    snapshot_date TEXT NOT NULL,
-                    usage_count INTEGER DEFAULT 0,
-                    unique_users INTEGER DEFAULT 0,
-                    avg_rating REAL,
-                    session_success_rate REAL,
-                    composite_score REAL,
-                    created_at REAL NOT NULL DEFAULT (strftime('%s', 'now'))
-                );
-
                 CREATE INDEX IF NOT EXISTS idx_evolution_log_status ON evolution_log(status);
                 CREATE INDEX IF NOT EXISTS idx_evolution_log_skill ON evolution_log(skill_name);
-                CREATE INDEX IF NOT EXISTS idx_eval_snap_log ON skill_eval_snapshots(evolution_log_id);
             """)
             await conn.commit()
 
@@ -933,6 +926,11 @@ class Database:
             await conn.execute(
                 "ALTER TABLE evolution_log ADD COLUMN baseline_metrics TEXT"
             )
+
+    async def migrate_v10(self) -> None:
+        """Drop skill_eval_snapshots table — replaced by real-time aggregation."""
+        async with self.connection() as conn:
+            await conn.execute("DROP TABLE IF EXISTS skill_eval_snapshots")
 
     async def migrate_collective_intelligence(self) -> None:
         """Add collective intelligence tables and FTS5 indexes.
