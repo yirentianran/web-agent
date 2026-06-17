@@ -7,43 +7,43 @@ import {
   ResponsiveContainer,
   CartesianGrid,
 } from 'recharts'
-import type { Snapshot } from '../../hooks/useEvolutionApi'
+import type { TrendPoint } from '../../hooks/useEvolutionApi'
 
 interface Props {
-  snapshots: Snapshot[]
-  baseline?: number | null
+  data: TrendPoint[]
 }
 
-export default function ScoreTrendChart({ snapshots, baseline }: Props) {
-  const baselineValue = baseline ?? 0.6
-  const data = snapshots.map((s) => ({
-    date: s.snapshot_date,
-    score: s.composite_score,
-    baseline: baselineValue,
+export default function ScoreTrendChart({ data }: Props) {
+  const chartData = data.map((d) => ({
+    date: d.date,
+    successRate: d.success_rate * 100,
+    usage: d.usage_count,
   }))
 
   return (
     <div className="evo-chart">
-      <h4>Composite Score Trend</h4>
+      <h4>Success Rate Trend</h4>
       <ResponsiveContainer width="100%" height={250}>
-        <LineChart data={data}>
+        <LineChart data={chartData}>
           <CartesianGrid strokeDasharray="3 3" />
           <XAxis dataKey="date" />
-          <YAxis domain={[0, 1]} />
+          <YAxis yAxisId="left" domain={[0, 100]} />
+          <YAxis yAxisId="right" orientation="right" />
           <Tooltip />
           <Line
+            yAxisId="left"
             type="monotone"
-            dataKey="score"
+            dataKey="successRate"
             stroke="#3b82f6"
-            name="Current"
+            name="Success Rate %"
             dot={false}
           />
           <Line
+            yAxisId="right"
             type="monotone"
-            dataKey="baseline"
-            stroke="#9ca3af"
-            strokeDasharray="5 5"
-            name="Baseline"
+            dataKey="usage"
+            stroke="#10b981"
+            name="Usage Count"
             dot={false}
           />
         </LineChart>

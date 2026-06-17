@@ -1,7 +1,7 @@
-import type { SignalBreakdown as SB } from '../../hooks/useEvolutionApi'
+import type { EvolutionSignals } from '../../hooks/useEvolutionApi'
 
 interface Props {
-  breakdown: SB
+  signals: EvolutionSignals
 }
 
 function DeltaIndicator({ deltaPct }: { deltaPct: number }) {
@@ -13,35 +13,25 @@ function DeltaIndicator({ deltaPct }: { deltaPct: number }) {
   )
 }
 
-export default function SignalBreakdown({ breakdown }: Props) {
+export default function SignalBreakdown({ signals }: Props) {
   return (
     <div className="signal-breakdown">
       <div className="signal-card">
-        <h5>User Rating</h5>
+        <h5>Tool Success Rate</h5>
         <div className="signal-value">
-          {breakdown.rating.current.toFixed(1)} / 5
+          {(signals.success_rate.current * 100).toFixed(1)}%
         </div>
-        <DeltaIndicator deltaPct={breakdown.rating.delta_pct} />
+        <DeltaIndicator deltaPct={signals.success_rate.delta_pct} />
         <div className="signal-baseline">
-          Baseline: {breakdown.rating.baseline.toFixed(1)}
+          Baseline: {(signals.success_rate.baseline * 100).toFixed(1)}%
         </div>
       </div>
       <div className="signal-card">
         <h5>Usage</h5>
-        <div className="signal-value">{breakdown.usage.current} / day</div>
-        <DeltaIndicator deltaPct={breakdown.usage.delta_pct} />
+        <div className="signal-value">{signals.usage_count.current} / day</div>
+        <DeltaIndicator deltaPct={signals.usage_count.delta_pct} />
         <div className="signal-baseline">
-          Baseline: {breakdown.usage.baseline.toFixed(0)} / day
-        </div>
-      </div>
-      <div className="signal-card">
-        <h5>Session Success</h5>
-        <div className="signal-value">
-          {(breakdown.session_success.current * 100).toFixed(0)}%
-        </div>
-        <DeltaIndicator deltaPct={breakdown.session_success.delta_pct} />
-        <div className="signal-baseline">
-          Baseline: {(breakdown.session_success.baseline * 100).toFixed(0)}%
+          Baseline: {signals.usage_count.baseline} / day
         </div>
       </div>
     </div>

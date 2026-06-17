@@ -2,6 +2,8 @@ import { useEffect, useState } from 'react'
 import type {
   EvolutionDetail as EvoDetail,
   EvolutionApi,
+  TrendPoint,
+  EvolutionSignals,
 } from '../../hooks/useEvolutionApi'
 import ScoreTrendChart from './ScoreTrendChart'
 import SignalBreakdown from './SignalBreakdown'
@@ -17,6 +19,8 @@ export default function EvolutionDetailPanel({ evolutionId, api }: Props) {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [actionLoading, setActionLoading] = useState(false)
+  const [trend, setTrend] = useState<TrendPoint[]>([])
+  const [signals, setSignals] = useState<EvolutionSignals | null>(null)
 
   const load = () => {
     setLoading(true)
@@ -43,6 +47,18 @@ export default function EvolutionDetailPanel({ evolutionId, api }: Props) {
       .finally(() => {
         if (!cancelled) setLoading(false)
       })
+
+    api.fetchTrend(evolutionId).then((t) => {
+      if (!cancelled) setTrend(t)
+    }).catch(() => {
+      if (!cancelled) setTrend([])
+    })
+    api.fetchSignals(evolutionId).then((s) => {
+      if (!cancelled) setSignals(s)
+    }).catch(() => {
+      if (!cancelled) setSignals(null)
+    })
+
     return () => {
       cancelled = true
     }
@@ -104,15 +120,10 @@ export default function EvolutionDetailPanel({ evolutionId, api }: Props) {
         </div>
       )}
 
-      {(data.snapshots?.length ?? 0) > 0 && (
+      {trend.length > 0 && (
         <>
-          <ScoreTrendChart
-            snapshots={data.snapshots!}
-            baseline={data.baseline_composite}
-          />
-          {data.signal_breakdown && (
-            <SignalBreakdown breakdown={data.signal_breakdown} />
-          )}
+          <ScoreTrendChart data={trend} />
+          {signals && <SignalBreakdown signals={signals} />}
         </>
       )}
 
