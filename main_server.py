@@ -6357,8 +6357,7 @@ async def evolution_detail(
     evolution_id: int,
     current_user: str = Depends(require_admin),
 ):
-    """Get evolution detail with snapshots and signal breakdown."""
-    import json as _json
+    """Get evolution detail with linked instincts."""
     from src.evolution_log import EvolutionLogStore
 
     store = EvolutionLogStore(_db)
@@ -6366,53 +6365,7 @@ async def evolution_detail(
     if not log_with_instincts:
         raise HTTPException(404, "Evolution record not found")
 
-    snaps = await store.get_snapshots(evolution_id)
-
-    # Parse stored baseline metrics
-    stored_baseline: dict = {}
-    if log_with_instincts.get("baseline_metrics"):
-        try:
-            stored_baseline = _json.loads(log_with_instincts["baseline_metrics"])
-        except (_json.JSONDecodeError, TypeError):
-            pass
-
-    baseline_rating = stored_baseline.get("avg_rating", 4.0)
-    baseline_usage = stored_baseline.get("daily_usage", 10)
-    baseline_success = stored_baseline.get("session_success_rate", 0.80)
-
-    if snaps and log_with_instincts.get("baseline_composite"):
-        current_snap = snaps[-1]
-        signal_breakdown = {
-            "rating": {
-                "current": current_snap.get("avg_rating", 0),
-                "baseline": baseline_rating,
-                "delta_pct": round(
-                    (current_snap.get("avg_rating", 0) - baseline_rating) / baseline_rating * 100, 1
-                ) if baseline_rating and current_snap.get("avg_rating") else 0,
-            },
-            "usage": {
-                "current": current_snap.get("usage_count", 0),
-                "baseline": baseline_usage,
-                "delta_pct": round(
-                    (current_snap.get("usage_count", 0) - baseline_usage) / baseline_usage * 100, 1
-                ) if baseline_usage and current_snap.get("usage_count") else 0,
-            },
-            "session_success": {
-                "current": current_snap.get("session_success_rate", 0),
-                "baseline": baseline_success,
-                "delta_pct": round(
-                    (current_snap.get("session_success_rate", 0) - baseline_success) / baseline_success * 100, 1
-                ) if baseline_success and current_snap.get("session_success_rate") else 0,
-            },
-        }
-    else:
-        signal_breakdown = None
-
-    return {
-        **log_with_instincts,
-        "snapshots": snaps,
-        "signal_breakdown": signal_breakdown,
-    }
+    return log_with_instincts
 
 
 @app.get("/api/admin/evolution/{evolution_id}/diff")
