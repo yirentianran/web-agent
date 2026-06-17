@@ -426,6 +426,12 @@ class Database:
         except Exception:
             pass
 
+        # Add user_id index on observations for efficient per-user lookups
+        try:
+            await self.migrate_v11()
+        except Exception:
+            pass
+
     async def _checkpoint_loop(self) -> None:
         """Periodically run a PASSIVE WAL checkpoint.
 
@@ -931,6 +937,13 @@ class Database:
         """Drop skill_eval_snapshots table — replaced by real-time aggregation."""
         async with self.connection() as conn:
             await conn.execute("DROP TABLE IF EXISTS skill_eval_snapshots")
+
+    async def migrate_v11(self) -> None:
+        """Add user_id index on observations for efficient per-user lookups."""
+        async with self.connection() as conn:
+            await conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_obs_user_id ON observations(user_id)"
+            )
 
     async def migrate_collective_intelligence(self) -> None:
         """Add collective intelligence tables and FTS5 indexes.

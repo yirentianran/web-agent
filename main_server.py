@@ -6378,9 +6378,6 @@ async def evolution_overview(
             )
             instinct_map = {r[0]: r[1] for r in instinct_rows}
 
-            # Composite score now computed real-time via /trend endpoint
-            snap_map: dict[int, float] = {}
-
     import time as _time
     now = _time.time()
     for item in result["items"]:
@@ -6481,33 +6478,31 @@ async def evolution_signals(
     recent_start = now - 7 * 86400
 
     async with _db.connection() as conn:
-        # Baseline: first 7 days after evolution creation
-        bl_rows = await conn.execute_fetchall(
-            """SELECT COUNT(*) as total,
-                      SUM(CASE WHEN success = 1 THEN 1 ELSE 0 END) as success_count
+        rows = await conn.execute_fetchall(
+            """SELECT
+                 CASE WHEN created_at >= ? AND created_at < ? THEN 'baseline'
+                      WHEN created_at >= ? THEN 'current'
+                 END as period,
+                 COUNT(*) as total,
+                 SUM(CASE WHEN success = 1 THEN 1 ELSE 0 END) as success_count
                FROM observations
-               WHERE created_at >= ? AND created_at < ?
+               WHERE (
+                 (created_at >= ? AND created_at < ?)
+                 OR created_at >= ?
+               )
                  AND event_type = 'tool_call_end'
-                 AND success IS NOT NULL""",
-            (log["created_at"], baseline_end),
+                 AND success IS NOT NULL
+               GROUP BY period""",
+            (log["created_at"], baseline_end, recent_start,
+             log["created_at"], baseline_end, recent_start),
         )
-        bl_total = bl_rows[0][0] if bl_rows else 0
-        bl_success = bl_rows[0][1] or 0
+        period_map = {r[0]: (r[1], r[2] or 0) for r in rows if r[0]}
+
+        bl_total, bl_success = period_map.get("baseline", (0, 0))
         baseline_success_rate = round(bl_success / bl_total, 4) if bl_total > 0 else 1.0
         baseline_usage = round(bl_total / 7, 1)
 
-        # Current: last 7 days
-        cur_rows = await conn.execute_fetchall(
-            """SELECT COUNT(*) as total,
-                      SUM(CASE WHEN success = 1 THEN 1 ELSE 0 END) as success_count
-               FROM observations
-               WHERE created_at >= ?
-                 AND event_type = 'tool_call_end'
-                 AND success IS NOT NULL""",
-            (recent_start,),
-        )
-        cur_total = cur_rows[0][0] if cur_rows else 0
-        cur_success = cur_rows[0][1] or 0
+        cur_total, cur_success = period_map.get("current", (0, 0))
         current_success_rate = round(cur_success / cur_total, 4) if cur_total > 0 else 1.0
         current_usage = round(cur_total / 7, 1)
 

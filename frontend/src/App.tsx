@@ -1203,25 +1203,26 @@ function MainApp() {
           return m;
         });
 
-        // ── DIAGNOSTIC LOGGING ──────────────────────────────
-        const assistantIndices = next
-          .filter(m => m.type === "assistant")
-          .map(m => m.index)
-          .join(",");
-        logger.debug(
-          "[setMessages] type=%s subtype=%s idx=%d replay=%s firstTurn=%s result=%s prevLen=%d nextLen=%d assistants=[%s] clearThresh=%d replayStarted=%s",
-          msg.type,
-          msg.subtype || "-",
-          msg.index ?? -1,
-          msg.replay ?? false,
-          isFirstTurnMessage,
-          dedupResult,
-          prev.length,
-          next.length,
-          assistantIndices,
-          clearThresholdRef.current,
-          replayStartedRef.current,
-        );
+        if (logger.getLevel() === 'DEBUG') {
+          const assistantIndices = next
+            .filter(m => m.type === "assistant")
+            .map(m => m.index)
+            .join(",");
+          logger.debug(
+            "[setMessages] type=%s subtype=%s idx=%d replay=%s firstTurn=%s result=%s prevLen=%d nextLen=%d assistants=[%s] clearThresh=%d replayStarted=%s",
+            msg.type,
+            msg.subtype || "-",
+            msg.index ?? -1,
+            msg.replay ?? false,
+            isFirstTurnMessage,
+            dedupResult,
+            prev.length,
+            next.length,
+            assistantIndices,
+            clearThresholdRef.current,
+            replayStartedRef.current,
+          );
+        }
 
         // Update maxMsgIndexRef synchronously so handleSend always
         // reads the latest value, avoiding stale last_index on send.
@@ -1430,7 +1431,6 @@ function MainApp() {
       if (restLoadedRef.current) {
         doRecover();
       } else {
-        // REST hasn't completed yet — poll until it does, with a safety timeout
         recoverTimeoutRef.current = setInterval(() => {
           if (restLoadedRef.current) {
             clearInterval(recoverTimeoutRef.current!);
@@ -1438,7 +1438,6 @@ function MainApp() {
             doRecover();
           }
         }, 100);
-        // Safety timeout: if REST never completes, recover anyway after 3s
         setTimeout(() => {
           if (recoverTimeoutRef.current) {
             clearInterval(recoverTimeoutRef.current);

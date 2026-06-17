@@ -82,7 +82,11 @@ class InstinctStore:
                 new_confidence = min(0.9, existing[1] + 0.05)
                 unique_delta = 0
                 if user_id:
-                    # Check if this user has already contributed to this instinct
+                    # Count as unique if this user has never had a tool_call_end
+                    # observation before. NOTE: this is global, not per-instinct —
+                    # a user contributing to instinct A will not increment
+                    # unique_user_count for instinct B. A joining table would be
+                    # needed for accurate per-instinct unique user tracking.
                     user_check = await conn.execute_fetchall(
                         """SELECT 1 FROM observations o
                            WHERE o.user_id = ?
@@ -501,6 +505,9 @@ class InstinctExtractor:
         # 6. Cluster by normalized_trigger within each domain
         result = {"extracted": extracted, "clusters": 0, "applied": 0, "proposed": 0}
 
+        # Pre-compute baseline metrics once — same for all clusters in this cycle
+        cached_baseline = await self._compute_baseline_metrics()
+
         for domain in ("tool_usage", "task_orchestration"):
             instincts = await self.instinct_store.get_active(domain=domain)
 
@@ -567,12 +574,12 @@ class InstinctExtractor:
 
                 if avg_confidence >= 0.7:
                     await self._apply_skill_change(
-                        target_skill, new_content, instinct_ids, cluster
+                        target_skill, new_content, instinct_ids, cluster, cached_baseline
                     )
                     result["applied"] += 1
                 else:
                     await self._propose_skill_change(
-                        target_skill, new_content, instinct_ids, cluster
+                        target_skill, new_content, instinct_ids, cluster, cached_baseline
                     )
                     result["proposed"] += 1
 
@@ -647,6 +654,7 @@ class InstinctExtractor:
         new_content: str,
         instinct_ids: list[int],
         cluster: list[dict[str, Any]],
+        baseline: dict[str, float] | None = None,
     ) -> None:
         """Write new SKILL.md, archive old version, create evolution_log."""
         from pathlib import Path
@@ -665,8 +673,9 @@ class InstinctExtractor:
         if skill_file.exists():
             shutil.copy2(skill_file, v_dir / "SKILL.md")
 
-        # Capture pre-evolution baseline BEFORE mutating the skill file
-        baseline = await self._compute_baseline_metrics()
+        # Fall back to computing baseline now if not pre-computed by caller
+        if baseline is None:
+            baseline = await self._compute_baseline_metrics()
         baseline_composite = baseline["composite_score"] if baseline["composite_score"] >= 0 else None
 
         # Write new content
@@ -694,9 +703,11 @@ class InstinctExtractor:
         new_content: str,
         instinct_ids: list[int],
         cluster: list[dict[str, Any]],
+        baseline: dict[str, float] | None = None,
     ) -> None:
         """Write proposed evolution_log entry for admin review."""
-        baseline = await self._compute_baseline_metrics()
+        if baseline is None:
+            baseline = await self._compute_baseline_metrics()
         baseline_composite = baseline["composite_score"] if baseline["composite_score"] >= 0 else None
         log = await self.evolution_store.create_log(
             skill_name=skill_name,

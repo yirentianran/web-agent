@@ -122,15 +122,6 @@ class EvolutionLogStore:
                 "page_size": page_size,
             }
 
-    async def get_proposed(self) -> list[dict[str, Any]]:
-        async with self.db.connection() as conn:
-            cursor = await conn.execute(
-                """SELECT * FROM evolution_log
-                   WHERE status = 'proposed'
-                   ORDER BY created_at DESC""",
-            )
-            return [dict(r) for r in await cursor.fetchall()]
-
     async def get_overview_stats(self, days: int = 0) -> dict[str, Any]:
         """Dashboard stats. days=0 means today only, days>0 means last N days."""
         if days > 0:

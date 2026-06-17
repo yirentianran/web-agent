@@ -191,7 +191,13 @@ class MessageBuffer:
         return result
 
     async def _write_db(self, session_id: str, message: dict) -> int:
-        """Write one message to SQLite and return its seq number."""
+        """Write one message to SQLite and return its seq number.
+
+        Uses the seq already assigned on the message (by add_message) when
+        it is strictly greater than the database max.  Falls back to the
+        original compute path otherwise (e.g. after a server restart where
+        the in-memory counter was reset).
+        """
         if self.db is None:
             return -1
         if message.get("type") == "stream_event":
@@ -205,13 +211,18 @@ class MessageBuffer:
             row = await cursor.fetchone()
             db_max_seq = row[0] if row else -1
 
-            mem_seq = self._seq.get(session_id, 0)
-            # If the in-memory counter is far ahead of the database
-            # (e.g. after messages were cleaned up without a server
-            # restart), trust the database value to avoid large seq gaps.
-            if mem_seq > db_max_seq + 100:
-              mem_seq = db_max_seq + 1
-            next_seq = max(mem_seq, db_max_seq + 1)
+            pre_assigned = message.get("seq")
+            if pre_assigned is not None and pre_assigned > db_max_seq:
+                next_seq = pre_assigned
+            else:
+                mem_seq = self._seq.get(session_id, 0)
+                # If the in-memory counter is far ahead of the database
+                # (e.g. after messages were cleaned up without a server
+                # restart), trust the database value to avoid large seq gaps.
+                if mem_seq > db_max_seq + 100:
+                    mem_seq = db_max_seq + 1
+                next_seq = max(mem_seq, db_max_seq + 1)
+
             self._seq[session_id] = next_seq + 1
 
             usage_json = None
@@ -279,6 +290,17 @@ class MessageBuffer:
         """
         if session_id not in self.sessions:
             db_state, db_done = await self._read_db_state(session_id, user_id)
+            # Sync the in-memory seq counter with the database so the
+            # first message after a server restart gets the correct seq.
+            if self.db is not None and session_id not in self._seq:
+                async with self.db.connection() as conn:
+                    cursor = await conn.execute(
+                        "SELECT COALESCE(MAX(seq), -1) FROM messages WHERE session_id = ?",
+                        (session_id,),
+                    )
+                    row = await cursor.fetchone()
+                    db_max = row[0] if row else -1
+                    self._seq[session_id] = db_max + 1
             buf: dict[str, Any] = {
                 "messages": [],
                 "base_index": 0,
@@ -338,14 +360,31 @@ class MessageBuffer:
                 )
 
         buf = await self._ensure_buf(session_id, user_id)
+
+        # Assign seq from in-memory counter BEFORE appending to the buffer.
+        # This guarantees get_history() always returns messages with seq,
+        # so WS and REST use the same index for dedup. Stream events are
+        # never persisted and don't need a seq.
+        if message.get("type") != "stream_event" and self.db is not None:
+            seq = self._seq.get(session_id, 0)
+            self._seq[session_id] = seq + 1
+            message["seq"] = seq
+        else:
+            seq = -1
+
         buf["messages"].append(message)
         self._evict_old(session_id)
         buf["last_active"] = time.time()
 
-        # Persist to DB — returns the seq number assigned by SQLite
-        seq = await self._write_db(session_id, message)
+        # Persist to DB — write_db adjusts seq if it conflicts with the
+        # database (e.g. after a server restart where the in-memory counter
+        # was reset but DB still has old messages).
+        actual_seq = await self._write_db(session_id, message)
+        if actual_seq >= 0 and actual_seq != seq:
+            message["seq"] = actual_seq
+            seq = actual_seq
+
         if seq >= 0:
-            message["seq"] = seq
             # Align base_index with the seq of the first message
             if buf["base_index"] == 0 and len(buf["messages"]) == 1:
                 buf["base_index"] = seq
