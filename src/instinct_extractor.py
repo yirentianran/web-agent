@@ -65,6 +65,7 @@ class InstinctStore:
         action: str,
         confidence: float = 0.3,
         evidence_json: str = "",
+        user_id: str = "",
     ) -> int:
         async with self.db.connection() as conn:
             cursor = await conn.execute(
@@ -79,18 +80,31 @@ class InstinctStore:
                 new_id = existing[0]
                 new_source_count = existing[2] + 1
                 new_confidence = min(0.9, existing[1] + 0.05)
+                unique_delta = 0
+                if user_id:
+                    # Check if this user has already contributed to this instinct
+                    user_check = await conn.execute_fetchall(
+                        """SELECT 1 FROM observations o
+                           WHERE o.user_id = ?
+                           AND o.event_type = 'tool_call_end'
+                           LIMIT 1""",
+                        (user_id,),
+                    )
+                    if not user_check:
+                        unique_delta = 1
                 await conn.execute(
                     """UPDATE instincts
-                       SET source_count = ?, confidence = ?, updated_at = ?
+                       SET source_count = ?, confidence = ?, updated_at = ?,
+                           unique_user_count = unique_user_count + ?
                        WHERE id = ?""",
-                    (new_source_count, new_confidence, time.time(), new_id),
+                    (new_source_count, new_confidence, time.time(), unique_delta, new_id),
                 )
             else:
                 cursor = await conn.execute(
                     """INSERT INTO instincts
                        (domain, normalized_trigger, trigger, action, confidence,
-                        source_count, evidence_json)
-                       VALUES (?, ?, ?, ?, ?, 1, ?)""",
+                        source_count, evidence_json, unique_user_count)
+                       VALUES (?, ?, ?, ?, ?, 1, ?, 1)""",
                     (domain, normalized_trigger, trigger, action, confidence, evidence_json),
                 )
                 new_id = cursor.lastrowid
