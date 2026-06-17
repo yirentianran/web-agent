@@ -27,6 +27,7 @@ import queue as _threading_queue
 import signal
 import tempfile
 import threading
+import time
 import uuid as uuid_mod
 from contextlib import suppress
 from pathlib import Path
@@ -201,7 +202,6 @@ class _CliRunner:
         cmd: list[str],
         env: dict[str, str],
         cwd: str | None,
-        prompt: str,
         session_id: str,
         container_paths: ContainerPaths,
         sp_file: str | None = None,
@@ -209,7 +209,6 @@ class _CliRunner:
         self._cmd = cmd
         self._env = env
         self._cwd = cwd
-        self._prompt = prompt
         self._session_id = session_id
         self._container_paths = container_paths
         self._sp_file = sp_file
@@ -217,6 +216,9 @@ class _CliRunner:
         self._cancel_event = threading.Event()
         self._thread: threading.Thread | None = None
         self._assistant_sent = False
+        self._prompt_ready = threading.Event()
+        self._current_prompt: str | None = None
+        self._shutting_down = False
 
     @property
     def event_queue(self) -> _threading_queue.Queue:
@@ -228,6 +230,28 @@ class _CliRunner:
 
     def cancel(self) -> None:
         self._cancel_event.set()
+
+    def enqueue_prompt(self, prompt: str) -> None:
+        """Queue a prompt for the next run iteration."""
+        self._current_prompt = prompt
+        self._cancel_event.clear()
+        self._assistant_sent = False
+        self._prompt_ready.set()
+
+    def shutdown(self) -> None:
+        """Signal the runner thread to exit cleanly."""
+        self._shutting_down = True
+        self._cancel_event.set()
+        self._prompt_ready.set()
+
+    def is_alive(self) -> bool:
+        return self._thread is not None and self._thread.is_alive()
+
+    async def _wait_for_prompt(self) -> None:
+        """Block until enqueue_prompt() or shutdown() is called."""
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, self._prompt_ready.wait)
+        self._prompt_ready.clear()
 
     def _run(self) -> None:
         asyncio.run(self._async_run())
@@ -245,6 +269,7 @@ class _CliRunner:
 
     async def _run_cli(self) -> None:
         logger.info("CLI: %s", " ".join(self._cmd))
+        t_cli_start = time.monotonic()
         process = await asyncio.create_subprocess_exec(
             *self._cmd,
             stdin=asyncio.subprocess.PIPE,
@@ -253,7 +278,15 @@ class _CliRunner:
             cwd=self._cwd,
             env=self._env,
         )
-        logger.info("CLI pid=%d", process.pid)
+        t_spawned = time.monotonic()
+        self._event_queue.put(
+            ("latency", f"cli_spawn={(t_spawned - t_cli_start) * 1000:.0f}ms")
+        )
+        logger.info(
+            "CLI pid=%d spawn_time=%.0fms",
+            process.pid,
+            (t_spawned - t_cli_start) * 1000,
+        )
 
         # Disable the 64KB readline limit — CLI can emit large JSON lines
         # (e.g. tool results containing base64-encoded images).
@@ -290,6 +323,7 @@ class _CliRunner:
             process.stdin.write(init_line.encode())
             await process.stdin.drain()
             logger.info("CLI: sent initialize")
+            t_init_sent = time.monotonic()
 
             # ── Phase 2: wait for control_response ───────────────
             json_buf = ""
@@ -314,7 +348,16 @@ class _CliRunner:
 
                 if data.get("type") == "control_response":
                     subtype = data.get("response", {}).get("subtype", "")
-                    logger.info("CLI init response: %s", subtype)
+                    t_init_done = time.monotonic()
+                    self._event_queue.put(
+                        ("latency", f"cli_init={(t_init_done - t_init_sent) * 1000:.0f}ms spawn_to_init={(t_init_done - t_spawned) * 1000:.0f}ms")
+                    )
+                    logger.info(
+                        "CLI init response: %s init_roundtrip=%.0fms (spawn_to_init=%.0fms)",
+                        subtype,
+                        (t_init_done - t_init_sent) * 1000,
+                        (t_init_done - t_spawned) * 1000,
+                    )
                     if subtype == "error":
                         err = data.get("response", {}).get("error", "unknown")
                         raise RuntimeError(f"CLI init error: {err}")
@@ -327,220 +370,309 @@ class _CliRunner:
                 self._event_queue.put(("cancelled", None))
                 return
 
-            # ── Phase 3: send user message ───────────────────────
-            user_msg = json.dumps(
-                {
-                    "type": "user",
-                    "message": {"role": "user", "content": self._prompt},
-                    "session_id": self._session_id,
-                },
-                ensure_ascii=False,
-            ) + "\n"
-            process.stdin.write(user_msg.encode())
-            await process.stdin.drain()
-            logger.info("CLI: sent user message session=%s", self._session_id)
+            # ── Phase 3+: loop — wait for prompt, send, read, repeat ─
+            hook_callbacks = {
+                "__hook_write__": "Write",
+                "__hook_bash__": "Bash",
+                "__hook_read__": "Read",
+            }
 
-            # ── Phase 4: read & bridge messages ──────────────────
-            hook_callbacks = {"__hook_write__": "Write", "__hook_bash__": "Bash", "__hook_read__": "Read"}
-
-            while not self._cancel_event.is_set():
-                line = await process.stdout.readline()
-                if not line:
+            while True:
+                await self._wait_for_prompt()
+                if self._shutting_down:
                     break
 
-                line_str = line.decode(errors="replace").strip()
-                if not line_str:
-                    continue
-                json_buf += line_str
-                try:
-                    data = json.loads(json_buf)
-                    json_buf = ""
-                except json.JSONDecodeError:
-                    continue
+                prompt = self._current_prompt
+                assert prompt is not None
+                t_run_start = time.monotonic()
 
-                msg_type = data.get("type", "")
-
-                if msg_type == "stream_event":
-                    self._event_queue.put(("stream_event", data.get("event", {})))
-                elif msg_type == "assistant":
-                    self._assistant_sent = True
-                    self._event_queue.put(("assistant", data))
-
-                elif msg_type == "user":
-                    # Forward user messages — they carry tool_result blocks
-                    # that advance conversation state after tool execution.
-                    self._event_queue.put(("user", data))
-
-                elif msg_type == "result":
-                    logger.info(
-                        "CLI: result event received is_error=%s result=%s keys=%s",
-                        data.get("is_error"),
-                        str(data.get("result", ""))[:80],
-                        list(data.keys()),
+                # ── Send user message ───────────────────────────
+                user_msg = (
+                    json.dumps(
+                        {
+                            "type": "user",
+                            "message": {"role": "user", "content": prompt},
+                            "session_id": self._session_id,
+                        },
+                        ensure_ascii=False,
                     )
-                    if data.get("is_error"):
-                        errors = data.get("errors", [])
-                        logger.error("CLI result error: %s", errors)
-                    if not self._assistant_sent:
-                        result_text = data.get("result", "")
-                        logger.info(
-                            "CLI: fallback assistant from result (already_sent=%s text_len=%d)",
-                            self._assistant_sent,
-                            len(result_text),
+                    + "\n"
+                )
+                process.stdin.write(user_msg.encode())
+                await process.stdin.drain()
+                t_user_msg_sent = time.monotonic()
+                self._event_queue.put(
+                    (
+                        "latency",
+                        f"cli_user_msg_sent={(t_user_msg_sent - t_run_start) * 1000:.0f}ms",
+                    )
+                )
+                logger.info(
+                    "CLI: sent user message session=%s run_setup=%.0fms",
+                    self._session_id,
+                    (t_user_msg_sent - t_run_start) * 1000,
+                )
+
+                # ── Read & bridge messages ──────────────────────
+                json_buf = ""
+                first_cli_output = True
+
+                while not self._cancel_event.is_set():
+                    line = await process.stdout.readline()
+                    if not line:
+                        break
+
+                    line_str = line.decode(errors="replace").strip()
+                    if not line_str:
+                        continue
+                    json_buf += line_str
+                    try:
+                        data = json.loads(json_buf)
+                        json_buf = ""
+                    except json.JSONDecodeError:
+                        continue
+
+                    msg_type = data.get("type", "")
+
+                    if first_cli_output:
+                        first_cli_output = False
+                        t_first_output = time.monotonic()
+                        self._event_queue.put(
+                            (
+                                "latency",
+                                f"first_cli_output={msg_type} time_since_user_msg={(t_first_output - t_user_msg_sent) * 1000:.0f}ms",
+                            )
                         )
-                        if result_text:
-                            self._assistant_sent = True
-                            self._event_queue.put(("assistant", {
-                                "type": "assistant",
-                                "content": result_text,
-                            }))
-                            logger.info("CLI: fallback assistant queued (len=%d)", len(result_text))
-                    # Forward result metadata so the bridge can display duration/turns/tokens
-                    from src.agent_result import parse_agent_result
+                        logger.info(
+                            "[LATENCY] session=%s first_cli_output=%s time_since_user_msg=%.0fms",
+                            self._session_id,
+                            msg_type,
+                            (t_first_output - t_user_msg_sent) * 1000,
+                        )
 
-                    result_meta = parse_agent_result(data)
-                    self._event_queue.put(("result", result_meta))
-                    break
+                    if msg_type == "stream_event":
+                        self._event_queue.put(
+                            ("stream_event", data.get("event", {}))
+                        )
+                    elif msg_type == "assistant":
+                        self._assistant_sent = True
+                        self._event_queue.put(("assistant", data))
 
-                elif msg_type == "control_request":
-                    # Hook callback from CLI
-                    req = data.get("request", {})
-                    req_id = data.get("request_id", "")
-                    if req.get("subtype") == "hook_callback":
-                        cid = req.get("hook_callback_id", "")
-                        tool_name = hook_callbacks.get(cid, "")
-                        tool_input = req.get("tool_input", {})
+                    elif msg_type == "user":
+                        self._event_queue.put(("user", data))
 
-                        if tool_name == "Write":
-                            new_input = _apply_write_path_hook(
-                                tool_input, self._container_paths, self._session_id
+                    elif msg_type == "result":
+                        logger.info(
+                            "CLI: result event received is_error=%s result=%s keys=%s",
+                            data.get("is_error"),
+                            str(data.get("result", ""))[:80],
+                            list(data.keys()),
+                        )
+                        if data.get("is_error"):
+                            errors = data.get("errors", [])
+                            logger.error("CLI result error: %s", errors)
+                        if not self._assistant_sent:
+                            result_text = data.get("result", "")
+                            logger.info(
+                                "CLI: fallback assistant from result (already_sent=%s text_len=%d)",
+                                self._assistant_sent,
+                                len(result_text),
                             )
-                        elif tool_name == "Bash":
-                            from src.security_filter import BashCommandFilter
-                            cmd = tool_input.get("command", "")
-                            allowed, reason = BashCommandFilter.check(cmd)
-                            if not allowed:
-                                result = {
-                                    "subtype": "success",
-                                    "request_id": req_id,
-                                    "response": {
-                                        "continue_": True,
-                                        "hookSpecificOutput": {
-                                            "hookEventName": "PreToolUse",
-                                            "permissionDecision": "deny",
-                                            "permissionDecisionReason": reason,
+                            if result_text:
+                                self._assistant_sent = True
+                                self._event_queue.put(
+                                    (
+                                        "assistant",
+                                        {
+                                            "type": "assistant",
+                                            "content": result_text,
                                         },
-                                    },
-                                }
-                                resp = {"type": "control_response", "response": result}
-                                resp_line = json.dumps(resp, ensure_ascii=False) + "\n"
-                                process.stdin.write(resp_line.encode())
-                                await process.stdin.drain()
-                                continue
-                            new_input = _apply_bash_path_hook(
-                                tool_input, self._container_paths
-                            )
-                        elif tool_name == "Read":
-                            from src.security_filter import FileAccessFilter
-                            from src.constants import MAX_READ_FILE_BYTES
-                            file_path = tool_input.get("file_path", "")
-                            allowed, reason = FileAccessFilter.check(file_path)
-                            if not allowed:
-                                result = {
-                                    "subtype": "success",
-                                    "request_id": req_id,
-                                    "response": {
-                                        "continue_": True,
-                                        "hookSpecificOutput": {
-                                            "hookEventName": "PreToolUse",
-                                            "permissionDecision": "deny",
-                                            "permissionDecisionReason": reason,
-                                        },
-                                    },
-                                }
-                                resp = {"type": "control_response", "response": result}
-                                resp_line = json.dumps(resp, ensure_ascii=False) + "\n"
-                                process.stdin.write(resp_line.encode())
-                                await process.stdin.drain()
-                                continue
-                            # Enforce file size limit
-                            if file_path and MAX_READ_FILE_BYTES > 0:
-                                resolved = Path(file_path)
-                                if not resolved.is_absolute():
-                                    resolved = self._cwd / file_path
-                                try:
-                                    file_size = resolved.stat().st_size
-                                    if file_size > MAX_READ_FILE_BYTES:
-                                        size_mb = file_size / (1024 * 1024)
-                                        limit_mb = MAX_READ_FILE_BYTES / (1024 * 1024)
-                                        logger.warning(
-                                            "PreToolUse[Read]: blocked oversized file '%s' (%.1fMB > %.1fMB)",
-                                            file_path, size_mb, limit_mb,
-                                        )
-                                        result = {
-                                            "subtype": "success",
-                                            "request_id": req_id,
-                                            "response": {
-                                                "continue_": True,
-                                                "hookSpecificOutput": {
-                                                    "hookEventName": "PreToolUse",
-                                                    "permissionDecision": "deny",
-                                                    "permissionDecisionReason": (
-                                                        f"File is {size_mb:.1f}MB. "
-                                                        f"The maximum allowed size for reading "
-                                                        f"is {limit_mb:.0f}MB. Please use Bash "
-                                                        f"commands like 'head' or 'split' to "
-                                                        f"process the file in smaller chunks."
-                                                    ),
-                                                },
+                                    )
+                                )
+                                logger.info(
+                                    "CLI: fallback assistant queued (len=%d)",
+                                    len(result_text),
+                                )
+                        from src.agent_result import parse_agent_result
+
+                        result_meta = parse_agent_result(data)
+                        self._event_queue.put(("result", result_meta))
+                        break
+
+                    elif msg_type == "control_request":
+                        # Hook callback from CLI
+                        req = data.get("request", {})
+                        req_id = data.get("request_id", "")
+                        if req.get("subtype") == "hook_callback":
+                            cid = req.get("hook_callback_id", "")
+                            tool_name = hook_callbacks.get(cid, "")
+                            tool_input = req.get("tool_input", {})
+
+                            if tool_name == "Write":
+                                new_input = _apply_write_path_hook(
+                                    tool_input,
+                                    self._container_paths,
+                                    self._session_id,
+                                )
+                            elif tool_name == "Bash":
+                                from src.security_filter import BashCommandFilter
+
+                                cmd = tool_input.get("command", "")
+                                allowed, reason = BashCommandFilter.check(cmd)
+                                if not allowed:
+                                    result = {
+                                        "subtype": "success",
+                                        "request_id": req_id,
+                                        "response": {
+                                            "continue_": True,
+                                            "hookSpecificOutput": {
+                                                "hookEventName": "PreToolUse",
+                                                "permissionDecision": "deny",
+                                                "permissionDecisionReason": reason,
                                             },
-                                        }
-                                        resp = {"type": "control_response", "response": result}
-                                        resp_line = json.dumps(resp, ensure_ascii=False) + "\n"
-                                        process.stdin.write(resp_line.encode())
-                                        await process.stdin.drain()
-                                        continue
-                                except OSError:
-                                    pass  # file doesn't exist — let CLI handle it
-                            new_input = tool_input
-                        else:
-                            new_input = tool_input
+                                        },
+                                    }
+                                    resp = {
+                                        "type": "control_response",
+                                        "response": result,
+                                    }
+                                    resp_line = (
+                                        json.dumps(resp, ensure_ascii=False) + "\n"
+                                    )
+                                    process.stdin.write(resp_line.encode())
+                                    await process.stdin.drain()
+                                    continue
+                                new_input = _apply_bash_path_hook(
+                                    tool_input, self._container_paths
+                                )
+                            elif tool_name == "Read":
+                                from src.security_filter import FileAccessFilter
+                                from src.constants import MAX_READ_FILE_BYTES
 
-                        if new_input != tool_input:
-                            result = {
-                                "subtype": "success",
-                                "request_id": req_id,
-                                "response": {
-                                    "continue_": True,
-                                    "hookSpecificOutput": {
-                                        "hookEventName": "PreToolUse",
-                                        "updatedInput": new_input,
+                                file_path = tool_input.get("file_path", "")
+                                allowed, reason = FileAccessFilter.check(file_path)
+                                if not allowed:
+                                    result = {
+                                        "subtype": "success",
+                                        "request_id": req_id,
+                                        "response": {
+                                            "continue_": True,
+                                            "hookSpecificOutput": {
+                                                "hookEventName": "PreToolUse",
+                                                "permissionDecision": "deny",
+                                                "permissionDecisionReason": reason,
+                                            },
+                                        },
+                                    }
+                                    resp = {
+                                        "type": "control_response",
+                                        "response": result,
+                                    }
+                                    resp_line = (
+                                        json.dumps(resp, ensure_ascii=False) + "\n"
+                                    )
+                                    process.stdin.write(resp_line.encode())
+                                    await process.stdin.drain()
+                                    continue
+                                # Enforce file size limit
+                                if file_path and MAX_READ_FILE_BYTES > 0:
+                                    resolved = Path(file_path)
+                                    if not resolved.is_absolute():
+                                        resolved = self._cwd / file_path
+                                    try:
+                                        file_size = resolved.stat().st_size
+                                        if file_size > MAX_READ_FILE_BYTES:
+                                            size_mb = file_size / (1024 * 1024)
+                                            limit_mb = MAX_READ_FILE_BYTES / (
+                                                1024 * 1024
+                                            )
+                                            logger.warning(
+                                                "PreToolUse[Read]: blocked oversized file '%s' (%.1fMB > %.1fMB)",
+                                                file_path,
+                                                size_mb,
+                                                limit_mb,
+                                            )
+                                            result = {
+                                                "subtype": "success",
+                                                "request_id": req_id,
+                                                "response": {
+                                                    "continue_": True,
+                                                    "hookSpecificOutput": {
+                                                        "hookEventName": "PreToolUse",
+                                                        "permissionDecision": "deny",
+                                                        "permissionDecisionReason": (
+                                                            f"File is {size_mb:.1f}MB. "
+                                                            f"The maximum allowed size for reading "
+                                                            f"is {limit_mb:.0f}MB. Please use Bash "
+                                                            f"commands like 'head' or 'split' to "
+                                                            f"process the file in smaller chunks."
+                                                        ),
+                                                    },
+                                                },
+                                            }
+                                            resp = {
+                                                "type": "control_response",
+                                                "response": result,
+                                            }
+                                            resp_line = (
+                                                json.dumps(resp, ensure_ascii=False)
+                                                + "\n"
+                                            )
+                                            process.stdin.write(resp_line.encode())
+                                            await process.stdin.drain()
+                                            continue
+                                    except OSError:
+                                        pass  # file doesn't exist — let CLI handle it
+                                new_input = tool_input
+                            else:
+                                new_input = tool_input
+
+                            if new_input != tool_input:
+                                result = {
+                                    "subtype": "success",
+                                    "request_id": req_id,
+                                    "response": {
+                                        "continue_": True,
+                                        "hookSpecificOutput": {
+                                            "hookEventName": "PreToolUse",
+                                            "updatedInput": new_input,
+                                        },
                                     },
-                                },
-                            }
+                                }
+                            else:
+                                result = {
+                                    "subtype": "success",
+                                    "request_id": req_id,
+                                    "response": {
+                                        "continue_": True,
+                                    },
+                                }
                         else:
                             result = {
                                 "subtype": "success",
                                 "request_id": req_id,
-                                "response": {
-                                    "continue_": True,
-                                },
                             }
-                    else:
-                        result = {
-                            "subtype": "success",
-                            "request_id": req_id,
-                        }
 
-                    resp = {"type": "control_response", "response": result}
-                    resp_line = json.dumps(resp, ensure_ascii=False) + "\n"
-                    process.stdin.write(resp_line.encode())
-                    await process.stdin.drain()
+                        resp = {"type": "control_response", "response": result}
+                        resp_line = (
+                            json.dumps(resp, ensure_ascii=False) + "\n"
+                        )
+                        process.stdin.write(resp_line.encode())
+                        await process.stdin.drain()
 
-                elif msg_type == "system":
-                    subtype = data.get("subtype", "")
-                    if subtype == "init":
-                        logger.info("CLI: system init")
+                    elif msg_type == "system":
+                        subtype = data.get("subtype", "")
+                        if subtype == "init":
+                            logger.info("CLI: system init")
+
+                if self._cancel_event.is_set():
+                    self._event_queue.put(("cancelled", None))
+                    return
+
+                self._event_queue.put(("done", None))
+
+            # Clean shutdown — reached via break when _shutting_down is True
+            self._event_queue.put(("done", None))
 
         except Exception as exc:
             logger.exception("CLI thread error: %s", exc)
@@ -557,7 +689,6 @@ class _CliRunner:
                     process.kill()
                 await process.wait()
             logger.info("CLI: terminated pid=%d", process.pid)
-            self._event_queue.put(("done", None))
 
 
 # ── WebSocket endpoint ──────────────────────────────────────────────
@@ -604,6 +735,7 @@ async def agent_ws(websocket: WebSocket) -> None:
             session_id = msg.get("session_id", "")
             options_dict = msg.get("options", {})
 
+            t_run_received = time.monotonic()
             logger.info(
                 "Run: session=%s model=%s max_turns=%s cwd=%s",
                 session_id,
@@ -630,30 +762,69 @@ async def agent_ws(websocket: WebSocket) -> None:
                 os.close(fd)
                 logger.info("Wrote system prompt to temp file (%d chars)", len(sp_text))
 
-            # Start CLI in a dedicated thread
-            runner = _CliRunner(
-                cmd=_build_cli_command(options_dict, sp_file=sp_file),
-                env=_build_cli_env(options_dict),
-                cwd=options_dict.get("cwd"),
-                prompt=prompt,
-                session_id=session_id,
-                container_paths=container_paths,
-                sp_file=sp_file,
+            # Reuse or create CLI runner (cached across runs in this WS connection)
+            runner_reused = False
+            if runner is None or not runner.is_alive():
+                runner = _CliRunner(
+                    cmd=_build_cli_command(options_dict, sp_file=sp_file),
+                    env=_build_cli_env(options_dict),
+                    cwd=options_dict.get("cwd"),
+                    session_id=session_id,
+                    container_paths=container_paths,
+                    sp_file=sp_file,
+                )
+                runner.start()
+            else:
+                runner_reused = True
+            runner.enqueue_prompt(prompt)
+            t_runner_started = time.monotonic()
+            await _ws_send({
+                "type": "latency_log",
+                "message": f"runner_spawn={(t_runner_started - t_run_received) * 1000:.0f}ms reused={runner_reused}",
+                "session_id": session_id,
+            })
+            logger.info(
+                "[LATENCY] session=%s runner_spawn=%.0fms reused=%s",
+                session_id,
+                (t_runner_started - t_run_received) * 1000,
+                runner_reused,
             )
-            runner.start()
 
             # Pump events from the CLI thread to the WebSocket
             done_event = asyncio.Event()
+            first_cli_event = True
 
             async def _pump_events(
                 _runner: _CliRunner = runner,
                 _done: asyncio.Event = done_event,
             ) -> None:
+                nonlocal first_cli_event
                 while True:
                     evt_type, evt_data = await loop.run_in_executor(
                         None, _runner.event_queue.get
                     )
-                    if evt_type == "done":
+                    if first_cli_event:
+                        first_cli_event = False
+                        t_first_evt = time.monotonic()
+                        await _ws_send({
+                            "type": "latency_log",
+                            "message": f"first_cli_event={evt_type} time_since_runner_start={(t_first_evt - t_runner_started) * 1000:.0f}ms",
+                            "session_id": session_id,
+                        })
+                        logger.info(
+                            "[LATENCY] session=%s first_cli_event=%s time_since_runner_start=%.0fms",
+                            session_id,
+                            evt_type,
+                            (t_first_evt - t_runner_started) * 1000,
+                        )
+                    if evt_type == "latency":
+                        await _ws_send({
+                            "type": "latency_log",
+                            "message": str(evt_data),
+                            "session_id": session_id,
+                        })
+                        continue
+                    elif evt_type == "done":
                         await _ws_send({"type": "done"})
                         _done.set()
                         return
@@ -737,8 +908,11 @@ async def agent_ws(websocket: WebSocket) -> None:
                 except TimeoutError:
                     pump_task.cancel()
 
-            runner = None
-            break  # one run per WebSocket connection
+            # Clear runner only if the thread died (cancel/exception kills the process)
+            if runner is not None and not runner.is_alive():
+                logger.info("Runner thread exited — will recreate on next run")
+                runner = None
+            # Connection stays alive for subsequent run/cancel messages
 
     except WebSocketDisconnect:
         logger.info("Agent WS disconnected")
@@ -748,10 +922,6 @@ async def agent_ws(websocket: WebSocket) -> None:
         logger.debug("Agent WS disconnected (RuntimeError)")
     except Exception:
         logger.exception("Agent WS fatal error")
-        with suppress(Exception):
-            await _ws_send(
-                {
-                    "type": "error",
-                    "message": "Agent server internal error — check container logs for details",
-                }
-            )
+    finally:
+        if runner is not None:
+            runner.shutdown()

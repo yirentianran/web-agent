@@ -277,14 +277,20 @@ async def _handle_orphaned_running(
 
 
 async def cleanup_session_client(session_id: str) -> None:
-    """Disconnect and remove a session's CLI subprocess from the pool."""
+    """Disconnect and remove a session's CLI subprocess or bridge from the pool."""
     agent = session_agents.pop(session_id, None)
     if agent is None:
         return
     client = agent.get("client")
+    bridge = agent.get("bridge")
     if client is not None:
         try:
             await client.disconnect()
+        except Exception:
+            pass
+    if bridge is not None:
+        try:
+            await bridge.disconnect()
         except Exception:
             pass
 
@@ -2613,7 +2619,9 @@ async def run_agent_task_container(
     agent_log = None
 
     try:
+        t_start = time.monotonic()
         container_url = cm.ensure_container(user_id)
+        t_container = time.monotonic()
         logger.info(
             "Container task: user=%s session=%s url=%s continuation=%s",
             user_id,
@@ -2669,16 +2677,35 @@ async def run_agent_task_container(
             generated_files=generated_files,
         )
 
-        bridge = ContainerBridge(
-            container_url=container_url,
-            session_id=session_id,
-            user_id=user_id,
-            buffer=buffer,
-            session_store=session_store,
-            skill_manager=_skill_manager,
-            ctx=ctx,
-            model=options_dict.get("model"),
-            tool_use_names=tool_use_names,
+        # ── Bridge: cache in session_agents for connection reuse ──
+        bridge_reused = False
+        agent_state = session_agents.get(session_id, {})
+        bridge = agent_state.get("bridge")
+        if bridge is not None:
+            bridge_reused = True
+            logger.info("Reusing container bridge for session %s", session_id)
+            bridge.container_url = container_url
+        else:
+            bridge = ContainerBridge(
+                container_url=container_url,
+                session_id=session_id,
+                user_id=user_id,
+                buffer=buffer,
+                session_store=session_store,
+                skill_manager=_skill_manager,
+                ctx=ctx,
+                model=options_dict.get("model"),
+                tool_use_names=tool_use_names,
+            )
+            await bridge.connect()
+
+        t_bridge_ready = time.monotonic()
+        logger.info(
+            "[LATENCY] session=%s ensure_container=%.0fms bridge_setup=%.0fms (reused=%s)",
+            session_id,
+            (t_container - t_start) * 1000,
+            (t_bridge_ready - t_container) * 1000,
+            bridge_reused,
         )
 
         start_time = time.time()
@@ -2698,12 +2725,41 @@ async def run_agent_task_container(
         # Log the full prompt for debugging
         logger.debug("Prompt start (session=%s, len=%d): %s", session_id, len(prompt), prompt)
 
-        await bridge.run_and_stream(prompt, options_dict)
+        t_prompt_built = time.monotonic()
+        logger.info(
+            "[LATENCY] session=%s prompt_built=%.0fms total_prep=%.0fms",
+            session_id,
+            (t_prompt_built - t_bridge_ready) * 1000,
+            (t_prompt_built - t_start) * 1000,
+        )
+
+        try:
+            await bridge.run_and_stream(prompt, options_dict)
+        except ConnectionError:
+            logger.warning(
+                "Container bridge connection dead for session %s, reconnecting...",
+                session_id,
+            )
+            await bridge.disconnect()
+            await bridge.connect()
+            await bridge.run_and_stream(prompt, options_dict)
+
+        t_run_done = time.monotonic()
+        logger.info(
+            "[LATENCY] session=%s run_and_stream=%.0fms total_elapsed=%.0fms",
+            session_id,
+            (t_run_done - t_prompt_built) * 1000,
+            (t_run_done - t_start) * 1000,
+        )
+
         logger.info(
             "Container bridge completed normally: session=%s elapsed=%.1fs",
             session_id,
             time.time() - start_time,
         )
+
+        # Cache bridge for subsequent messages in this session
+        session_agents[session_id]["bridge"] = bridge
 
         from src.event_pipeline import _finish_task
 
@@ -3420,6 +3476,11 @@ async def handle_ws(websocket: WebSocket) -> None:
                             if agent and agent.get("client"):
                                 try:
                                     await agent["client"].interrupt()
+                                except Exception:
+                                    pass
+                            if agent and agent.get("bridge"):
+                                try:
+                                    await agent["bridge"].send_cancel()
                                 except Exception:
                                     pass
                             if tk in active_tasks and not active_tasks[tk].done():
