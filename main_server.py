@@ -6368,6 +6368,50 @@ async def evolution_detail(
     return log_with_instincts
 
 
+@app.get("/api/admin/evolution/{evolution_id}/trend")
+async def evolution_trend(
+    evolution_id: int,
+    days: int = 30,
+    current_user: str = Depends(require_admin),
+):
+    """Real-time trend data aggregated from observations."""
+    from src.evolution_log import EvolutionLogStore
+
+    store = EvolutionLogStore(_db)
+    log = await store.get_log(evolution_id)
+    if not log:
+        raise HTTPException(404, "Evolution record not found")
+
+    cutoff = time.time() - days * 86400
+
+    async with _db.connection() as conn:
+        rows = await conn.execute_fetchall(
+            """SELECT
+                   date(created_at, 'unixepoch') as day,
+                   COUNT(*) as total,
+                   SUM(CASE WHEN success = 1 THEN 1 ELSE 0 END) as success_count
+               FROM observations
+               WHERE created_at >= ?
+                 AND event_type = 'tool_call_end'
+                 AND success IS NOT NULL
+               GROUP BY day
+               ORDER BY day ASC""",
+            (cutoff,),
+        )
+
+    trend = []
+    for r in rows:
+        total = r[1]
+        success = r[2] or 0
+        trend.append({
+            "date": r[0],
+            "success_rate": round(success / total, 4) if total > 0 else 1.0,
+            "usage_count": total,
+        })
+
+    return trend
+
+
 @app.get("/api/admin/evolution/{evolution_id}/diff")
 async def evolution_diff(
     evolution_id: int,
