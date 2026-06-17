@@ -927,8 +927,53 @@ async def _resolve_user_language(user_id: str, ws_language: str | None = None) -
     return lang or "zh"
 
 
+async def _load_instinct_context(user_message: str, db) -> str:
+    """Return L4 learned patterns for the current query, or empty string."""
+    try:
+        async with db.connection() as conn:
+            rows = await conn.execute_fetchall(
+                """SELECT normalized_trigger, guidance FROM instincts
+                   WHERE scope = 'active' AND confidence >= 0.5
+                     AND guidance IS NOT NULL AND guidance != ''
+                   ORDER BY confidence DESC
+                   LIMIT 20"""
+            )
+    except Exception:
+        return ""
+
+    if not rows:
+        return ""
+
+    # Simple keyword match: score instincts by word overlap with user message
+    query_words = set(user_message.lower().split())
+    scored = []
+    for trigger, guidance in rows:
+        trigger_words = set((trigger or "").lower().split())
+        if not trigger_words:
+            continue
+        overlap = len(query_words & trigger_words)
+        if overlap > 0:
+            scored.append((overlap, guidance))
+
+    if not scored:
+        return ""
+
+    scored.sort(reverse=True)
+    top = scored[:3]
+
+    lines = [
+        "\n## Learned Patterns",
+        "The following patterns have been identified from past experience:",
+        "",
+    ]
+    for _, guidance in top:
+        lines.append(f"- {guidance}")
+    return "\n".join(lines)
+
+
 def build_system_prompt(
-    user_id: str, skills: dict[str, dict[str, Any]], workspace: Path | None = None, language: str | None = None
+    user_id: str, skills: dict[str, dict[str, Any]], workspace: Path | None = None, language: str | None = None,
+    instinct_context: str = "",
 ) -> str:
     """Assemble the full system prompt from skills + evolution context.
 
@@ -1082,7 +1127,9 @@ def build_system_prompt(
     if workspace is not None:
         parts.append(build_file_generation_rules_prompt(workspace))
 
-    # ── L4: Semantic Context — disabled, re-enable when data pipeline is ready ──
+    # ── L4: Learned Patterns from collective intelligence ──
+    if instinct_context:
+        parts.append(instinct_context)
 
     # Final language enforcement — placed at the very end to leverage
     # recency bias. Qwen models weight the last instruction more heavily.
@@ -1099,7 +1146,7 @@ def build_system_prompt(
 
 def _get_cached_system_prompt(
     user_id: str, skills: dict[str, dict[str, Any]], workspace: Path | None,
-    language: str | None, sid: str,
+    language: str | None, sid: str, instinct_context: str = "",
 ) -> str:
     """Build system prompt with caching per session.
 
@@ -1110,15 +1157,17 @@ def _get_cached_system_prompt(
     cached = agent.get("system_prompt")
     cached_lang = agent.get("_sp_lang")
     cached_skill_keys = agent.get("_sp_skill_keys")
+    cached_ic = agent.get("_sp_instinct_ctx")
     current_skill_keys = frozenset(skills.keys())
-    if cached is not None and cached_lang == language and cached_skill_keys == current_skill_keys:
+    if cached is not None and cached_lang == language and cached_skill_keys == current_skill_keys and cached_ic == instinct_context:
         return cached
-    prompt = build_system_prompt(user_id, skills, workspace, language)
+    prompt = build_system_prompt(user_id, skills, workspace, language, instinct_context)
     if sid not in session_agents:
         session_agents[sid] = {}
     session_agents[sid]["system_prompt"] = prompt
     session_agents[sid]["_sp_lang"] = language
     session_agents[sid]["_sp_skill_keys"] = current_skill_keys
+    session_agents[sid]["_sp_instinct_ctx"] = instinct_context
     return prompt
 
 
@@ -2436,7 +2485,8 @@ async def run_agent_task(
         if agent_state is None:
             skills = await _get_cached_skills(user_id, session_id)
             resolved_lang = await _resolve_user_language(user_id, language)
-            _get_cached_system_prompt(user_id, skills, workspace, resolved_lang, session_id)
+            instinct_ctx = await _load_instinct_context(user_message, _db)
+            _get_cached_system_prompt(user_id, skills, workspace, resolved_lang, session_id, instinct_context=instinct_ctx)
             if session_id not in session_agents:
                 session_agents[session_id] = {}
             session_agents[session_id]["client"] = client
@@ -2652,7 +2702,8 @@ async def run_agent_task_container(
             # Populate cache for subsequent messages in this session
             skills = await _get_cached_skills(user_id, session_id)
             resolved_lang = await _resolve_user_language(user_id, language)
-            _get_cached_system_prompt(user_id, skills, user_workspace_dir(user_id), resolved_lang, session_id)
+            instinct_ctx = await _load_instinct_context(user_message, _db)
+            _get_cached_system_prompt(user_id, skills, user_workspace_dir(user_id), resolved_lang, session_id, instinct_context=instinct_ctx)
             if session_id not in session_agents:
                 session_agents[session_id] = {}
             session_agents[session_id]["last_used"] = time.time()
