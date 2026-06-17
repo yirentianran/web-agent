@@ -1,4 +1,4 @@
-"""CRUD for evolution_log and skill_eval_snapshots tables."""
+"""CRUD for evolution_log table."""
 from __future__ import annotations
 
 import time
@@ -122,80 +122,12 @@ class EvolutionLogStore:
                 "page_size": page_size,
             }
 
-    # ── Snapshots ────────────────────────────────────────────────
-
-    async def create_snapshot(
-        self,
-        evolution_log_id: int,
-        snapshot_date: str,
-        usage_count: int,
-        unique_users: int,
-        avg_rating: float,
-        session_success_rate: float,
-        composite_score: float,
-    ) -> int:
-        async with self.db.connection() as conn:
-            cursor = await conn.execute(
-                """INSERT INTO skill_eval_snapshots
-                   (evolution_log_id, snapshot_date, usage_count, unique_users,
-                    avg_rating, session_success_rate, composite_score, created_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-                (evolution_log_id, snapshot_date, usage_count, unique_users,
-                 avg_rating, session_success_rate, composite_score, int(time.time())),
-            )
-            return cursor.lastrowid
-
-    async def get_snapshots(self, evolution_log_id: int) -> list[dict[str, Any]]:
-        async with self.db.connection() as conn:
-            cursor = await conn.execute(
-                """SELECT * FROM skill_eval_snapshots
-                   WHERE evolution_log_id = ?
-                   ORDER BY snapshot_date ASC""",
-                (evolution_log_id,),
-            )
-            return [dict(r) for r in await cursor.fetchall()]
-
-    async def get_last_snapshots(
-        self, evolution_log_id: int, count: int = 7
-    ) -> list[dict[str, Any]]:
-        async with self.db.connection() as conn:
-            cursor = await conn.execute(
-                """SELECT * FROM skill_eval_snapshots
-                   WHERE evolution_log_id = ?
-                   ORDER BY snapshot_date DESC LIMIT ?""",
-                (evolution_log_id, count),
-            )
-            rows = await cursor.fetchall()
-            rows.reverse()
-            return [dict(r) for r in rows]
-
-    async def get_active_evolutions(self) -> list[dict[str, Any]]:
-        async with self.db.connection() as conn:
-            cursor = await conn.execute(
-                """SELECT * FROM evolution_log
-                   WHERE status IN ('active', 'under_review')
-                   ORDER BY created_at""",
-            )
-            return [dict(r) for r in await cursor.fetchall()]
-
     async def get_proposed(self) -> list[dict[str, Any]]:
         async with self.db.connection() as conn:
             cursor = await conn.execute(
                 """SELECT * FROM evolution_log
                    WHERE status = 'proposed'
                    ORDER BY created_at DESC""",
-            )
-            return [dict(r) for r in await cursor.fetchall()]
-
-    async def get_expired_reviews(self) -> list[dict[str, Any]]:
-        now = int(time.time())
-        async with self.db.connection() as conn:
-            cursor = await conn.execute(
-                """SELECT * FROM evolution_log
-                   WHERE status = 'under_review'
-                   AND auto_rollback_at IS NOT NULL
-                   AND auto_rollback_at < ?""",
-                (now,),
             )
             return [dict(r) for r in await cursor.fetchall()]
 
