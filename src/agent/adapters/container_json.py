@@ -62,7 +62,6 @@ def _process_blocks(
                 input=block.input,
             ))
         elif ToolResultBlock and isinstance(block, ToolResultBlock):
-            tool_name = tool_use_names.get(block.tool_use_id, "unknown")
             content = block.content
             if isinstance(content, list):
                 parts: list[str] = []
@@ -83,7 +82,7 @@ def _process_blocks(
                 text_parts.append(block.get("text", ""))
             elif bt == "thinking":
                 text_parts.append(f"[thinking] {block.get('thinking', '')}[/thinking]")
-            elif bt == "tool_use":
+            elif bt in ("tool_use", "server_tool_use"):
                 emitted.append(ToolUseEvent(
                     name=block.get("name", ""),
                     id=block.get("id", ""),
@@ -101,8 +100,10 @@ def _process_blocks(
                     content=str(content),
                     is_error=block.get("is_error", False),
                 ))
+            else:
+                text_parts.append(str(block))
 
-    return "".join(text_parts)
+    return "\n".join(text_parts)
 
 
 def adapt_container_message(
