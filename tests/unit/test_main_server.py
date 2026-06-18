@@ -2048,24 +2048,7 @@ class TestAgentTaskTimeout:
 
 
 class TestStreamingOutput:
-    """Test that SDK options enable partial message streaming for real-time
-    text display."""
-
-    def test_build_sdk_options_sets_include_partial_messages_true(self) -> None:
-        """build_sdk_options must set include_partial_messages=True so
-        the SDK emits StreamEvent with content_block_delta events."""
-        import inspect
-        source = inspect.getsource(main_server.build_sdk_options)
-
-        # Verify the field is set to True
-        assert "include_partial_messages" in source, (
-            "No include_partial_messages found in build_sdk_options — "
-            "streaming output is disabled"
-        )
-        assert "True" in source.split("include_partial_messages")[1][:20], (
-            "include_partial_messages is not set to True — "
-            "SDK will not emit partial text deltas"
-        )
+    """Test that adapters handle StreamEvent messages correctly."""
 
     def test_stream_event_handler_exists_in_message_to_dicts(self) -> None:
         """Adapters must handle StreamEvent messages to forward

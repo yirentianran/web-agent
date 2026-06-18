@@ -6,6 +6,7 @@ and converts each container JSON message into typed InternalEvent instances.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Iterator
 from typing import Any
 
@@ -100,16 +101,26 @@ def _process_blocks(
             elif bt == "tool_result":
                 tool_use_id_val = block.get("tool_use_id", "")
                 tool_name = tool_use_names.get(tool_use_id_val, "")
-                content = block.get("content", "")
-                if isinstance(content, list):
-                    content = "".join(
-                        item.get("text", "") if isinstance(item, dict) else str(item)
-                        for item in content
-                    )
+                raw_content = block.get("content", "")
+                if isinstance(raw_content, list):
+                    text_parts_mcp: list[str] = []
+                    has_non_text = False
+                    for item in raw_content:
+                        if isinstance(item, dict) and item.get("type") == "text":
+                            if not has_non_text:
+                                text_parts_mcp.append(item.get("text", ""))
+                        else:
+                            has_non_text = True
+                    if text_parts_mcp and not has_non_text:
+                        content = "\n".join(text_parts_mcp)
+                    else:
+                        content = json.dumps(raw_content, ensure_ascii=False, indent=2)
+                else:
+                    content = raw_content if isinstance(raw_content, str) else str(raw_content)
                 emitted.append(ToolResultEvent(
                     tool_use_id=tool_use_id_val,
                     name=tool_name,
-                    content=str(content),
+                    content=content,
                     is_error=block.get("is_error", False),
                 ))
             else:
