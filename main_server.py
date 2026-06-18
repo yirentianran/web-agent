@@ -55,7 +55,8 @@ from src.auth import (
     set_auth_cookies,
     clear_auth_cookies,
 )
-from src.security_filter import BashCommandFilter, FileAccessFilter, tool_call_rate_limiter
+from src.security.filters import BashCommandFilter, FileAccessFilter
+from src.security.rate_limiter import tool_call_rate_limiter
 from src.security_headers import SecurityHeadersMiddleware
 from src.workspace_enforcement import (
     HostPaths,
@@ -1586,7 +1587,7 @@ async def build_sdk_options(
         _tool_use_id: str | None,
         _context: HookContext,
     ) -> dict:
-        from src.security_filter import FileAccessFilter
+        from src.security.filters import FileAccessFilter
 
         tool_inp = hook_input.get("tool_input", {})
         file_path = str(tool_inp.get("file_path", ""))
@@ -1637,7 +1638,7 @@ async def build_sdk_options(
         _tool_use_id: str | None,
         _context: HookContext,
     ) -> dict:
-        from src.security_filter import BashCommandFilter
+        from src.security.filters import BashCommandFilter
 
         cmd = str(hook_input.get("tool_input", {}).get("command", ""))
         if not cmd:
@@ -1675,7 +1676,7 @@ async def build_sdk_options(
         _tool_use_id: str | None,
         _context: HookContext,
     ) -> dict:
-        from src.security_filter import FileAccessFilter
+        from src.security.filters import FileAccessFilter
 
         tool_inp = hook_input.get("tool_input", {})
         file_path = str(tool_inp.get("file_path", ""))
@@ -2947,13 +2948,13 @@ async def _safe_ws_send(websocket: WebSocket, data: dict) -> bool:
     # Layer 3: Filter sensitive content before sending to user.
     msg_type = data.get("type", "")
     if msg_type in ("assistant", "tool_result") and data.get("content"):
-        from src.security_filter import OutputFilter
+        from src.security.filters import OutputFilter
 
         data = {**data, "content": OutputFilter.scan(data["content"])}
     elif msg_type == "stream_event":
         # stream_event messages contain content_block_delta with raw text
         # deltas that could leak sensitive info. Filter text-type deltas.
-        from src.security_filter import OutputFilter
+        from src.security.filters import OutputFilter
 
         data = _filter_stream_event(data, OutputFilter)
 

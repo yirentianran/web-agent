@@ -41,7 +41,7 @@ from src.workspace_enforcement import (
     normalize_write_path,
     rewrite_path_to_workspace,
 )
-from src.security_filter import OutputFilter
+from src.security.filters import OutputFilter
 
 logger = logging.getLogger("agent_server")
 
@@ -515,7 +515,7 @@ class _CliRunner:
                                     self._session_id,
                                 )
                             elif tool_name == "Bash":
-                                from src.security_filter import BashCommandFilter
+                                from src.security.filters import BashCommandFilter
 
                                 cmd = tool_input.get("command", "")
                                 allowed, reason = BashCommandFilter.check(cmd)
@@ -546,7 +546,7 @@ class _CliRunner:
                                     tool_input, self._container_paths
                                 )
                             elif tool_name == "Read":
-                                from src.security_filter import FileAccessFilter
+                                from src.security.filters import FileAccessFilter
                                 from src.constants import MAX_READ_FILE_BYTES
 
                                 file_path = tool_input.get("file_path", "")
