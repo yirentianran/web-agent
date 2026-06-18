@@ -44,8 +44,9 @@ def _process_blocks(
 
     # Test suites that mock main_server replace sys.modules["claude_agent_sdk.types"]
     # with MagicMock objects. The import above "succeeds" but produces MagicMock
-    # instances, which break isinstance() below. Detect and fall back to None.
-    if TextBlock is not None and not isinstance(TextBlock, type):
+    # instances, which break isinstance() below. Check every imported type.
+    _imported = [TextBlock, ThinkingBlock, ToolUseBlock, ToolResultBlock]
+    if any(v is not None and not isinstance(v, type) for v in _imported):
         TextBlock = ThinkingBlock = ToolUseBlock = ToolResultBlock = None
 
     # First pass: build tool_use_names mapping
@@ -68,6 +69,7 @@ def _process_blocks(
                 input=block.input,
             ))
         elif ToolResultBlock and isinstance(block, ToolResultBlock):
+            tool_name = tool_use_names.get(block.tool_use_id, "")
             content = block.content
             if isinstance(content, list):
                 parts: list[str] = []
@@ -79,6 +81,7 @@ def _process_blocks(
                 content = "\n".join(parts)
             emitted.append(ToolResultEvent(
                 tool_use_id=block.tool_use_id,
+                name=tool_name,
                 content=str(content) if content else "",
                 is_error=block.is_error if hasattr(block, "is_error") else False,
             ))
@@ -95,6 +98,8 @@ def _process_blocks(
                     input=block.get("input", {}),
                 ))
             elif bt == "tool_result":
+                tool_use_id_val = block.get("tool_use_id", "")
+                tool_name = tool_use_names.get(tool_use_id_val, "")
                 content = block.get("content", "")
                 if isinstance(content, list):
                     content = "".join(
@@ -102,7 +107,8 @@ def _process_blocks(
                         for item in content
                     )
                 emitted.append(ToolResultEvent(
-                    tool_use_id=block.get("tool_use_id", ""),
+                    tool_use_id=tool_use_id_val,
+                    name=tool_name,
                     content=str(content),
                     is_error=block.get("is_error", False),
                 ))
@@ -142,6 +148,7 @@ def adapt_container_message(
             content_blocks = message.get("content", [])
             emitted: list[InternalEvent] = []
             combined_text = _process_blocks(content_blocks, emitted, tool_use_names)
+            yield from emitted
             text = combined_text
         else:
             text = data.get("content", "")

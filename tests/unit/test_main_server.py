@@ -1122,9 +1122,10 @@ class TestMaxTurnsDefault:
 
 class TestMessageToDicts:
     def test_message_to_dicts_imports_tool_result_block(self) -> None:
-        """main_server should import ToolResultBlock from the SDK types."""
+        """Adapter must import ToolResultBlock from the SDK types."""
         import inspect
-        source = inspect.getsource(main_server)
+        from src.agent.adapters import container_json
+        source = inspect.getsource(container_json._process_blocks)
         assert "ToolResultBlock" in source
 
     def test_message_to_dicts_is_generator(self) -> None:
@@ -2067,15 +2068,16 @@ class TestStreamingOutput:
         )
 
     def test_stream_event_handler_exists_in_message_to_dicts(self) -> None:
-        """message_to_dicts must handle StreamEvent messages to forward
+        """Adapters must handle StreamEvent messages to forward
         content_block_delta to the frontend."""
         import inspect
-        source = inspect.getsource(main_server.message_to_dicts)
-        assert "StreamEvent" in source, (
-            "No StreamEvent handling in message_to_dicts — "
+        from src.agent.adapters import sdk as sdk_adapter
+        source = inspect.getsource(sdk_adapter.adapt_sdk_message)
+        assert "SdkStreamEvent" in source, (
+            "No StreamEvent handling in adapt_sdk_message — "
             "partial messages will be ignored"
         )
-        assert "stream_event" in source, (
+        assert "StreamEvent" in source, (
             "StreamEvent not converted to stream_event dict — "
             "frontend won't receive streaming events"
         )

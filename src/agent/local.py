@@ -523,13 +523,19 @@ class LocalAgentExecutor:
 
 
 async def cleanup_session_client(session_id: str, session_agents: dict) -> None:
-    """Disconnect and remove a session's CLI subprocess from the pool."""
+    """Disconnect and remove a session's CLI subprocess or bridge from the pool."""
     agent = session_agents.pop(session_id, None)
     if agent is None:
         return
     client = agent.get("client")
+    bridge = agent.get("bridge")
     if client is not None:
         try:
             await client.disconnect()
+        except Exception:
+            pass
+    if bridge is not None:
+        try:
+            await bridge.disconnect()
         except Exception:
             pass

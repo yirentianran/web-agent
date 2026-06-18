@@ -46,16 +46,20 @@ class ToolResultEvent:
     """Tool execution result."""
     type: Literal["tool_result"] = "tool_result"
     tool_use_id: str = ""
+    name: str = ""  # resolved from tool_use_names shared dict
     content: str = ""
     is_error: bool = False
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        d: dict[str, Any] = {
             "type": "tool_result",
             "tool_use_id": self.tool_use_id,
             "content": self.content,
             "is_error": self.is_error,
         }
+        if self.name:
+            d["name"] = self.name
+        return d
 
 
 @dataclass(frozen=True)

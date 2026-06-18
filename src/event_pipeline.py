@@ -17,6 +17,7 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+from src.agent.protocol import InternalEvent
 from src.file_utils import build_download_url, should_include_generated_file
 from src.skill_manager import record_skill_usage_from_event
 from src.truncation import maybe_truncate_tool_result_content
@@ -35,13 +36,16 @@ class EventContext:
     generated_files: list[dict] = field(default_factory=list)
 
 
-async def process_event(ctx: EventContext, event: dict[str, Any]) -> None:
-    """Process a single event dict: skip, truncate, track, buffer, observe.
+async def process_event(ctx: EventContext, event: InternalEvent | dict[str, Any]) -> None:
+    """Process a single event: skip, truncate, track, buffer, observe.
 
-    Called by both ``run_agent_task`` (non-container) and the container bridge
-    after ``message_to_dicts`` has converted the raw message into standard
-    event dicts.
+    Called by both LocalAgentExecutor (passes InternalEvent) and the
+    container bridge (passes dict from .to_dict()). Normalizes to dict
+    access for backward compatibility.
     """
+    if not isinstance(event, dict):
+        event = event.to_dict()
+
     etype = event.get("type", "")
 
     # User messages are persisted before the agent task starts; duplicates
