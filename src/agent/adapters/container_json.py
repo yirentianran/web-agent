@@ -42,6 +42,12 @@ def _process_blocks(
     except ImportError:
         TextBlock = ThinkingBlock = ToolUseBlock = ToolResultBlock = None
 
+    # Test suites that mock main_server replace sys.modules["claude_agent_sdk.types"]
+    # with MagicMock objects. The import above "succeeds" but produces MagicMock
+    # instances, which break isinstance() below. Detect and fall back to None.
+    if TextBlock is not None and not isinstance(TextBlock, type):
+        TextBlock = ThinkingBlock = ToolUseBlock = ToolResultBlock = None
+
     # First pass: build tool_use_names mapping
     for block in blocks:
         if ToolUseBlock and isinstance(block, ToolUseBlock):
