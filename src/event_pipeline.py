@@ -9,10 +9,13 @@ teardown live here so the two code paths stay in sync.
 from __future__ import annotations
 
 import asyncio
+import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 from src.file_utils import build_download_url, should_include_generated_file
 from src.skill_manager import record_skill_usage_from_event
@@ -208,10 +211,13 @@ async def handle_task_error(
 
     Handles: TimeoutError, asyncio.CancelledError, and generic Exception.
     Emits appropriate error messages, state changes, and marks session done.
+
+    Note: ``agent_log`` may be None when the logger was not yet initialized
+    (e.g., early failures before ``AgentLogger`` construction).
     """
-    import asyncio  # noqa: PLC0415
 
     if isinstance(error, TimeoutError):
+        logger.error("Agent task %s: timeout", session_id)
         if cleanup_fn is not None:
             try:
                 await cleanup_fn(session_id)
@@ -232,7 +238,8 @@ async def handle_task_error(
             user_id,
         )
         await buffer.mark_done(session_id)
-        agent_log.end_session(session_id, status="timeout")
+        if agent_log is not None:
+            agent_log.end_session(session_id, status="timeout")
         if obs_store:
             await obs_store.record(
                 session_id=session_id,
@@ -258,7 +265,8 @@ async def handle_task_error(
             user_id,
         )
         await buffer.mark_done(session_id)
-        agent_log.end_session(session_id, status="cancelled")
+        if agent_log is not None:
+            agent_log.end_session(session_id, status="cancelled")
         if obs_store:
             await obs_store.record(
                 session_id=session_id,
@@ -270,10 +278,20 @@ async def handle_task_error(
     else:
         error_msg = str(error)
         if "JSON message exceeded maximum buffer size" in error_msg:
+            logger.warning(
+                "Agent task %s: buffer overflow — %s", session_id, error_msg
+            )
             error_msg = (
                 "A tool produced too much output and was truncated to avoid "
                 "overwhelming the system. Try narrowing your request or "
                 "processing the data in smaller steps."
+            )
+        else:
+            logger.exception(
+                "Agent task %s: unexpected error type=%s: %s",
+                session_id,
+                type(error).__name__,
+                error,
             )
         if cleanup_fn is not None:
             try:
@@ -291,7 +309,8 @@ async def handle_task_error(
             user_id,
         )
         await buffer.mark_done(session_id)
-        agent_log.end_session(session_id, status="error")
+        if agent_log is not None:
+            agent_log.end_session(session_id, status="error")
         if obs_store:
             await obs_store.record(
                 session_id=session_id,

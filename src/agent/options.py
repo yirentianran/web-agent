@@ -10,10 +10,7 @@ from __future__ import annotations
 
 import dataclasses
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
-
-if TYPE_CHECKING:
-    pass
+from typing import Any
 
 
 @dataclass(frozen=True)
@@ -55,8 +52,6 @@ async def build_agent_options(
     from main_server import (  # noqa: PLC0415 — lazy to avoid circular import at module level
         _build_sdk_config,
         _get_container_manager,
-        build_allowed_tools,
-        build_system_prompt,
         load_mcp_config,
         load_skills,
         user_data_dir,
