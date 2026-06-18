@@ -192,3 +192,111 @@ async def _finish_task(
     asyncio.create_task(_summarize_and_store_session(session_id, user_id))
     if skill_manager is not None:
         asyncio.create_task(skill_manager.migrate_from_filesystem())
+
+
+async def handle_task_error(
+    error: Exception,
+    *,
+    session_id: str,
+    user_id: str,
+    buffer: Any,
+    obs_store: Any,
+    agent_log: Any,
+    cleanup_fn: Any | None = None,
+) -> None:
+    """Shared error handling for both local and container executors.
+
+    Handles: TimeoutError, asyncio.CancelledError, and generic Exception.
+    Emits appropriate error messages, state changes, and marks session done.
+    """
+    import asyncio  # noqa: PLC0415
+
+    if isinstance(error, TimeoutError):
+        if cleanup_fn is not None:
+            try:
+                await cleanup_fn(session_id)
+            except Exception:
+                pass
+        await buffer.add_message(
+            session_id,
+            {
+                "type": "system",
+                "subtype": "session_timeout",
+                "message": "Agent task timed out. The agent may be stuck processing a file.",
+            },
+            user_id,
+        )
+        await buffer.add_message(
+            session_id,
+            {"type": "system", "subtype": "session_state_changed", "state": "error"},
+            user_id,
+        )
+        await buffer.mark_done(session_id)
+        agent_log.end_session(session_id, status="timeout")
+        if obs_store:
+            await obs_store.record(
+                session_id=session_id,
+                user_id=user_id,
+                event_type="session_error",
+                success=False,
+                error_message="timeout",
+            )
+
+    elif isinstance(error, asyncio.CancelledError):
+        await buffer.add_message(
+            session_id,
+            {
+                "type": "system",
+                "subtype": "session_cancelled",
+                "message": "Session cancelled by user.",
+            },
+            user_id,
+        )
+        await buffer.add_message(
+            session_id,
+            {"type": "system", "subtype": "session_state_changed", "state": "cancelled"},
+            user_id,
+        )
+        await buffer.mark_done(session_id)
+        agent_log.end_session(session_id, status="cancelled")
+        if obs_store:
+            await obs_store.record(
+                session_id=session_id,
+                user_id=user_id,
+                event_type="user_interrupt",
+                success=False,
+            )
+
+    else:
+        error_msg = str(error)
+        if "JSON message exceeded maximum buffer size" in error_msg:
+            error_msg = (
+                "A tool produced too much output and was truncated to avoid "
+                "overwhelming the system. Try narrowing your request or "
+                "processing the data in smaller steps."
+            )
+        if cleanup_fn is not None:
+            try:
+                await cleanup_fn(session_id)
+            except Exception:
+                pass
+        await buffer.add_message(
+            session_id,
+            {"type": "error", "message": error_msg},
+            user_id,
+        )
+        await buffer.add_message(
+            session_id,
+            {"type": "system", "subtype": "session_state_changed", "state": "error"},
+            user_id,
+        )
+        await buffer.mark_done(session_id)
+        agent_log.end_session(session_id, status="error")
+        if obs_store:
+            await obs_store.record(
+                session_id=session_id,
+                user_id=user_id,
+                event_type="session_error",
+                success=False,
+                error_message=str(error)[:500],
+            )
