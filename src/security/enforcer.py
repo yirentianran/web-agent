@@ -19,12 +19,15 @@ logger = logging.getLogger(__name__)
 _INVALID_FILENAMES = frozenset({"null", "undefined", "none", ""})
 
 
-@dataclass
+@dataclass(frozen=True)
 class SecurityEnforcer:
     """Shared pre-execution security checks for agent tool calls.
 
     ``user_id``, ``workspace``, and ``user_dir`` define the sandbox
-    boundaries. All checks use these to validate paths and commands.
+    boundaries — consumed by callers (executors) for workspace-aware
+    path rewriting and sandbox enforcement. The enforcer itself
+    delegates pattern-based filtering to ``BashCommandFilter`` and
+    ``FileAccessFilter``.
 
     Used by:
     - LocalAgentExecutor: builds SDK can_use_tool / PreToolUse hooks
@@ -80,8 +83,8 @@ class SecurityEnforcer:
 
         Returns (True, "") if allowed, (False, reason) if denied.
         """
-        if not file_path:
-            return False, "Empty path"
+        if not file_path or file_path.lower() in _INVALID_FILENAMES:
+            return False, f"Invalid file path: '{file_path}'. Please provide a real filename."
 
         allowed, reason = FileAccessFilter.check(file_path)
         if not allowed:
