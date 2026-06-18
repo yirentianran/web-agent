@@ -203,7 +203,7 @@ class ContainerBridge:
             )
 
         # Lazy imports to avoid module-level circular dependency with main_server
-        from main_server import message_to_dicts  # noqa: PLC0415
+        from src.agent.adapters.container_json import adapt_container_message  # noqa: PLC0415
         from src.event_pipeline import process_event  # noqa: PLC0415
         from src.container_manager import touch_user  # noqa: PLC0415
 
@@ -323,9 +323,10 @@ class ContainerBridge:
                     break
 
                 # ── Delegate everything else to shared pipeline ──
-                for event in message_to_dicts(
+                for event in adapt_container_message(
                     data, model=self.model, tool_use_names=self.tool_use_names,
                 ):
+                    event = event.to_dict()
                     event_count += 1
                     if event.get("type") == "result":
                         self._result = event
