@@ -984,23 +984,6 @@ body {
   margin-top: 8px;
   white-space: pre-wrap;
 }
-
-.error-message .bubble.error {
-  background: var(--color-error-bubble-bg);
-  border: 1px solid var(--color-error-bubble-border);
-  color: var(--color-error-bubble-text);
-  padding: 12px 16px;
-  border-radius: var(--radius-md);
-}
-
-/* Resolved / past-run errors — dimmed to distinguish from current-run errors */
-.error-message--resolved .bubble.error {
-  background: var(--color-resolved-error-bg);
-  border: 1px dashed var(--color-resolved-error-border);
-  color: var(--color-resolved-error-text);
-  font-size: 0.9em;
-}
-
 .error-resolved-badge {
   display: inline-block;
   font-size: 0.7em;
@@ -5240,7 +5223,7 @@ body {
 }
 
 .error-card__action-btn:hover {
-  background: var(--color-hover, #f0f0f0);
+  background: var(--color-surface-hover);
 }
 
 .error-card__detail {
