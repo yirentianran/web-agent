@@ -42,6 +42,8 @@
     "connected": "Connected",
     "connecting": "Connecting...",
     "reconnecting": "Reconnecting...",
+    "recovered": "Recovered",
+    "expired": "Session Expired",
     "failed": "Disconnected",
     "lostBanner": "Connection lost after multiple attempts.",
     "refreshPage": "Refresh Page",

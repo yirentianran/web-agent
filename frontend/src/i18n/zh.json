@@ -42,6 +42,8 @@
     "connected": "已连接",
     "connecting": "连接中...",
     "reconnecting": "重新连接...",
+    "recovered": "已恢复",
+    "expired": "会话已过期",
     "failed": "已断开",
     "lostBanner": "多次尝试后连接失败。",
     "refreshPage": "刷新页面",

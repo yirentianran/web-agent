@@ -54,7 +54,7 @@ export function isUnconfirmed(m: Message): boolean {
 export type SessionStatus = 'idle' | 'running' | 'completed' | 'error' | 'waiting_user' | 'cancelled'
 
 /** WebSocket connection status */
-export type ConnectionStatus = 'connected' | 'connecting' | 'reconnecting' | 'failed'
+export type ConnectionStatus = 'connected' | 'connecting' | 'reconnecting' | 'recovered' | 'expired' | 'failed'
 
 export interface SessionItem {
   session_id: string

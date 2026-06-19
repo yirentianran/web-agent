@@ -14,7 +14,7 @@ class MockWebSocket {
   readyState: number;
   onopen: (() => void) | null = null;
   onmessage: ((event: any) => void) | null = null;
-  onclose: (() => void) | null = null;
+  onclose: ((event: CloseEvent) => void) | null = null;
   onerror: (() => void) | null = null;
   sent: any[] = [];
 
@@ -28,11 +28,11 @@ class MockWebSocket {
     this.sent.push(data);
   }
 
-  close() {
+  close(code = 1000, reason = "") {
     this.readyState = MockWebSocket.CLOSED;
-    // Simulate onclose firing after close()
+    // Simulate onclose firing after close() with a proper CloseEvent
     setTimeout(() => {
-      if (this.onclose) this.onclose();
+      if (this.onclose) this.onclose(new CloseEvent("close", { code, reason, wasClean: true }));
     }, 0);
   }
 
@@ -48,9 +48,9 @@ class MockWebSocket {
   }
 
   // Helper to simulate disconnect
-  simulateClose() {
+  simulateClose(code = 1006, reason = "") {
     this.readyState = MockWebSocket.CLOSED;
-    if (this.onclose) this.onclose();
+    if (this.onclose) this.onclose(new CloseEvent("close", { code, reason, wasClean: false }));
   }
 
   static clearInstances() {
