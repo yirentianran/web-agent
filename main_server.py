@@ -1783,15 +1783,14 @@ async def handle_ws(websocket: WebSocket) -> None:
                     data["_user_id_mismatch"] = True
                     data["_attempted_user_id"] = incoming_user_id
 
-                # If we're in a subscribe loop for a different session,
-                # queue the message so the subscribe loop can pick it up.
-                if current_session_id and data.get("session_id") != current_session_id:
-                    pending_ws_msgs.put_nowait(data)
-                else:
-                    pending_ws_msgs.put_nowait(data)
+                pending_ws_msgs.put_nowait(data)
+        except json.JSONDecodeError as e:
+            logger.warning("WS reader: invalid JSON from client: %.200s", e)
+            # Skip the bad message — don't kill the connection
         except WebSocketDisconnect:
             pending_ws_msgs.put_nowait(None)
         except Exception:
+            logger.exception("WS reader: unexpected error — closing connection")
             pending_ws_msgs.put_nowait(None)
 
     reader_task = asyncio.create_task(ws_reader())
@@ -1940,7 +1939,7 @@ async def handle_ws(websocket: WebSocket) -> None:
                 current_session_id = None
 
             # Send historical messages (reconnection recovery)
-            history = await buffer.get_history(session_id, after_index=last_index)
+            history = await buffer.get_history(session_id, after_index=last_index, user_id=user_id)
             logger.info(
                 "[WS] Recover: get_history session=%s after_index=%s returned %d messages",
                 session_id,
@@ -2017,7 +2016,7 @@ async def handle_ws(websocket: WebSocket) -> None:
                             pass
 
                         # Pull new messages
-                        new_messages = await buffer.get_history(session_id, after_index=last_seen)
+                        new_messages = await buffer.get_history(session_id, after_index=last_seen, user_id=user_id)
                         sent_count = 0
                         for i, h in enumerate(new_messages):
                             idx = h.get("seq", last_seen + i)
@@ -2036,7 +2035,7 @@ async def handle_ws(websocket: WebSocket) -> None:
 
                         # If session is done, final pull and exit
                         if await buffer.is_done(session_id):
-                            final_messages = await buffer.get_history(session_id, after_index=last_seen)
+                            final_messages = await buffer.get_history(session_id, after_index=last_seen, user_id=user_id)
                             final_sent = 0
                             for i, h in enumerate(final_messages):
                                 idx = h.get("seq", last_seen + i)
@@ -2143,7 +2142,7 @@ async def handle_ws(websocket: WebSocket) -> None:
                                 new_last_seq = item.get("last_seq", 0)
                                 if new_last_seq > last_seen:
                                     more_history = await buffer.get_history(
-                                        session_id, after_index=last_seen
+                                        session_id, after_index=last_seen, user_id=user_id,
                                     )
                                     for h in more_history:
                                         if not await _send(
@@ -2156,7 +2155,7 @@ async def handle_ws(websocket: WebSocket) -> None:
                                             },
                                         ):
                                             break
-                                    last_seen = new_last_seq
+                                    last_seen = last_seen + len(more_history)
                                 continue
                             else:
                                 # New chat message — re-queue for the outer loop
@@ -2167,7 +2166,7 @@ async def handle_ws(websocket: WebSocket) -> None:
                             pass
 
                         # Pull new messages from buffer
-                        new_messages = await buffer.get_history(session_id, after_index=last_seen)
+                        new_messages = await buffer.get_history(session_id, after_index=last_seen, user_id=user_id)
                         for h in new_messages:
                             idx = h.get("seq", last_seen)
                             if not await _send(
@@ -2457,7 +2456,7 @@ async def handle_ws(websocket: WebSocket) -> None:
                     except asyncio.QueueEmpty:
                         pass
 
-                    new_messages = await buffer.get_history(session_id, after_index=last_seen)
+                    new_messages = await buffer.get_history(session_id, after_index=last_seen, user_id=user_id)
                     sent_count = 0
                     for i, h in enumerate(new_messages):
                         idx = h.get("seq", last_seen + i)
@@ -2487,7 +2486,7 @@ async def handle_ws(websocket: WebSocket) -> None:
                     # session_state_changed: completed is not missed
                     # (it may have been added after the get_history snapshot).
                     if await buffer.is_done(session_id):
-                        final_messages = await buffer.get_history(session_id, after_index=last_seen)
+                        final_messages = await buffer.get_history(session_id, after_index=last_seen, user_id=user_id)
                         final_sent = 0
                         for i, h in enumerate(final_messages):
                             idx = h.get("seq", last_seen + i)
