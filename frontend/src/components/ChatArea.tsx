@@ -4,7 +4,7 @@ import MessageBubble, { pairToolMessages } from "./MessageBubble";
 import ToolGroupRenderer, {
   groupConsecutiveTools,
 } from "./ToolGroupRenderer";
-import ProgressBar, { detectPhase, computeToolCounts, type Phase, type ToolCounts } from "./ProgressBar";
+
 
 import StatusSpinner from "./StatusSpinner";
 import type { Message, SessionStatus } from "../lib/types";
@@ -382,34 +382,6 @@ export default function ChatArea({
     return groupConsecutiveTools(paired);
   }, [messages, lastTodoWriteIndex]);
 
-  const currentPhase: Phase = useMemo(() => detectPhase(messages), [messages]);
-  const toolCounts: ToolCounts = useMemo(() => computeToolCounts(messages), [messages]);
-
-  // Only show the progress bar when the agent is running, there are messages,
-  // and we have a recognized phase.
-  const showProgressBar =
-    sessionState === 'running' &&
-    messages.length > 0;
-
-  // When the agent completes, keep the progress bar visible for 2 seconds
-  // so the user can see which phases ran and which tools were used.
-  const [progressVisible, setProgressVisible] = useState(false);
-  const hideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  useEffect(() => {
-    if (showProgressBar) {
-      if (hideTimerRef.current) { clearTimeout(hideTimerRef.current); hideTimerRef.current = null; }
-      setProgressVisible(true);
-    }
-  }, [showProgressBar]);
-
-  useEffect(() => {
-    if (!showProgressBar && progressVisible) {
-      hideTimerRef.current = setTimeout(() => setProgressVisible(false), 2000);
-      return () => { if (hideTimerRef.current) clearTimeout(hideTimerRef.current); };
-    }
-  }, [showProgressBar, progressVisible]);
-
   // Filter out invisible message types for the welcome screen check.
   // If a session only has heartbeats / internal state messages, show the welcome screen.
   const hasVisibleMessages = useMemo(() => {
@@ -463,7 +435,6 @@ export default function ChatArea({
 
         {sessionId !== null && (
           <>
-            <ProgressBar currentPhase={currentPhase} visible={progressVisible} toolCounts={toolCounts} />
             <MessageList
             messages={visibleMessages}
             sessionId={sessionId}

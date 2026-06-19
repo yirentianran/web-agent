@@ -207,12 +207,7 @@
     "andMore": "+{{count}} more",
     "toolCalls": "tool calls"
   },
-  "progress": {
-    "label": "Agent progress",
-    "analyze": "Analyze",
-    "edit": "Edit code",
-    "verify": "Verify"
-  },
+
   "spinner": {
     "timeHours": "{{count}}h",
     "timeMinutes": "{{count}}m",
