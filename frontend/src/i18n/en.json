@@ -207,7 +207,6 @@
     "andMore": "+{{count}} more",
     "toolCalls": "tool calls"
   },
-
   "spinner": {
     "timeHours": "{{count}}h",
     "timeMinutes": "{{count}}m",

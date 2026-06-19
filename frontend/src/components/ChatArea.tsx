@@ -5,7 +5,6 @@ import ToolGroupRenderer, {
   groupConsecutiveTools,
 } from "./ToolGroupRenderer";
 
-
 import StatusSpinner from "./StatusSpinner";
 import type { Message, SessionStatus } from "../lib/types";
 import { StreamingTextContext } from "../lib/streaming-context";
@@ -434,8 +433,7 @@ export default function ChatArea({
         )}
 
         {sessionId !== null && (
-          <>
-            <MessageList
+          <MessageList
             messages={visibleMessages}
             sessionId={sessionId}
             onAnswer={onAnswer}
@@ -445,7 +443,6 @@ export default function ChatArea({
             lastUserMsgIndex={lastUserMsgIndex}
             authToken={authToken}
           />
-          </>
         )}
 
         {/* Streaming text indicator — shows accumulated content_block_delta text */}

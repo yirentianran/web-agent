@@ -207,7 +207,6 @@
     "andMore": "+{{count}} 个",
     "toolCalls": "个工具调用"
   },
-
   "spinner": {
     "timeHours": "{{count}}时",
     "timeMinutes": "{{count}}分",
