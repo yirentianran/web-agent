@@ -475,3 +475,63 @@ class TestFinishTask:
                         )
                         # skill_manager.migrate_from_filesystem should NOT be called
                         # No crash should occur
+
+
+class TestClassifyError:
+    def test_buffer_overflow_is_retryable(self):
+        from src.event_pipeline import _classify_error
+
+        err = Exception("JSON message exceeded maximum buffer size: 12345 bytes")
+        result = _classify_error(err)
+        assert result.severity == "retryable"
+        assert "truncated" in result.message.lower()
+        assert any(a["kind"] == "simplify" for a in result.actions)
+
+    def test_cli_connection_error_is_retryable(self):
+        from src.event_pipeline import _classify_error
+
+        try:
+            raise ConnectionError("CLIConnectionError: boom")
+        except ConnectionError as e:
+            result = _classify_error(e)
+        assert result.severity == "retryable"
+        assert any(a["kind"] == "new_session" for a in result.actions)
+
+    def test_timeout_error_is_retryable(self):
+        from src.event_pipeline import _classify_error
+
+        result = _classify_error(TimeoutError("timed out after 300s"))
+        assert result.severity == "retryable"
+        assert any(a["kind"] == "retry" for a in result.actions)
+
+    def test_auth_error_is_critical(self):
+        from src.event_pipeline import _classify_error
+
+        err = Exception("invalid token: authentication failed")
+        result = _classify_error(err)
+        assert result.severity == "critical"
+
+    def test_file_too_large_is_actionable(self):
+        from src.event_pipeline import _classify_error
+
+        err = Exception("File exceeds maximum size of 10MB")
+        result = _classify_error(err)
+        assert result.severity == "actionable"
+
+    def test_generic_error_is_retryable(self):
+        from src.event_pipeline import _classify_error
+
+        err = Exception("something completely unexpected happened")
+        result = _classify_error(err)
+        assert result.severity == "retryable"
+        assert "unexpected" in result.message.lower()
+
+    def test_classified_error_is_frozen(self):
+        from src.event_pipeline import _classify_error
+
+        result = _classify_error(Exception("test"))
+        try:
+            result.severity = "critical"
+            assert False, "should have raised"
+        except Exception:
+            pass
