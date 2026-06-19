@@ -984,23 +984,6 @@ body {
   margin-top: 8px;
   white-space: pre-wrap;
 }
-
-.error-message .bubble.error {
-  background: var(--color-error-bubble-bg);
-  border: 1px solid var(--color-error-bubble-border);
-  color: var(--color-error-bubble-text);
-  padding: 12px 16px;
-  border-radius: var(--radius-md);
-}
-
-/* Resolved / past-run errors — dimmed to distinguish from current-run errors */
-.error-message--resolved .bubble.error {
-  background: var(--color-resolved-error-bg);
-  border: 1px dashed var(--color-resolved-error-border);
-  color: var(--color-resolved-error-text);
-  font-size: 0.9em;
-}
-
 .error-resolved-badge {
   display: inline-block;
   font-size: 0.7em;
@@ -5178,3 +5161,144 @@ body {
   background: var(--color-surface-hover);
 }
 
+/* ── ErrorCard ─────────────────────────────────────────────── */
+
+.error-card {
+  margin: 0.5rem 0;
+  border-radius: 8px;
+  padding: 0.75rem 1rem;
+  font-size: 0.9rem;
+  border-left: 4px solid;
+}
+
+.error-card--critical {
+  background: oklch(95% 0.02 20);
+  border-color: oklch(55% 0.15 20);
+}
+
+.error-card--retryable {
+  background: oklch(95% 0.02 75);
+  border-color: oklch(65% 0.12 75);
+}
+
+.error-card--actionable {
+  background: oklch(95% 0.02 250);
+  border-color: oklch(55% 0.12 250);
+}
+
+.error-card--resolved {
+  opacity: 0.5;
+}
+
+.error-card__header {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.error-card__icon {
+  font-size: 1rem;
+  flex-shrink: 0;
+}
+
+.error-card__message {
+  flex: 1;
+  line-height: 1.4;
+}
+
+.error-card__actions {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.error-card__action-btn {
+  padding: 0.3rem 0.75rem;
+  border: 1px solid var(--color-border, #ccc);
+  border-radius: 4px;
+  background: var(--color-surface, #fff);
+  cursor: pointer;
+  font-size: 0.85rem;
+}
+
+.error-card__action-btn:hover {
+  background: var(--color-surface-hover);
+}
+
+.error-card__detail {
+  margin-top: 0.5rem;
+}
+
+.error-card__detail-toggle {
+  background: none;
+  border: none;
+  color: var(--color-accent, #06c);
+  cursor: pointer;
+  font-size: 0.85rem;
+  padding: 0;
+}
+
+.error-card__detail-text {
+  margin-top: 0.4rem;
+  padding: 0.5rem;
+  background: oklch(95% 0 0);
+  border-radius: 4px;
+  font-size: 0.8rem;
+  overflow-x: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+/* ── Tool group card ─────────────────────────────────────────── */
+
+.tool-group {
+  border: 1px solid var(--color-border, #e0e0e0);
+  border-radius: 0.5rem;
+  margin: 0.5rem 0;
+}
+
+.tool-group__summary {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.6rem 0.75rem;
+  cursor: pointer;
+  list-style: none;
+  font-weight: 500;
+}
+
+.tool-group__summary::-webkit-details-marker {
+  display: none;
+}
+
+.tool-group__preview {
+  padding: 0 0.75rem 0.5rem;
+}
+
+.tool-group__item {
+  font-size: 0.8rem;
+  color: var(--color-text-secondary, #666);
+  padding: 0.15rem 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tool-group__more {
+  font-size: 0.78rem;
+  color: var(--color-accent, #3b82f6);
+  padding-top: 0.2rem;
+  cursor: default;
+}
+
+.tool-group__expanded {
+  padding: 0 0.5rem 0.5rem;
+  border-top: 1px solid var(--color-border, #e0e0e0);
+}
+
+.tool-duration {
+  font-size: 0.75rem;
+  color: var(--color-text-secondary, #666);
+  margin-left: auto;
+}

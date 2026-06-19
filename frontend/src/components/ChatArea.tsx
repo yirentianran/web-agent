@@ -1,6 +1,9 @@
 import { memo, useEffect, useRef, useCallback, useState, useMemo, useContext } from "react";
 import { useTranslation } from "react-i18next";
 import MessageBubble, { pairToolMessages } from "./MessageBubble";
+import ToolGroupRenderer, {
+  groupConsecutiveTools,
+} from "./ToolGroupRenderer";
 
 import StatusSpinner from "./StatusSpinner";
 import type { Message, SessionStatus } from "../lib/types";
@@ -72,19 +75,31 @@ const MessageList = memo(function MessageList({
   lastUserMsgIndex,
   authToken,
 }: MessageListProps) {
-  return messages.map((msg, i) => (
-    <MessageBubble
-      key={msg.clientMsgId ?? `${msg.index}-${i}`}
-      message={msg}
-      sessionId={sessionId}
-      onAnswer={onAnswer}
-      onFileClick={onFileClick}
-      onResend={onResend}
-      lastTodoWriteIndex={lastTodoWriteIndex}
-      lastUserMsgIndex={lastUserMsgIndex}
-      authToken={authToken}
-    />
-  ));
+  return messages.map((msg, i) => {
+    // Check for tool group marker
+    if (msg.type === 'tool_use' && msg.input) {
+      const input = msg.input as Record<string, unknown>
+      if (input._grouped) {
+        const tools = input._tools as Message[]
+        return (
+          <ToolGroupRenderer key={`group-${msg.name}-${msg.index}`} tools={tools} />
+        )
+      }
+    }
+    return (
+      <MessageBubble
+        key={msg.clientMsgId ?? `${msg.index}-${i}`}
+        message={msg}
+        sessionId={sessionId}
+        onAnswer={onAnswer}
+        onFileClick={onFileClick}
+        onResend={onResend}
+        lastTodoWriteIndex={lastTodoWriteIndex}
+        lastUserMsgIndex={lastUserMsgIndex}
+        authToken={authToken}
+      />
+    )
+  });
 });
 
 export default function ChatArea({
@@ -362,7 +377,8 @@ export default function ChatArea({
         msg.name !== "TodoWrite" ||
         msg.index === (lastTodoWriteIndex ?? -1),
     );
-    return pairToolMessages(deduped);
+    const paired = pairToolMessages(deduped);
+    return groupConsecutiveTools(paired);
   }, [messages, lastTodoWriteIndex]);
 
   // Filter out invisible message types for the welcome screen check.

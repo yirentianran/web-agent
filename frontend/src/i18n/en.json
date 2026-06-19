@@ -42,6 +42,8 @@
     "connected": "Connected",
     "connecting": "Connecting...",
     "reconnecting": "Reconnecting...",
+    "recovered": "Recovered",
+    "expired": "Session Expired",
     "failed": "Disconnected",
     "lostBanner": "Connection lost after multiple attempts.",
     "refreshPage": "Refresh Page",
@@ -199,7 +201,11 @@
     "collapse": "Collapse",
     "copyResult": "Copy",
     "resultCopied": "Copied!",
-    "resultUsage": "⏱ {{duration}} · {{turns}} turns · {{tokens}} tokens"
+    "resultUsage": "⏱ {{duration}} · {{turns}} turns · {{tokens}} tokens",
+    "showDetails": "Show details",
+    "hideDetails": "Hide details",
+    "andMore": "+{{count}} more",
+    "toolCalls": "tool calls"
   },
   "spinner": {
     "timeHours": "{{count}}h",

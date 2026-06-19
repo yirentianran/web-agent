@@ -13,7 +13,7 @@ import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 logger = logging.getLogger(__name__)
 
@@ -201,6 +201,103 @@ async def _finish_task(
         asyncio.create_task(skill_manager.migrate_from_filesystem())
 
 
+Severity = Literal["critical", "retryable", "actionable"]
+
+
+@dataclass(frozen=True)
+class ClassifiedError:
+    message: str
+    severity: Severity
+    detail: str
+    actions: list[dict[str, str]]
+
+
+def _classify_error(error: Exception) -> ClassifiedError:
+    """Classify an exception into a user-facing error with severity and actions."""
+    error_type = type(error).__name__
+    error_str = str(error)
+
+    # -- Buffer overflow -------------------------------------------------
+    if "JSON message exceeded maximum buffer size" in error_str:
+        return ClassifiedError(
+            message="Tool output was too large and was truncated.",
+            severity="retryable",
+            detail="The agent tried to process more data than the system can handle in one step.",
+            actions=[
+                {"label": "Retry with smaller scope", "kind": "simplify"},
+                {"label": "Copy details", "kind": "copy_detail"},
+            ],
+        )
+
+    # -- Connection errors ------------------------------------------------
+    if error_type in ("CLIConnectionError", "ConnectionError", "ConnectionClosedError"):
+        return ClassifiedError(
+            message="Agent process disconnected unexpectedly.",
+            severity="retryable",
+            detail=error_str,
+            actions=[
+                {"label": "Start new session", "kind": "new_session"},
+                {"label": "Copy details", "kind": "copy_detail"},
+            ],
+        )
+
+    # -- Timeout ---------------------------------------------------------
+    if error_type == "TimeoutError":
+        return ClassifiedError(
+            message="Agent task took too long and timed out.",
+            severity="retryable",
+            detail=error_str,
+            actions=[
+                {"label": "Retry", "kind": "retry"},
+                {"label": "Simplify request", "kind": "simplify"},
+            ],
+        )
+
+    # -- Auth / permission ------------------------------------------------
+    auth_keywords = (
+        "api key", "unauthorized", "forbidden", "permission denied",
+        "authentication", "invalid token", "not allowed",
+    )
+    if any(kw in error_str.lower() for kw in auth_keywords):
+        return ClassifiedError(
+            message="Authentication or permission error.",
+            severity="critical",
+            detail=error_str,
+            actions=[
+                {"label": "Copy details", "kind": "copy_detail"},
+            ],
+        )
+
+    # -- Actionable user errors -------------------------------------------
+    actionable_patterns = [
+        ("file exceeds", "File is too large. Try a smaller file or use a URL instead.",
+         [{"label": "Upload smaller file", "kind": "upload_smaller"}]),
+        ("rate limit", "Too many requests. Please wait a moment and try again.",
+         [{"label": "Wait and retry", "kind": "retry"}]),
+        ("path rejected", "File path was rejected for security reasons.",
+         [{"label": "Use workspace path", "kind": "use_workspace"}]),
+    ]
+    for pattern, msg, actions in actionable_patterns:
+        if pattern in error_str.lower():
+            return ClassifiedError(
+                message=msg,
+                severity="actionable",
+                detail=error_str,
+                actions=actions,
+            )
+
+    # -- Default: unexpected error ---------------------------------------
+    return ClassifiedError(
+        message="An unexpected error occurred.",
+        severity="retryable",
+        detail=error_str,
+        actions=[
+            {"label": "Retry", "kind": "retry"},
+            {"label": "Copy details", "kind": "copy_detail"},
+        ],
+    )
+
+
 async def handle_task_error(
     error: Exception,
     *,
@@ -280,23 +377,14 @@ async def handle_task_error(
             )
 
     else:
-        error_msg = str(error)
-        if "JSON message exceeded maximum buffer size" in error_msg:
-            logger.warning(
-                "Agent task %s: buffer overflow — %s", session_id, error_msg
-            )
-            error_msg = (
-                "A tool produced too much output and was truncated to avoid "
-                "overwhelming the system. Try narrowing your request or "
-                "processing the data in smaller steps."
-            )
-        else:
-            logger.exception(
-                "Agent task %s: unexpected error type=%s: %s",
-                session_id,
-                type(error).__name__,
-                error,
-            )
+        classified = _classify_error(error)
+        logger.exception(
+            "Agent task %s: error type=%s severity=%s: %s",
+            session_id,
+            type(error).__name__,
+            classified.severity,
+            error,
+        )
         if cleanup_fn is not None:
             try:
                 await cleanup_fn(session_id)
@@ -304,7 +392,13 @@ async def handle_task_error(
                 pass
         await buffer.add_message(
             session_id,
-            {"type": "error", "message": error_msg},
+            {
+                "type": "error",
+                "message": classified.message,
+                "severity": classified.severity,
+                "detail": classified.detail,
+                "actions": classified.actions,
+            },
             user_id,
         )
         await buffer.add_message(

@@ -210,9 +210,11 @@ async def _emit_synthetic_state_change_if_missing(
     websocket: WebSocket,
     session_id: str,
     last_seen: int,
+    send_fn=None,
 ) -> tuple[int, bool]:
     """Emit a synthetic session_state_changed if buffer is in a terminal
     state but the buffer contains no such message. Returns (updated last_seen, success)."""
+    _send_ws = send_fn if send_fn else _safe_ws_send
     buf_state = await buffer.get_session_state(session_id)
     if buf_state["state"] in ("completed", "error", "cancelled"):
         all_buffer_msgs = await buffer.get_history(session_id)
@@ -220,7 +222,7 @@ async def _emit_synthetic_state_change_if_missing(
             m.get("type") == "system" and m.get("subtype") == "session_state_changed" for m in all_buffer_msgs
         )
         if not has_state_change:
-            if not await _safe_ws_send(
+            if not await _send_ws(
                 websocket,
                 {
                     "type": "system",
@@ -240,6 +242,7 @@ async def _handle_orphaned_running(
     websocket: WebSocket,
     session_id: str,
     last_seen: int,
+    send_fn=None,
 ) -> tuple[int, bool]:
     """Detect and resolve orphaned "running" sessions.
 
@@ -248,6 +251,7 @@ async def _handle_orphaned_running(
     truly dead. Emit a synthetic terminal state change so the frontend
     doesn't spin forever. Returns (updated last_seen, ws_ok).
     """
+    _send_ws = send_fn if send_fn else _safe_ws_send
     task_key = f"task_{session_id}"
     buf_state = await buffer.get_state(session_id)
     task_exists = task_key in active_tasks and not active_tasks[task_key].done()
@@ -257,7 +261,7 @@ async def _handle_orphaned_running(
             "Orphaned running session %s: buffer state=running but no active task. Emitting synthetic error.",
             session_id,
         )
-        if not await _safe_ws_send(
+        if not await _send_ws(
             websocket,
             {
                 "type": "system",
@@ -1734,6 +1738,20 @@ async def handle_ws(websocket: WebSocket) -> None:
     # message arrives on the same connection.
     current_session_id: str | None = None
 
+    # Per-connection monotonic sequence counter for outgoing messages.
+    # Each message sent via _send() gets a connection-level seq number
+    # so the frontend can track the last-received position for resume.
+    _ws_seq = 0
+
+    async def _send(ws: WebSocket, data: dict) -> bool:
+        """Wrapper around _safe_ws_send that adds a connection-level seq.
+        Does NOT overwrite an existing seq (e.g., buffer-assigned seq)."""
+        nonlocal _ws_seq
+        _ws_seq += 1
+        if "seq" not in data:
+            data["seq"] = _ws_seq
+        return await _safe_ws_send(ws, data)
+
     # Queue for messages received while the subscribe loop is active.
     pending_ws_msgs: asyncio.Queue[dict] = asyncio.Queue()
 
@@ -1765,15 +1783,14 @@ async def handle_ws(websocket: WebSocket) -> None:
                     data["_user_id_mismatch"] = True
                     data["_attempted_user_id"] = incoming_user_id
 
-                # If we're in a subscribe loop for a different session,
-                # queue the message so the subscribe loop can pick it up.
-                if current_session_id and data.get("session_id") != current_session_id:
-                    pending_ws_msgs.put_nowait(data)
-                else:
-                    pending_ws_msgs.put_nowait(data)
+                pending_ws_msgs.put_nowait(data)
+        except json.JSONDecodeError as e:
+            logger.warning("WS reader: invalid JSON from client: %.200s", e)
+            # Skip the bad message — don't kill the connection
         except WebSocketDisconnect:
             pending_ws_msgs.put_nowait(None)
         except Exception:
+            logger.exception("WS reader: unexpected error — closing connection")
             pending_ws_msgs.put_nowait(None)
 
     reader_task = asyncio.create_task(ws_reader())
@@ -1789,7 +1806,7 @@ async def handle_ws(websocket: WebSocket) -> None:
                     if item is None:
                         return  # WebSocket closed
                     if item.get("_user_id_mismatch"):
-                        await _safe_ws_send(
+                        await _send(
                             websocket,
                             {
                                 "type": "error",
@@ -1809,8 +1826,8 @@ async def handle_ws(websocket: WebSocket) -> None:
                         future = pending_answers.get(sid) or bridge_answer_futures.get(sid)
                         if future and not future.done():
                             future.set_result(answers)
-                    elif item.get("type") == "recover":
-                        # Route recover messages to the main handler
+                    elif item.get("type") in ("recover", "resume"):
+                        # Route recover/resume messages to the main handler
                         data = item
                         break
                     else:
@@ -1828,7 +1845,7 @@ async def handle_ws(websocket: WebSocket) -> None:
                     logger.info("[WS] Received None (WebSocket closed)")
                     return  # WebSocket closed
                 if item.get("_user_id_mismatch"):
-                    await _safe_ws_send(
+                    await _send(
                         websocket,
                         {
                             "type": "error",
@@ -1849,7 +1866,7 @@ async def handle_ws(websocket: WebSocket) -> None:
                     if future and not future.done():
                         future.set_result(answers)
                     continue
-                elif item.get("type") == "recover":
+                elif item.get("type") in ("recover", "resume"):
                     data = item
                 else:
                     data = item
@@ -1872,6 +1889,15 @@ async def handle_ws(websocket: WebSocket) -> None:
             user_message = data.get("message", "")
             session_id = data.get("session_id")
             last_index = data.get("last_index", 0)
+
+            # ── Resume detection ──────────────────────────────────────
+            is_resume = data.get("type") == "resume"
+            if is_resume:
+                resume_last_seq = data.get("last_seq", 0)
+                # Use the higher of last_index / last_seq so the historical replay
+                # below starts from the right position and avoids duplicates.
+                last_index = max(last_index, resume_last_seq)
+
             raw_files = data.get("files") or None
             client_msg_id = data.get("client_msg_id")  # Frontend UUID for dedup
             ws_language = data.get("language")  # User's current UI language
@@ -1913,7 +1939,7 @@ async def handle_ws(websocket: WebSocket) -> None:
                 current_session_id = None
 
             # Send historical messages (reconnection recovery)
-            history = await buffer.get_history(session_id, after_index=last_index)
+            history = await buffer.get_history(session_id, after_index=last_index, user_id=user_id)
             logger.info(
                 "[WS] Recover: get_history session=%s after_index=%s returned %d messages",
                 session_id,
@@ -1921,7 +1947,7 @@ async def handle_ws(websocket: WebSocket) -> None:
                 len(history),
             )
             for i, h in enumerate(history):
-                if not await _safe_ws_send(
+                if not await _send(
                     websocket,
                     {
                         **h,
@@ -1948,7 +1974,7 @@ async def handle_ws(websocket: WebSocket) -> None:
                             if item is None:
                                 return  # WebSocket closed
                             if item.get("_user_id_mismatch"):
-                                await _safe_ws_send(
+                                await _send(
                                     websocket,
                                     {
                                         "type": "error",
@@ -1978,8 +2004,8 @@ async def handle_ws(websocket: WebSocket) -> None:
                                 logger.info("[WS] Recover loop: different session, re-queuing")
                                 pending_ws_msgs.put_nowait(item)
                                 break
-                            elif item.get("type") == "recover":
-                                continue  # ignore duplicate recover for SAME session
+                            elif item.get("type") in ("recover", "resume"):
+                                continue  # ignore duplicate recover/resume for SAME session
                             else:
                                 # New chat message for this session — break out
                                 # so the outer loop can create the agent task
@@ -1990,11 +2016,11 @@ async def handle_ws(websocket: WebSocket) -> None:
                             pass
 
                         # Pull new messages
-                        new_messages = await buffer.get_history(session_id, after_index=last_seen)
+                        new_messages = await buffer.get_history(session_id, after_index=last_seen, user_id=user_id)
                         sent_count = 0
                         for i, h in enumerate(new_messages):
                             idx = h.get("seq", last_seen + i)
-                            if not await _safe_ws_send(
+                            if not await _send(
                                 websocket,
                                 {
                                     **h,
@@ -2009,11 +2035,11 @@ async def handle_ws(websocket: WebSocket) -> None:
 
                         # If session is done, final pull and exit
                         if await buffer.is_done(session_id):
-                            final_messages = await buffer.get_history(session_id, after_index=last_seen)
+                            final_messages = await buffer.get_history(session_id, after_index=last_seen, user_id=user_id)
                             final_sent = 0
                             for i, h in enumerate(final_messages):
                                 idx = h.get("seq", last_seen + i)
-                                if not await _safe_ws_send(
+                                if not await _send(
                                     websocket,
                                     {
                                         **h,
@@ -2026,7 +2052,7 @@ async def handle_ws(websocket: WebSocket) -> None:
                                 final_sent += 1
                             last_seen += final_sent
 
-                        last_seen, ok = await _emit_synthetic_state_change_if_missing(websocket, session_id, last_seen)
+                        last_seen, ok = await _emit_synthetic_state_change_if_missing(websocket, session_id, last_seen, send_fn=_send)
                         if not ok:
                             break
 
@@ -2034,7 +2060,7 @@ async def handle_ws(websocket: WebSocket) -> None:
                         # "running" sessions (server restart while agent
                         # was active). Emit terminal error so the frontend
                         # doesn't spin forever.
-                        last_seen, ok = await _handle_orphaned_running(websocket, session_id, last_seen)
+                        last_seen, ok = await _handle_orphaned_running(websocket, session_id, last_seen, send_fn=_send)
                         if not ok:
                             break
 
@@ -2044,6 +2070,7 @@ async def handle_ws(websocket: WebSocket) -> None:
                     last_hb_time, hb_ok = await _maybe_send_heartbeat(
                         last_hb_time, session_id, last_seen,
                         active_tasks, buffer, websocket,
+                        send_fn=_send,
                     )
                     if not hb_ok:
                         break
@@ -2056,6 +2083,7 @@ async def handle_ws(websocket: WebSocket) -> None:
                     last_hb_time, hb_ok = await _maybe_send_heartbeat(
                         0.0, session_id, last_seen,
                         active_tasks, buffer, websocket,
+                        send_fn=_send,
                     )
                     if not hb_ok:
                         break
@@ -2064,6 +2092,136 @@ async def handle_ws(websocket: WebSocket) -> None:
                     buffer.unsubscribe(session_id, event)
                     current_session_id = None
 
+                continue  # Back to outer loop
+
+            # ── Resume: subscribe to live messages (history already replayed) ─
+            if is_resume and session_id:
+                logger.info(
+                    "[WS] Resume: session=%s last_index=%s",
+                    session_id, last_index,
+                )
+                current_session_id = session_id
+                last_seen = last_index + len(history)
+                event = await buffer.subscribe(session_id)
+                last_hb_time = 0.0
+
+                try:
+                    while True:
+                        # Check for new WebSocket messages
+                        try:
+                            item = pending_ws_msgs.get_nowait()
+                            if item is None:
+                                return  # WebSocket closed
+                            if item.get("_user_id_mismatch"):
+                                await _send(
+                                    websocket,
+                                    {
+                                        "type": "error",
+                                        "subtype": "user_id_mismatch",
+                                        "message": (
+                                            f"Connection is locked to user '{_locked_user_id}'. "
+                                            f"Received message for user '{item.get('_attempted_user_id')}'. "
+                                            "This message has been rejected."
+                                        ),
+                                    },
+                                )
+                                continue
+                            # Always process answers regardless of session
+                            if item.get("type") == "answer":
+                                sid = item.get("session_id", "")
+                                answers = item.get("answers", {})
+                                future = pending_answers.get(sid) or bridge_answer_futures.get(sid)
+                                if future and not future.done():
+                                    future.set_result(answers)
+                            elif item.get("session_id") and item.get("session_id") != session_id:
+                                # Different session — re-queue for the outer loop
+                                pending_ws_msgs.put_nowait(item)
+                                break
+                            elif item.get("type") == "resume":
+                                # Another resume — update position and replay if needed
+                                new_last_seq = item.get("last_seq", 0)
+                                if new_last_seq > last_seen:
+                                    more_history = await buffer.get_history(
+                                        session_id, after_index=last_seen, user_id=user_id,
+                                    )
+                                    for h in more_history:
+                                        if not await _send(
+                                            websocket,
+                                            {
+                                                **h,
+                                                "index": h.get("seq", 0),
+                                                "replay": True,
+                                                "session_id": session_id,
+                                            },
+                                        ):
+                                            break
+                                    last_seen = last_seen + len(more_history)
+                                continue
+                            else:
+                                # New chat message — re-queue for the outer loop
+                                logger.info("[WS] Resume loop: new chat, re-queuing and breaking")
+                                pending_ws_msgs.put_nowait(item)
+                                break
+                        except asyncio.QueueEmpty:
+                            pass
+
+                        # Pull new messages from buffer
+                        new_messages = await buffer.get_history(session_id, after_index=last_seen, user_id=user_id)
+                        for h in new_messages:
+                            idx = h.get("seq", last_seen)
+                            if not await _send(
+                                websocket,
+                                {
+                                    **h,
+                                    "index": idx,
+                                    "replay": False,
+                                    "session_id": session_id,
+                                },
+                            ):
+                                break
+                            last_seen = idx
+
+                        # If session is done, emit final state and exit
+                        if await buffer.is_done(session_id):
+                            last_seen, ok = await _emit_synthetic_state_change_if_missing(
+                                websocket, session_id, last_seen, send_fn=_send,
+                            )
+                            if not ok:
+                                break
+                            last_seen, ok = await _handle_orphaned_running(
+                                websocket, session_id, last_seen, send_fn=_send,
+                            )
+                            if not ok:
+                                break
+                            break
+
+                        # Send heartbeat if interval has elapsed
+                        last_hb_time, hb_ok = await _maybe_send_heartbeat(
+                            last_hb_time, session_id, last_seen,
+                            active_tasks, buffer, websocket,
+                            send_fn=_send,
+                        )
+                        if not hb_ok:
+                            break
+
+                        ws_msg = await _wait_for_ws_or_buffer(
+                            event, pending_ws_msgs, HEARTBEAT_INTERVAL
+                        )
+                        if ws_msg:
+                            continue  # re-check at top of loop
+                        # Timeout — send heartbeat unconditionally
+                        last_hb_time, hb_ok = await _maybe_send_heartbeat(
+                            0.0, session_id, last_seen,
+                            active_tasks, buffer, websocket,
+                            send_fn=_send,
+                        )
+                        if not hb_ok:
+                            break
+                except Exception:
+                    logger.exception("[WS] Resume loop error for session=%s", session_id)
+                finally:
+                    buffer.unsubscribe(session_id, event)
+                    current_session_id = None
                 continue  # Back to outer loop
 
             # ── Chat: start or reuse agent task ──────────────────────────────
@@ -2231,7 +2389,7 @@ async def handle_ws(websocket: WebSocket) -> None:
                         if item is None:
                             return  # WebSocket closed
                         if item.get("_user_id_mismatch"):
-                            await _safe_ws_send(
+                            await _send(
                                 websocket,
                                 {
                                     "type": "error",
@@ -2256,8 +2414,8 @@ async def handle_ws(websocket: WebSocket) -> None:
                             # after this subscribe loop exits
                             pending_ws_msgs.put_nowait(item)
                             break
-                        elif item.get("type") == "recover":
-                            continue  # ignore duplicate recover for SAME session
+                        elif item.get("type") in ("recover", "resume"):
+                            continue  # ignore duplicate recover/resume for SAME session
                         else:
                             # Chat message for same session while agent is running.
                             # Cancel the current task, re-queue the message, and break
@@ -2300,7 +2458,7 @@ async def handle_ws(websocket: WebSocket) -> None:
                     except asyncio.QueueEmpty:
                         pass
 
-                    new_messages = await buffer.get_history(session_id, after_index=last_seen)
+                    new_messages = await buffer.get_history(session_id, after_index=last_seen, user_id=user_id)
                     sent_count = 0
                     for i, h in enumerate(new_messages):
                         idx = h.get("seq", last_seen + i)
@@ -2313,7 +2471,7 @@ async def handle_ws(websocket: WebSocket) -> None:
                                 session_id,
                                 idx,
                             )
-                        if not await _safe_ws_send(
+                        if not await _send(
                             websocket,
                             {
                                 **h,
@@ -2330,11 +2488,11 @@ async def handle_ws(websocket: WebSocket) -> None:
                     # session_state_changed: completed is not missed
                     # (it may have been added after the get_history snapshot).
                     if await buffer.is_done(session_id):
-                        final_messages = await buffer.get_history(session_id, after_index=last_seen)
+                        final_messages = await buffer.get_history(session_id, after_index=last_seen, user_id=user_id)
                         final_sent = 0
                         for i, h in enumerate(final_messages):
                             idx = h.get("seq", last_seen + i)
-                            if not await _safe_ws_send(
+                            if not await _send(
                                 websocket,
                                 {
                                     **h,
@@ -2347,7 +2505,7 @@ async def handle_ws(websocket: WebSocket) -> None:
                             final_sent += 1
                         last_seen += final_sent
 
-                        last_seen, ok = await _emit_synthetic_state_change_if_missing(websocket, session_id, last_seen)
+                        last_seen, ok = await _emit_synthetic_state_change_if_missing(websocket, session_id, last_seen, send_fn=_send)
                         if not ok:
                             break
 
@@ -2355,7 +2513,7 @@ async def handle_ws(websocket: WebSocket) -> None:
                         # "running" sessions (server restart while agent
                         # was active). Emit terminal error so the frontend
                         # doesn't spin forever.
-                        last_seen, ok = await _handle_orphaned_running(websocket, session_id, last_seen)
+                        last_seen, ok = await _handle_orphaned_running(websocket, session_id, last_seen, send_fn=_send)
                         if not ok:
                             break
                         break
@@ -2366,6 +2524,7 @@ async def handle_ws(websocket: WebSocket) -> None:
                     last_hb_time, hb_ok = await _maybe_send_heartbeat(
                         last_hb_time, session_id, last_seen,
                         active_tasks, buffer, websocket,
+                        send_fn=_send,
                     )
                     if not hb_ok:
                         break
@@ -2378,6 +2537,7 @@ async def handle_ws(websocket: WebSocket) -> None:
                     last_hb_time, hb_ok = await _maybe_send_heartbeat(
                         0.0, session_id, last_seen,
                         active_tasks, buffer, websocket,
+                        send_fn=_send,
                     )
                     if not hb_ok:
                         break
@@ -2432,6 +2592,7 @@ async def _maybe_send_heartbeat(
     buffer: MessageBuffer,
     websocket: WebSocket,
     interval: float = HEARTBEAT_INTERVAL,
+    send_fn=None,
 ) -> tuple[float, bool]:
     """Send a heartbeat if enough time has elapsed since the last one.
 
@@ -2443,6 +2604,7 @@ async def _maybe_send_heartbeat(
     Returns (updated_last_hb_time, ok).  ``ok`` is ``False`` when the
     WebSocket send failed — the caller should break out of its loop.
     """
+    _send_ws = send_fn if send_fn else _safe_ws_send
     now = time.monotonic()
     if now - last_hb_time < interval:
         return last_hb_time, True
@@ -2457,7 +2619,7 @@ async def _maybe_send_heartbeat(
         agent_alive = task_key in active_tasks and not active_tasks[task_key].done()
 
     hb = make_heartbeat(agent_alive=agent_alive)
-    ok = await _safe_ws_send(
+    ok = await _send_ws(
         websocket,
         {
             **hb,

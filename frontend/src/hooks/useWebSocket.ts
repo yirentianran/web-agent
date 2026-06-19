@@ -7,10 +7,11 @@ const logger = createLogger("[WebSocket]");
 
 /** Outgoing WebSocket message shape — sent from frontend to backend. */
 export interface WSOutgoingMessage {
-  type?: "chat" | "answer" | "recover";
+  type?: "chat" | "answer" | "recover" | "resume";
   message?: string;
   session_id?: string;
   last_index?: number;
+  last_seq?: number;
   files?: (string | { stored_name: string; size: number })[];
   answers?: Record<string, string>;
   client_msg_id?: string;
@@ -22,6 +23,8 @@ export type ConnectionStatus =
   | "connected"
   | "connecting"
   | "reconnecting"
+  | "recovered"
+  | "expired"
   | "failed";
 
 /** Pending send tracked by client_msg_id. */
@@ -82,6 +85,11 @@ export function useWebSocket({
 
   // Track active recover calls — keyed by sessionId, value is the timeout timer
   const recoverTimers = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
+
+  // Track last received seq per session for resume on reconnect
+  const lastSeqRef = useRef<Map<string, number>>(new Map());
+  // Track which session was active when disconnect happened
+  const activeSessionRef = useRef<string | null>(null);
 
   // Keep refs in sync on every render
   useEffect(() => {
@@ -191,6 +199,25 @@ export function useWebSocket({
       logger.debug("Connected, wsRef:", wsRef.current === ws, "readyState:", ws.readyState);
       onConnectRef.current?.();
       flushPendingRef.current();
+
+      // If we have an active session from before disconnect, try resume
+      const activeSid = activeSessionRef.current;
+      if (activeSid && lastSeqRef.current.has(activeSid)) {
+        const lastSeq = lastSeqRef.current.get(activeSid) ?? 0;
+        const resumePayload = JSON.stringify({
+          type: "resume",
+          session_id: activeSid,
+          last_seq: lastSeq,
+          user_id: userIdRef.current,
+        });
+        logger.debug("Sending resume for session:", activeSid, "lastSeq:", lastSeq);
+        try {
+          ws.send(resumePayload);
+          setStatus("recovered");
+        } catch {
+          logger.warn("Failed to send resume payload");
+        }
+      }
     };
 
     ws.onmessage = (event) => {
@@ -200,6 +227,27 @@ export function useWebSocket({
         if (data.type === "auth_error") {
           intentionalClose = true;
         }
+
+        // Track last index per session for resume.
+        // Prefer index (session-level buffer counter) over seq
+        // (connection-level counter) because buffer.get_history
+        // filters by the session-level seq. Heartbeats and synthetic
+        // messages increment the connection counter but not the
+        // buffer counter, so using seq would create a mismatch.
+        const sid = data.session_id;
+        const idx = data.index ?? data.seq;
+        if (sid && idx != null) {
+          const current = lastSeqRef.current.get(sid) ?? 0;
+          if (idx > current) {
+            lastSeqRef.current.set(sid, idx);
+          }
+        }
+
+        // Track active session for resume on reconnect
+        if (data.session_id) {
+          activeSessionRef.current = data.session_id;
+        }
+
         onMessageRef.current(data as Message);
       } catch {
         // ignore parse errors

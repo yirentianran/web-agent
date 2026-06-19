@@ -2,7 +2,8 @@ import React from 'react'
 import { describe, it, expect, vi } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import '@testing-library/jest-dom/vitest'
-import MessageBubble, { formatBashCommand, formatFileContent, parseTagBlocks, hasIncompleteTag, pairToolMessages } from '../components/MessageBubble'
+import MessageBubble, { parseTagBlocks, hasIncompleteTag, pairToolMessages } from '../components/MessageBubble'
+import { formatBashCommand, formatFileContent } from '../components/ToolCard'
 import type { Message } from '../lib/types'
 
 function renderMessage(message: Message, overrides?: Partial<React.ComponentProps<typeof MessageBubble>>) {
@@ -557,9 +558,9 @@ describe('MessageBubble - tool result rendering', () => {
     }
 
     const { container } = renderMessage(message)
-    expect(container.querySelector('.error-message')).toBeInTheDocument()
-    expect(container.querySelector('.bubble.error')).toBeInTheDocument()
+    expect(container.querySelector('.error-card')).toBeInTheDocument()
     expect(screen.getByText('Connection refused: timeout')).toBeInTheDocument()
+    expect(screen.getByText('🟡')).toBeInTheDocument()
   })
 
   it('falls back to content field for error messages when message field is empty', () => {
@@ -570,7 +571,7 @@ describe('MessageBubble - tool result rendering', () => {
     }
 
     const { container } = renderMessage(message)
-    expect(container.querySelector('.error-message')).toBeInTheDocument()
+    expect(container.querySelector('.error-card')).toBeInTheDocument()
     expect(screen.getByText('Task execution failed')).toBeInTheDocument()
   })
 })

@@ -2,6 +2,10 @@ export interface Message {
   type: 'user' | 'assistant' | 'system' | 'tool_use' | 'tool_result' | 'result' | 'error' | 'stream_event' | 'file_upload' | 'file_result' | 'heartbeat' | 'auth_error'
   content: string
   message?: string  // error messages from backend
+  // Error severity fields (from backend 2026-06-19 error classification)
+  severity?: 'critical' | 'retryable' | 'actionable'
+  detail?: string
+  actions?: Array<{ label: string; kind: string }>
   subtype?: string
   name?: string
   index: number
@@ -50,7 +54,7 @@ export function isUnconfirmed(m: Message): boolean {
 export type SessionStatus = 'idle' | 'running' | 'completed' | 'error' | 'waiting_user' | 'cancelled'
 
 /** WebSocket connection status */
-export type ConnectionStatus = 'connected' | 'connecting' | 'reconnecting' | 'failed'
+export type ConnectionStatus = 'connected' | 'connecting' | 'reconnecting' | 'recovered' | 'expired' | 'failed'
 
 export interface SessionItem {
   session_id: string

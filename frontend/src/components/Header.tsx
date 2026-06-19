@@ -26,6 +26,8 @@ export default function Header({ connectionStatus, userId, authToken, onOpenSkil
     connected: 'connection.connected',
     connecting: 'connection.connecting',
     reconnecting: 'connection.reconnecting',
+    recovered: 'connection.recovered',
+    expired: 'connection.expired',
     failed: 'connection.failed',
   }
 
@@ -37,7 +39,7 @@ export default function Header({ connectionStatus, userId, authToken, onOpenSkil
       </div>
       <div className="app-header-actions">
         <div className="app-connection">
-          <span className={`app-status-dot ${connectionStatus === 'connected' ? 'connected' : connectionStatus === 'failed' ? 'failed' : 'reconnecting'}`} />
+          <span className={`app-status-dot ${connectionStatus === 'connected' || connectionStatus === 'recovered' ? 'connected' : connectionStatus === 'failed' || connectionStatus === 'expired' ? 'failed' : 'reconnecting'}`} />
           <span className="app-status-text">{t(statusKey[connectionStatus])}</span>
         </div>
         <LanguageSwitcher userId={userId} authToken={authToken} />
