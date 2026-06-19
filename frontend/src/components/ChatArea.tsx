@@ -4,6 +4,7 @@ import MessageBubble, { pairToolMessages } from "./MessageBubble";
 import ToolGroupRenderer, {
   groupConsecutiveTools,
 } from "./ToolGroupRenderer";
+import ProgressBar, { detectPhase, type Phase } from "./ProgressBar";
 
 import StatusSpinner from "./StatusSpinner";
 import type { Message, SessionStatus } from "../lib/types";
@@ -381,6 +382,15 @@ export default function ChatArea({
     return groupConsecutiveTools(paired);
   }, [messages, lastTodoWriteIndex]);
 
+  const currentPhase: Phase = useMemo(() => detectPhase(messages), [messages]);
+
+  // Only show the progress bar when the agent is running, there are messages,
+  // and we have a recognized phase.
+  const showProgressBar =
+    sessionState === 'running' &&
+    messages.length > 0 &&
+    currentPhase !== 'working';
+
   // Filter out invisible message types for the welcome screen check.
   // If a session only has heartbeats / internal state messages, show the welcome screen.
   const hasVisibleMessages = useMemo(() => {
@@ -433,7 +443,9 @@ export default function ChatArea({
         )}
 
         {sessionId !== null && (
-          <MessageList
+          <>
+            <ProgressBar currentPhase={currentPhase} visible={showProgressBar} />
+            <MessageList
             messages={visibleMessages}
             sessionId={sessionId}
             onAnswer={onAnswer}
@@ -443,6 +455,7 @@ export default function ChatArea({
             lastUserMsgIndex={lastUserMsgIndex}
             authToken={authToken}
           />
+          </>
         )}
 
         {/* Streaming text indicator — shows accumulated content_block_delta text */}
