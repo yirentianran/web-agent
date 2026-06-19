@@ -8,6 +8,7 @@ and emits InternalEvent to the shared event pipeline.
 from __future__ import annotations
 
 import asyncio
+import functools
 import logging
 import time
 from pathlib import Path
@@ -79,7 +80,11 @@ class LocalAgentExecutor:
         self._get_cached_system_prompt = get_cached_system_prompt_fn
         self._resolve_user_language = resolve_user_language_fn
         self._load_instinct_context = load_instinct_context_fn
-        self._cleanup = cleanup_fn
+        self._cleanup = (
+            functools.partial(cleanup_fn, session_agents=self._session_agents)
+            if cleanup_fn is not None
+            else None
+        )
 
     async def run(
         self,
