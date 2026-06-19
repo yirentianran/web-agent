@@ -201,7 +201,9 @@
     "resultCopied": "已复制",
     "resultUsage": "⏱ {{duration}} · {{turns}} 轮 · {{tokens}} tokens",
     "showDetails": "展开详情",
-    "hideDetails": "收起详情"
+    "hideDetails": "收起详情",
+    "andMore": "+{{count}} 个",
+    "toolCalls": "个工具调用"
   },
   "spinner": {
     "timeHours": "{{count}}时",

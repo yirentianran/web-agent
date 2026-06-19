@@ -5250,3 +5250,56 @@ body {
   word-break: break-all;
 }
 
+/* ── Tool group card ─────────────────────────────────────────── */
+
+.tool-group {
+  border: 1px solid var(--color-border, #e0e0e0);
+  border-radius: 0.5rem;
+  margin: 0.5rem 0;
+}
+
+.tool-group__summary {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.6rem 0.75rem;
+  cursor: pointer;
+  list-style: none;
+  font-weight: 500;
+}
+
+.tool-group__summary::-webkit-details-marker {
+  display: none;
+}
+
+.tool-group__preview {
+  padding: 0 0.75rem 0.5rem;
+}
+
+.tool-group__item {
+  font-size: 0.8rem;
+  color: var(--color-text-secondary, #666);
+  padding: 0.15rem 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tool-group__more {
+  font-size: 0.78rem;
+  color: var(--color-accent, #3b82f6);
+  padding-top: 0.2rem;
+  cursor: default;
+}
+
+.tool-group__expanded {
+  padding: 0 0.5rem 0.5rem;
+  border-top: 1px solid var(--color-border, #e0e0e0);
+}
+
+.tool-duration {
+  font-size: 0.75rem;
+  color: var(--color-text-secondary, #666);
+  margin-left: auto;
+}
+
