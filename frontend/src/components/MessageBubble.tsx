@@ -2,6 +2,7 @@ import { memo, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import type { Message } from '../lib/types'
 import MarkdownRenderer from './MarkdownRenderer'
+import ErrorCard from './ErrorCard'
 import { FileCardList } from './FileCards'
 import AskUserQuestionCard from './AskUserQuestionCard'
 import TodoWriteViz from './TodoWriteViz'
@@ -636,15 +637,22 @@ const MessageBubble = memo(function MessageBubble({ message, sessionId, onAnswer
   }
 
   if (message.type === 'error') {
-    const errorText = message.content || message.message || t('message.errorOccurred')
+    const errorText = message.message || message.content || t('message.errorOccurred')
     const isResolved = isResolvedMessage(message, lastUserMsgIndex)
+    const severity = message.severity || 'retryable'
     return (
-      <div className={`message error-message${isResolved ? ' error-message--resolved' : ''}`}>
-        <div className="bubble error">
-          {isResolved && <span className="error-resolved-badge">{t('message.past')}</span>}
-          <MarkdownRenderer>{errorText}</MarkdownRenderer>
-        </div>
-      </div>
+      <ErrorCard
+        message={errorText}
+        severity={severity}
+        detail={message.detail}
+        actions={message.actions}
+        isResolved={isResolved}
+        onAction={(kind) => {
+          if (kind === 'new_session') {
+            window.location.hash = ''
+          }
+        }}
+      />
     )
   }
 

@@ -199,7 +199,9 @@
     "collapse": "Collapse",
     "copyResult": "Copy",
     "resultCopied": "Copied!",
-    "resultUsage": "⏱ {{duration}} · {{turns}} turns · {{tokens}} tokens"
+    "resultUsage": "⏱ {{duration}} · {{turns}} turns · {{tokens}} tokens",
+    "showDetails": "Show details",
+    "hideDetails": "Hide details"
   },
   "spinner": {
     "timeHours": "{{count}}h",
