@@ -2184,12 +2184,12 @@ async def handle_ws(websocket: WebSocket) -> None:
                         # If session is done, emit final state and exit
                         if await buffer.is_done(session_id):
                             last_seen, ok = await _emit_synthetic_state_change_if_missing(
-                                websocket, session_id, last_seen
+                                websocket, session_id, last_seen, send_fn=_send,
                             )
                             if not ok:
                                 break
                             last_seen, ok = await _handle_orphaned_running(
-                                websocket, session_id, last_seen
+                                websocket, session_id, last_seen, send_fn=_send,
                             )
                             if not ok:
                                 break
@@ -2199,6 +2199,7 @@ async def handle_ws(websocket: WebSocket) -> None:
                         last_hb_time, hb_ok = await _maybe_send_heartbeat(
                             last_hb_time, session_id, last_seen,
                             active_tasks, buffer, websocket,
+                            send_fn=_send,
                         )
                         if not hb_ok:
                             break
@@ -2212,6 +2213,7 @@ async def handle_ws(websocket: WebSocket) -> None:
                         last_hb_time, hb_ok = await _maybe_send_heartbeat(
                             0.0, session_id, last_seen,
                             active_tasks, buffer, websocket,
+                            send_fn=_send,
                         )
                         if not hb_ok:
                             break

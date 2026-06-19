@@ -228,13 +228,18 @@ export function useWebSocket({
           intentionalClose = true;
         }
 
-        // Track last seq per session for resume
+        // Track last index per session for resume.
+        // Prefer index (session-level buffer counter) over seq
+        // (connection-level counter) because buffer.get_history
+        // filters by the session-level seq. Heartbeats and synthetic
+        // messages increment the connection counter but not the
+        // buffer counter, so using seq would create a mismatch.
         const sid = data.session_id;
-        const seq = data.seq ?? data.index;
-        if (sid && seq != null) {
+        const idx = data.index ?? data.seq;
+        if (sid && idx != null) {
           const current = lastSeqRef.current.get(sid) ?? 0;
-          if (seq > current) {
-            lastSeqRef.current.set(sid, seq);
+          if (idx > current) {
+            lastSeqRef.current.set(sid, idx);
           }
         }
 
