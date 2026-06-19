@@ -389,8 +389,7 @@ export default function ChatArea({
   // and we have a recognized phase.
   const showProgressBar =
     sessionState === 'running' &&
-    messages.length > 0 &&
-    currentPhase !== 'working';
+    messages.length > 0;
 
   // When the agent completes, keep the progress bar visible for 2 seconds
   // so the user can see which phases ran and which tools were used.

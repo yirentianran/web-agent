@@ -72,7 +72,7 @@ describe('detectPhase', () => {
     expect(detectPhase([])).toBe('analyze')
   })
 
-  it('returns analyze when only Read/Grep/Glob tools used', () => {
+  it('returns analyze when only read/search tools used', () => {
     const msgs = [
       makeToolUse('Read', 1),
       makeToolUse('Grep', 2),
@@ -91,7 +91,7 @@ describe('detectPhase', () => {
     expect(detectPhase(msgs)).toBe('edit')
   })
 
-  it('returns verify when Bash is used after edits', () => {
+  it('returns verify when Bash is used', () => {
     const msgs = [
       makeToolUse('Read', 1),
       makeToolUse('Write', 2),
@@ -100,21 +100,21 @@ describe('detectPhase', () => {
     expect(detectPhase(msgs)).toBe('verify')
   })
 
-  it('returns working for mixed unknown tools', () => {
+  it('returns analyze for unknown tools instead of hiding', () => {
+    // Agent, Skill, MCP tools, etc. — should NOT cause the bar to disappear
     const msgs = [makeToolUse('Skill', 1), makeToolUse('Agent', 2)]
-    expect(detectPhase(msgs)).toBe('working')
+    expect(detectPhase(msgs)).toBe('analyze')
   })
 
-  it('ignores TodoWrite in phase detection', () => {
+  it('ignores TodoWrite and AskUserQuestion', () => {
     const msgs = [
       makeToolUse('TodoWrite', 1),
-      makeToolUse('Read', 2),
+      makeToolUse('AskUserQuestion', 2),
     ]
     expect(detectPhase(msgs)).toBe('analyze')
   })
 
   it('only considers current turn after last user message', () => {
-    // Round 1: edit + verify happened, then user sent new message
     const msgs: Message[] = [
       makeToolUse('Read', 1),
       makeToolUse('Write', 2),
@@ -146,6 +146,11 @@ describe('detectPhase', () => {
     ]
     expect(detectPhase(msgs)).toBe('edit')
   })
+
+  it('verify can appear without prior edit (standalone Bash)', () => {
+    const msgs = [makeToolUse('Bash', 1)]
+    expect(detectPhase(msgs)).toBe('verify')
+  })
 })
 
 describe('computeToolCounts', () => {
@@ -153,13 +158,12 @@ describe('computeToolCounts', () => {
     expect(computeToolCounts([])).toEqual({ analyze: 0, edit: 0, verify: 0 })
   })
 
-  it('counts read tools as analyze', () => {
+  it('counts unknown tools as analyze', () => {
     const msgs = [
-      makeToolUse('Read', 1),
-      makeToolUse('Grep', 2),
-      makeToolUse('WebSearch', 3),
+      makeToolUse('Skill', 1),
+      makeToolUse('Agent', 2),
     ]
-    expect(computeToolCounts(msgs)).toEqual({ analyze: 3, edit: 0, verify: 0 })
+    expect(computeToolCounts(msgs)).toEqual({ analyze: 2, edit: 0, verify: 0 })
   })
 
   it('counts Write/Edit as edit', () => {
@@ -181,10 +185,11 @@ describe('computeToolCounts', () => {
     expect(computeToolCounts(msgs)).toEqual({ analyze: 1, edit: 1, verify: 2 })
   })
 
-  it('skips TodoWrite', () => {
+  it('skips TodoWrite and AskUserQuestion', () => {
     const msgs = [
       makeToolUse('TodoWrite', 1),
-      makeToolUse('Read', 2),
+      makeToolUse('AskUserQuestion', 2),
+      makeToolUse('Read', 3),
     ]
     expect(computeToolCounts(msgs)).toEqual({ analyze: 1, edit: 0, verify: 0 })
   })

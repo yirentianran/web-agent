@@ -1,7 +1,7 @@
 import { useTranslation } from 'react-i18next'
 import type { Message } from '../lib/types'
 
-export type Phase = 'analyze' | 'edit' | 'verify' | 'working'
+export type Phase = 'analyze' | 'edit' | 'verify'
 
 interface PhaseInfo {
   key: Phase
@@ -63,6 +63,12 @@ export default function ProgressBar({ currentPhase, visible, toolCounts }: Progr
   )
 }
 
+// Tools whose calls are internal bookkeeping, not user-visible work.
+const SKIP_TOOLS = new Set(['TodoWrite', 'AskUserQuestion'])
+
+// Tools that mutate files — signal the "edit" phase.
+const EDIT_TOOLS = new Set(['Write', 'Edit'])
+
 /**
  * Count how many current-turn tool calls fall into each phase bucket.
  * Only scans messages since the last user message.
@@ -72,32 +78,26 @@ export function computeToolCounts(messages: Message[]): ToolCounts {
   for (let i = messages.length - 1; i >= 0; i--) {
     const m = messages[i]
     if (m.type === 'user') break
-    if (m.type === 'tool_use' && m.name !== 'TodoWrite') toolUses.unshift(m)
+    if (m.type === 'tool_use' && !SKIP_TOOLS.has(m.name || '')) toolUses.unshift(m)
   }
 
-  const readTools = new Set(['Read', 'Grep', 'Glob', 'WebSearch', 'WebFetch'])
   return {
-    analyze: toolUses.filter(m => readTools.has(m.name || '')).length,
-    edit: toolUses.filter(m => m.name === 'Write' || m.name === 'Edit').length,
+    analyze: toolUses.filter(m => !EDIT_TOOLS.has(m.name || '') && m.name !== 'Bash').length,
+    edit: toolUses.filter(m => EDIT_TOOLS.has(m.name || '')).length,
     verify: toolUses.filter(m => m.name === 'Bash').length,
   }
 }
 
 /**
- * Detect the agent's current phase from message history.
+ * Detect the agent's current phase from the current turn's tool calls.
  *
- * Only considers messages from the *current* agent turn (since the last
- * user message). This avoids stale phase detection from prior turns.
- *
- * Heuristic:
- *  - No tool_use messages → 'analyze' (initial state)
- *  - Only read/search tool calls so far → 'analyze'
- *  - First Write/Edit observed → 'edit'
- *  - First Bash observed (after Write/Edit) → 'verify'
- *  - Otherwise → 'working' (fallback)
+ * Only scans messages since the last user message so each conversation
+ * turn gets a fresh progression. Unknown tools (MCP, Skill, Agent, …)
+ * are treated as part of the analyze phase — the bar never hides because
+ * of an unrecognized tool name.
  */
 export function detectPhase(messages: Message[]): Phase {
-  // Only consider tool_use messages from the current agent turn
+  // Collect tool_use messages from the current turn only
   const toolUses: Message[] = []
   for (let i = messages.length - 1; i >= 0; i--) {
     const m = messages[i]
@@ -107,29 +107,20 @@ export function detectPhase(messages: Message[]): Phase {
 
   if (toolUses.length === 0) return 'analyze'
 
-  // Skip TodoWrite — it's internal bookkeeping, not user-visible work
-  const workTools = toolUses.filter(m => m.name !== 'TodoWrite')
+  const workTools = toolUses.filter(m => !SKIP_TOOLS.has(m.name || ''))
 
-  const readTools = new Set(['Read', 'Grep', 'Glob', 'WebSearch', 'WebFetch'])
   let hasEdit = false
   let hasVerify = false
 
   for (const msg of workTools) {
     const name = msg.name || ''
-    if (name === 'Write' || name === 'Edit') {
-      hasEdit = true
-    }
-    if (name === 'Bash' && hasEdit) {
-      hasVerify = true
-    }
+    if (EDIT_TOOLS.has(name)) hasEdit = true
+    if (name === 'Bash') hasVerify = true
   }
 
   if (hasVerify) return 'verify'
   if (hasEdit) return 'edit'
-
-  // Check if ALL work tools are read-type
-  const allReads = workTools.every(m => readTools.has(m.name || ''))
-  if (allReads) return 'analyze'
-
-  return 'working'
+  // Everything else — Read, Grep, Glob, WebSearch, WebFetch, Agent,
+  // Skill, MCP tools, unknown — is analysis work.
+  return 'analyze'
 }
