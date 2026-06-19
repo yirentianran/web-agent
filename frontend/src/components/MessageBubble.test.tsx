@@ -2,7 +2,8 @@ import React from 'react'
 import { describe, it, expect, vi } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import '@testing-library/jest-dom/vitest'
-import MessageBubble, { formatBashCommand, formatFileContent, parseTagBlocks, hasIncompleteTag, pairToolMessages } from '../components/MessageBubble'
+import MessageBubble, { parseTagBlocks, hasIncompleteTag, pairToolMessages } from '../components/MessageBubble'
+import { formatBashCommand, formatFileContent } from '../components/ToolCard'
 import type { Message } from '../lib/types'
 
 function renderMessage(message: Message, overrides?: Partial<React.ComponentProps<typeof MessageBubble>>) {
