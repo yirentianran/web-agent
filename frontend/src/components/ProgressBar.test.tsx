@@ -91,4 +91,46 @@ describe('detectPhase', () => {
     const msgs = [makeToolUse('Skill', 1), makeToolUse('Agent', 2)]
     expect(detectPhase(msgs)).toBe('working')
   })
+
+  it('ignores TodoWrite in phase detection', () => {
+    const msgs = [
+      makeToolUse('TodoWrite', 1),
+      makeToolUse('Read', 2),
+    ]
+    expect(detectPhase(msgs)).toBe('analyze')
+  })
+
+  it('only considers current turn after last user message', () => {
+    // Round 1: edit + verify happened, then user sent new message
+    const msgs: Message[] = [
+      makeToolUse('Read', 1),
+      makeToolUse('Write', 2),
+      makeToolUse('Bash', 3),
+      { type: 'user', index: 4, content: 'new request' } as Message,
+      makeToolUse('Read', 5),
+      makeToolUse('Grep', 6),
+    ]
+    expect(detectPhase(msgs)).toBe('analyze')
+  })
+
+  it('returns analyze when no tool_use in current turn', () => {
+    const msgs: Message[] = [
+      makeToolUse('Write', 1),
+      makeToolUse('Bash', 2),
+      { type: 'user', index: 3, content: 'hello' } as Message,
+    ]
+    expect(detectPhase(msgs)).toBe('analyze')
+  })
+
+  it('detects edit phase in current turn ignoring prior turns', () => {
+    const msgs: Message[] = [
+      makeToolUse('Read', 1),
+      makeToolUse('Write', 2),
+      makeToolUse('Bash', 3),
+      { type: 'user', index: 4, content: 'fix bug' } as Message,
+      makeToolUse('Read', 5),
+      makeToolUse('Edit', 6),
+    ]
+    expect(detectPhase(msgs)).toBe('edit')
+  })
 })
