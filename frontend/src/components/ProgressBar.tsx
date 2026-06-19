@@ -15,12 +15,19 @@ const PHASES: PhaseInfo[] = [
   { key: 'verify', labelKey: 'progress.verify', icon: '✓' },
 ]
 
+export interface ToolCounts {
+  analyze: number
+  edit: number
+  verify: number
+}
+
 interface ProgressBarProps {
   currentPhase: Phase
   visible: boolean
+  toolCounts?: ToolCounts
 }
 
-export default function ProgressBar({ currentPhase, visible }: ProgressBarProps) {
+export default function ProgressBar({ currentPhase, visible, toolCounts }: ProgressBarProps) {
   const { t } = useTranslation()
 
   if (!visible) return null
@@ -35,12 +42,17 @@ export default function ProgressBar({ currentPhase, visible }: ProgressBarProps)
         else if (i === currentIdx) status = 'active'
         else status = 'pending'
 
+        const count = toolCounts?.[phase.key as keyof ToolCounts]
+        const label = count != null && count > 0
+          ? `${t(phase.labelKey)} · ${count}`
+          : t(phase.labelKey)
+
         return (
           <div key={phase.key} className={`progress-step progress-step--${status}`}>
             <span className="progress-step__icon" aria-hidden="true">
               {status === 'done' ? '✅' : phase.icon}
             </span>
-            <span className="progress-step__label">{t(phase.labelKey)}</span>
+            <span className="progress-step__label">{label}</span>
             {i < PHASES.length - 1 && (
               <span className="progress-step__arrow" aria-hidden="true">→</span>
             )}
@@ -49,6 +61,26 @@ export default function ProgressBar({ currentPhase, visible }: ProgressBarProps)
       })}
     </div>
   )
+}
+
+/**
+ * Count how many current-turn tool calls fall into each phase bucket.
+ * Only scans messages since the last user message.
+ */
+export function computeToolCounts(messages: Message[]): ToolCounts {
+  const toolUses: Message[] = []
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i]
+    if (m.type === 'user') break
+    if (m.type === 'tool_use' && m.name !== 'TodoWrite') toolUses.unshift(m)
+  }
+
+  const readTools = new Set(['Read', 'Grep', 'Glob', 'WebSearch', 'WebFetch'])
+  return {
+    analyze: toolUses.filter(m => readTools.has(m.name || '')).length,
+    edit: toolUses.filter(m => m.name === 'Write' || m.name === 'Edit').length,
+    verify: toolUses.filter(m => m.name === 'Bash').length,
+  }
 }
 
 /**

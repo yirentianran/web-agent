@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest'
 import { render, screen } from '@testing-library/react'
-import ProgressBar, { detectPhase } from './ProgressBar'
+import ProgressBar, { detectPhase, computeToolCounts } from './ProgressBar'
 import type { Message } from '../lib/types'
 
 vi.mock('react-i18next', () => ({
@@ -51,6 +51,19 @@ describe('ProgressBar', () => {
   it('has correct ARIA role', () => {
     render(<ProgressBar currentPhase="analyze" visible={true} />)
     expect(screen.getByRole('status')).toBeTruthy()
+  })
+
+  it('shows tool count next to phase label', () => {
+    render(
+      <ProgressBar
+        currentPhase="edit"
+        visible={true}
+        toolCounts={{ analyze: 3, edit: 1, verify: 0 }}
+      />,
+    )
+    expect(screen.getByText('Analyze · 3')).toBeTruthy()
+    expect(screen.getByText('Edit code · 1')).toBeTruthy()
+    expect(screen.getByText('Verify')).toBeTruthy()
   })
 })
 
@@ -132,5 +145,58 @@ describe('detectPhase', () => {
       makeToolUse('Edit', 6),
     ]
     expect(detectPhase(msgs)).toBe('edit')
+  })
+})
+
+describe('computeToolCounts', () => {
+  it('returns zeros for empty messages', () => {
+    expect(computeToolCounts([])).toEqual({ analyze: 0, edit: 0, verify: 0 })
+  })
+
+  it('counts read tools as analyze', () => {
+    const msgs = [
+      makeToolUse('Read', 1),
+      makeToolUse('Grep', 2),
+      makeToolUse('WebSearch', 3),
+    ]
+    expect(computeToolCounts(msgs)).toEqual({ analyze: 3, edit: 0, verify: 0 })
+  })
+
+  it('counts Write/Edit as edit', () => {
+    const msgs = [
+      makeToolUse('Read', 1),
+      makeToolUse('Write', 2),
+      makeToolUse('Edit', 3),
+    ]
+    expect(computeToolCounts(msgs)).toEqual({ analyze: 1, edit: 2, verify: 0 })
+  })
+
+  it('counts Bash as verify', () => {
+    const msgs = [
+      makeToolUse('Read', 1),
+      makeToolUse('Write', 2),
+      makeToolUse('Bash', 3),
+      makeToolUse('Bash', 4),
+    ]
+    expect(computeToolCounts(msgs)).toEqual({ analyze: 1, edit: 1, verify: 2 })
+  })
+
+  it('skips TodoWrite', () => {
+    const msgs = [
+      makeToolUse('TodoWrite', 1),
+      makeToolUse('Read', 2),
+    ]
+    expect(computeToolCounts(msgs)).toEqual({ analyze: 1, edit: 0, verify: 0 })
+  })
+
+  it('only counts current turn after user message', () => {
+    const msgs: Message[] = [
+      makeToolUse('Read', 1),
+      makeToolUse('Write', 2),
+      { type: 'user', index: 3, content: 'next' } as Message,
+      makeToolUse('Grep', 4),
+      makeToolUse('Grep', 5),
+    ]
+    expect(computeToolCounts(msgs)).toEqual({ analyze: 2, edit: 0, verify: 0 })
   })
 })
