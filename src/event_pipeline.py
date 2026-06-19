@@ -9,11 +9,15 @@ teardown live here so the two code paths stay in sync.
 from __future__ import annotations
 
 import asyncio
+import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+logger = logging.getLogger(__name__)
+
+from src.agent.protocol import InternalEvent
 from src.file_utils import build_download_url, should_include_generated_file
 from src.skill_manager import record_skill_usage_from_event
 from src.truncation import maybe_truncate_tool_result_content
@@ -32,13 +36,16 @@ class EventContext:
     generated_files: list[dict] = field(default_factory=list)
 
 
-async def process_event(ctx: EventContext, event: dict[str, Any]) -> None:
-    """Process a single event dict: skip, truncate, track, buffer, observe.
+async def process_event(ctx: EventContext, event: InternalEvent | dict[str, Any]) -> None:
+    """Process a single event: skip, truncate, track, buffer, observe.
 
-    Called by both ``run_agent_task`` (non-container) and the container bridge
-    after ``message_to_dicts`` has converted the raw message into standard
-    event dicts.
+    Called by both LocalAgentExecutor (passes InternalEvent) and the
+    container bridge (passes dict from .to_dict()). Normalizes to dict
+    access for backward compatibility.
     """
+    if not isinstance(event, dict):
+        event = event.to_dict()
+
     etype = event.get("type", "")
 
     # User messages are persisted before the agent task starts; duplicates
@@ -192,3 +199,127 @@ async def _finish_task(
     asyncio.create_task(_summarize_and_store_session(session_id, user_id))
     if skill_manager is not None:
         asyncio.create_task(skill_manager.migrate_from_filesystem())
+
+
+async def handle_task_error(
+    error: Exception,
+    *,
+    session_id: str,
+    user_id: str,
+    buffer: Any,
+    obs_store: Any,
+    agent_log: Any,
+    cleanup_fn: Any | None = None,
+) -> None:
+    """Shared error handling for both local and container executors.
+
+    Handles: TimeoutError, asyncio.CancelledError, and generic Exception.
+    Emits appropriate error messages, state changes, and marks session done.
+
+    Note: ``agent_log`` may be None when the logger was not yet initialized
+    (e.g., early failures before ``AgentLogger`` construction).
+    """
+
+    if isinstance(error, TimeoutError):
+        logger.error("Agent task %s: timeout", session_id)
+        if cleanup_fn is not None:
+            try:
+                await cleanup_fn(session_id)
+            except Exception:
+                pass
+        await buffer.add_message(
+            session_id,
+            {
+                "type": "system",
+                "subtype": "session_timeout",
+                "message": "Agent task timed out. The agent may be stuck processing a file.",
+            },
+            user_id,
+        )
+        await buffer.add_message(
+            session_id,
+            {"type": "system", "subtype": "session_state_changed", "state": "error"},
+            user_id,
+        )
+        await buffer.mark_done(session_id)
+        if agent_log is not None:
+            agent_log.end_session(session_id, status="timeout")
+        if obs_store:
+            await obs_store.record(
+                session_id=session_id,
+                user_id=user_id,
+                event_type="session_error",
+                success=False,
+                error_message="timeout",
+            )
+
+    elif isinstance(error, asyncio.CancelledError):
+        await buffer.add_message(
+            session_id,
+            {
+                "type": "system",
+                "subtype": "session_cancelled",
+                "message": "Session cancelled by user.",
+            },
+            user_id,
+        )
+        await buffer.add_message(
+            session_id,
+            {"type": "system", "subtype": "session_state_changed", "state": "cancelled"},
+            user_id,
+        )
+        await buffer.mark_done(session_id)
+        if agent_log is not None:
+            agent_log.end_session(session_id, status="cancelled")
+        if obs_store:
+            await obs_store.record(
+                session_id=session_id,
+                user_id=user_id,
+                event_type="user_interrupt",
+                success=False,
+            )
+
+    else:
+        error_msg = str(error)
+        if "JSON message exceeded maximum buffer size" in error_msg:
+            logger.warning(
+                "Agent task %s: buffer overflow — %s", session_id, error_msg
+            )
+            error_msg = (
+                "A tool produced too much output and was truncated to avoid "
+                "overwhelming the system. Try narrowing your request or "
+                "processing the data in smaller steps."
+            )
+        else:
+            logger.exception(
+                "Agent task %s: unexpected error type=%s: %s",
+                session_id,
+                type(error).__name__,
+                error,
+            )
+        if cleanup_fn is not None:
+            try:
+                await cleanup_fn(session_id)
+            except Exception:
+                pass
+        await buffer.add_message(
+            session_id,
+            {"type": "error", "message": error_msg},
+            user_id,
+        )
+        await buffer.add_message(
+            session_id,
+            {"type": "system", "subtype": "session_state_changed", "state": "error"},
+            user_id,
+        )
+        await buffer.mark_done(session_id)
+        if agent_log is not None:
+            agent_log.end_session(session_id, status="error")
+        if obs_store:
+            await obs_store.record(
+                session_id=session_id,
+                user_id=user_id,
+                event_type="session_error",
+                success=False,
+                error_message=str(error)[:500],
+            )

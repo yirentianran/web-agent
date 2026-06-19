@@ -41,7 +41,8 @@ from src.workspace_enforcement import (
     normalize_write_path,
     rewrite_path_to_workspace,
 )
-from src.security_filter import OutputFilter
+from src.security.filters import OutputFilter
+from src.security.enforcer import SecurityEnforcer
 
 logger = logging.getLogger("agent_server")
 
@@ -508,17 +509,46 @@ class _CliRunner:
                             tool_name = hook_callbacks.get(cid, "")
                             tool_input = req.get("tool_input", {})
 
+                            enforcer = SecurityEnforcer(
+                                user_id=os.getenv("USER_ID", "unknown"),
+                                workspace=WORKSPACE,
+                                user_dir=HOME_DIR,
+                            )
+
                             if tool_name == "Write":
+                                file_path = str(tool_input.get("file_path", ""))
+                                allowed, reason = enforcer.check_write_path(file_path)
+                                if not allowed:
+                                    result = {
+                                        "subtype": "success",
+                                        "request_id": req_id,
+                                        "response": {
+                                            "continue_": True,
+                                            "hookSpecificOutput": {
+                                                "hookEventName": "PreToolUse",
+                                                "permissionDecision": "deny",
+                                                "permissionDecisionReason": reason,
+                                            },
+                                        },
+                                    }
+                                    resp = {
+                                        "type": "control_response",
+                                        "response": result,
+                                    }
+                                    resp_line = (
+                                        json.dumps(resp, ensure_ascii=False) + "\n"
+                                    )
+                                    process.stdin.write(resp_line.encode())
+                                    await process.stdin.drain()
+                                    continue
                                 new_input = _apply_write_path_hook(
                                     tool_input,
                                     self._container_paths,
                                     self._session_id,
                                 )
                             elif tool_name == "Bash":
-                                from src.security_filter import BashCommandFilter
-
-                                cmd = tool_input.get("command", "")
-                                allowed, reason = BashCommandFilter.check(cmd)
+                                cmd = str(tool_input.get("command", ""))
+                                allowed, reason = enforcer.check_bash(cmd)
                                 if not allowed:
                                     result = {
                                         "subtype": "success",
@@ -546,11 +576,10 @@ class _CliRunner:
                                     tool_input, self._container_paths
                                 )
                             elif tool_name == "Read":
-                                from src.security_filter import FileAccessFilter
-                                from src.constants import MAX_READ_FILE_BYTES
+                                from src.constants import MAX_READ_FILE_BYTES  # noqa: PLC0415
 
-                                file_path = tool_input.get("file_path", "")
-                                allowed, reason = FileAccessFilter.check(file_path)
+                                file_path = str(tool_input.get("file_path", ""))
+                                allowed, reason = enforcer.check_read_path(file_path)
                                 if not allowed:
                                     result = {
                                         "subtype": "success",
@@ -574,55 +603,36 @@ class _CliRunner:
                                     process.stdin.write(resp_line.encode())
                                     await process.stdin.drain()
                                     continue
-                                # Enforce file size limit
-                                if file_path and MAX_READ_FILE_BYTES > 0:
-                                    resolved = Path(file_path)
-                                    if not resolved.is_absolute():
-                                        resolved = self._cwd / file_path
-                                    try:
-                                        file_size = resolved.stat().st_size
-                                        if file_size > MAX_READ_FILE_BYTES:
-                                            size_mb = file_size / (1024 * 1024)
-                                            limit_mb = MAX_READ_FILE_BYTES / (
-                                                1024 * 1024
-                                            )
-                                            logger.warning(
-                                                "PreToolUse[Read]: blocked oversized file '%s' (%.1fMB > %.1fMB)",
-                                                file_path,
-                                                size_mb,
-                                                limit_mb,
-                                            )
-                                            result = {
-                                                "subtype": "success",
-                                                "request_id": req_id,
-                                                "response": {
-                                                    "continue_": True,
-                                                    "hookSpecificOutput": {
-                                                        "hookEventName": "PreToolUse",
-                                                        "permissionDecision": "deny",
-                                                        "permissionDecisionReason": (
-                                                            f"File is {size_mb:.1f}MB. "
-                                                            f"The maximum allowed size for reading "
-                                                            f"is {limit_mb:.0f}MB. Please use Bash "
-                                                            f"commands like 'head' or 'split' to "
-                                                            f"process the file in smaller chunks."
-                                                        ),
-                                                    },
-                                                },
-                                            }
-                                            resp = {
-                                                "type": "control_response",
-                                                "response": result,
-                                            }
-                                            resp_line = (
-                                                json.dumps(resp, ensure_ascii=False)
-                                                + "\n"
-                                            )
-                                            process.stdin.write(resp_line.encode())
-                                            await process.stdin.drain()
-                                            continue
-                                    except OSError:
-                                        pass  # file doesn't exist — let CLI handle it
+                                size_allowed, size_reason = enforcer.check_read_size(
+                                    file_path, MAX_READ_FILE_BYTES, cwd=str(self._cwd),
+                                )
+                                if not size_allowed:
+                                    logger.warning(
+                                        "PreToolUse[Read]: blocked oversized file '%s'",
+                                        file_path,
+                                    )
+                                    result = {
+                                        "subtype": "success",
+                                        "request_id": req_id,
+                                        "response": {
+                                            "continue_": True,
+                                            "hookSpecificOutput": {
+                                                "hookEventName": "PreToolUse",
+                                                "permissionDecision": "deny",
+                                                "permissionDecisionReason": size_reason,
+                                            },
+                                        },
+                                    }
+                                    resp = {
+                                        "type": "control_response",
+                                        "response": result,
+                                    }
+                                    resp_line = (
+                                        json.dumps(resp, ensure_ascii=False) + "\n"
+                                    )
+                                    process.stdin.write(resp_line.encode())
+                                    await process.stdin.drain()
+                                    continue
                                 new_input = tool_input
                             else:
                                 new_input = tool_input

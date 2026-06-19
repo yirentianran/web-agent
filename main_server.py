@@ -55,7 +55,8 @@ from src.auth import (
     set_auth_cookies,
     clear_auth_cookies,
 )
-from src.security_filter import BashCommandFilter, FileAccessFilter, tool_call_rate_limiter
+from src.security.filters import BashCommandFilter, FileAccessFilter
+from src.security.rate_limiter import tool_call_rate_limiter
 from src.security_headers import SecurityHeadersMiddleware
 from src.workspace_enforcement import (
     HostPaths,
@@ -69,6 +70,9 @@ from src.workspace_enforcement import (
 from src.constants import BUILTIN_TOOLS, DISABLED_TOOLS, CONTAINER_MODE
 from src.cost import get_flash_model
 from src.message_buffer import HEARTBEAT_INTERVAL, MessageBuffer, make_heartbeat
+from src.agent.local import LocalAgentExecutor, cleanup_session_client
+from src.agent.container import ContainerAgentExecutor
+from src.agent.prompt import build_history_prompt, format_first_message_prompt
 from src.observation import ToolObserver
 from src.models import (
     McpServerConfig,
@@ -276,25 +280,6 @@ async def _handle_orphaned_running(
     return last_seen, True
 
 
-async def cleanup_session_client(session_id: str) -> None:
-    """Disconnect and remove a session's CLI subprocess or bridge from the pool."""
-    agent = session_agents.pop(session_id, None)
-    if agent is None:
-        return
-    client = agent.get("client")
-    bridge = agent.get("bridge")
-    if client is not None:
-        try:
-            await client.disconnect()
-        except Exception:
-            pass
-    if bridge is not None:
-        try:
-            await bridge.disconnect()
-        except Exception:
-            pass
-
-
 # ── Container mode ────────────────────────────────────────────────
 # CONTAINER_MODE is imported from src.constants (single source of truth)
 
@@ -334,26 +319,6 @@ def _container_guard() -> tuple:
 # ── Phase 1: Direct SDK integration ─────────────────────────────
 # In Phase 2+, this moves into container-internal agent_server.py
 # and main_server bridges to it via WebSocket.
-
-from claude_agent_sdk import CLIConnectionError, ClaudeSDKClient
-from claude_agent_sdk.types import (
-    AssistantMessage,
-    ClaudeAgentOptions,
-    HookContext,
-    HookInput,
-    HookMatcher,
-    PermissionResult,
-    PermissionResultAllow,
-    PermissionResultDeny,
-    ResultMessage,
-    StreamEvent,
-    SystemMessage,
-    TaskNotificationMessage,
-    TaskProgressMessage,
-    TextBlock,
-    ToolPermissionContext,
-    UserMessage,
-)
 
 from src.block_processor import process_content_blocks, strip_thinking_blocks
 from src.container_bridge import ContainerBridge, bridge_answer_futures
@@ -1490,584 +1455,27 @@ async def _build_sdk_config(
         "max_buffer_size": int(os.getenv("MAX_BUFFER_SIZE", str(10 * 1024 * 1024))),
     }
 
-
-async def build_container_options_dict(
-    user_id: str,
-    resume_session_id: str | None = None,
-    language: str | None = None,
-    skills_override: dict[str, dict[str, Any]] | None = None,
-    system_prompt_override: str | None = None,
-) -> dict[str, Any]:
-    """Build a JSON-serializable options dict for the container's agent_server.
-
-    When CONTAINER_MODE=true, this dict is sent to the container via WebSocket
-    instead of creating a ClaudeSDKClient directly in-process.
-
-    The system prompt is built as a full string on the host (including wiki
-    knowledge, pattern context, and semantic context). The container
-    passes it directly as ``ClaudeAgentOptions.system_prompt``.
-    """
-    mcp_config = await load_mcp_config()
-    if skills_override is not None:
-        skills = skills_override
-    else:
-        skills = await load_skills(user_id)
-    workspace = user_workspace_dir(user_id)
-
-    cfg = await _build_sdk_config(
-        user_id, mcp_config, skills, workspace, language,
-        system_prompt_override=system_prompt_override,
-    )
-
-    # Resolve container-internal cwd
-    cm = _get_container_manager()
-    cwd = str(cm.container_workspace_dir(user_id)) if cm else "/workspace"
-
-    return {
-        "model": cfg["model"],
-        "system_prompt": cfg["system_prompt"],
-        "allowed_tools": cfg["allowed_tools"],
-        "disallowed_tools": cfg["disallowed_tools"],
-        "max_turns": cfg["max_turns"],
-        "permission_mode": "acceptEdits",
-        "mcp_servers": cfg["mcp_servers"],
-        "env": cfg["sdk_env"],
-        "include_partial_messages": cfg["include_partial_messages"],
-        "resume_session_id": resume_session_id,
-        "max_buffer_size": cfg["max_buffer_size"],
-        "cwd": cwd,
-    }
-
-
-async def build_sdk_options(
-    user_id: str,
-    can_use_tool_callback=None,
-    resume_session_id: str | None = None,
-    language: str | None = None,
-    skills_override: dict[str, dict[str, Any]] | None = None,
-    system_prompt_override: str | None = None,
-) -> ClaudeAgentOptions:
-    """Build ClaudeAgentOptions with full configuration."""
-    mcp_config = await load_mcp_config()
-    if skills_override is not None:
-        skills = skills_override
-    else:
-        skills = await load_skills(user_id)
-    # Load-time recording was removed because it inflated usage counts
-    # for skills that were loaded but never actually invoked.
-
-    user_dir = user_data_dir(user_id)
-    workspace = user_workspace_dir(user_id)
-
-    # Ensure outputs/ directory exists
-    (workspace / "outputs").mkdir(exist_ok=True)
-
-    cfg = await _build_sdk_config(
-        user_id,
-        mcp_config,
-        skills,
-        workspace,
-        language,
-        user_data_dir_override=user_dir,
-        system_prompt_override=system_prompt_override,
-    )
-
-    # Point SDK CLI at the user workspace skills dir so it creates and
-    # discovers skills there, not at the project-root .claude/skills/.
-    # Container mode sets this in get_user_env() instead.
-    if cfg["sdk_env"] is not None:
-        cfg["sdk_env"]["CLAUDE_SKILLS_DIRS"] = str(workspace / ".claude" / "skills")
-
-    # PreToolUse hooks — intercept Write and Bash to prevent external file writes.
-    # Hooks run regardless of permission_mode (unlike can_use_tool which is skipped
-    # by acceptEdits/bypassPermissions).
-    async def write_path_hook(
-        hook_input: HookInput,
-        _tool_use_id: str | None,
-        _context: HookContext,
-    ) -> dict:
-        from src.security_filter import FileAccessFilter
-
-        tool_inp = hook_input.get("tool_input", {})
-        file_path = str(tool_inp.get("file_path", ""))
-        # Block invalid filenames (null/None/undefined — programming errors from model)
-        if not file_path or file_path.lower() in INVALID_FILENAMES:
-            logger.warning("PreToolUse[Write]: blocked invalid file_path '%s'", file_path)
-            return {
-                "sync": True,
-                "continue_": True,
-                "hookSpecificOutput": {
-                    "hookEventName": "PreToolUse",
-                    "decision": "reject",
-                    "reason": f"Invalid file path: '{file_path}'. Please provide a real filename.",
-                },
-            }
-        # Layer 2: Block writes to sensitive files
-        allowed, reason = FileAccessFilter.check(file_path)
-        if not allowed:
-            logger.debug("PreToolUse[Write]: blocked sensitive file '%s'", file_path)
-            return {
-                "sync": True,
-                "continue_": True,
-                "hookSpecificOutput": {
-                    "hookEventName": "PreToolUse",
-                    "decision": "reject",
-                    "reason": "This operation is not permitted.",
-                },
-            }
-        if is_path_within_user_dir(file_path, user_id):
-            return {"sync": True, "continue_": True}
-        rewritten = rewrite_path_to_workspace(file_path, workspace)
-        if rewritten == file_path:
-            return {"sync": True, "continue_": True}
-        logger.info("PreToolUse[Write]: '%s' → '%s'", file_path, rewritten)
-        new_input = dict(tool_inp)
-        new_input["file_path"] = rewritten
-        return {
-            "sync": True,
-            "continue_": True,
-            "hookSpecificOutput": {
-                "hookEventName": "PreToolUse",
-                "updatedInput": new_input,
-            },
-        }
-
-    async def bash_path_hook(
-        hook_input: HookInput,
-        _tool_use_id: str | None,
-        _context: HookContext,
-    ) -> dict:
-        from src.security_filter import BashCommandFilter
-
-        cmd = str(hook_input.get("tool_input", {}).get("command", ""))
-        if not cmd:
-            return {"sync": True, "continue_": True}
-        # Layer 2: Block info-leak commands
-        allowed, reason = BashCommandFilter.check(cmd)
-        if not allowed:
-            logger.debug("PreToolUse[Bash]: blocked info-leak command '%s'", cmd[:120])
-            return {
-                "sync": True,
-                "continue_": True,
-                "hookSpecificOutput": {
-                    "hookEventName": "PreToolUse",
-                    "decision": "reject",
-                    "reason": "This operation is not permitted.",
-                },
-            }
-        rewritten = _rewrite_bash_command(cmd, workspace)
-        if rewritten == cmd:
-            return {"sync": True, "continue_": True}
-        logger.info("PreToolUse[Bash]: rewrote '%s' → '%s'", cmd[:120], rewritten[:120])
-        new_input = dict(hook_input.get("tool_input", {}))
-        new_input["command"] = rewritten
-        return {
-            "sync": True,
-            "continue_": True,
-            "hookSpecificOutput": {
-                "hookEventName": "PreToolUse",
-                "updatedInput": new_input,
-            },
-        }
-
-    async def read_path_hook(
-        hook_input: HookInput,
-        _tool_use_id: str | None,
-        _context: HookContext,
-    ) -> dict:
-        from src.security_filter import FileAccessFilter
-
-        tool_inp = hook_input.get("tool_input", {})
-        file_path = str(tool_inp.get("file_path", ""))
-        if not file_path:
-            return {"sync": True, "continue_": True}
-        allowed, reason = FileAccessFilter.check(file_path)
-        if not allowed:
-            logger.debug("PreToolUse[Read]: blocked sensitive file '%s'", file_path)
-            return {
-                "sync": True,
-                "continue_": True,
-                "hookSpecificOutput": {
-                    "hookEventName": "PreToolUse",
-                    "decision": "reject",
-                    "reason": "This operation is not permitted.",
-                },
-            }
-        # Enforce file size limit — resolve relative paths against workspace
-        from src.constants import MAX_READ_FILE_BYTES
-
-        if file_path and MAX_READ_FILE_BYTES > 0:
-            resolved = Path(file_path)
-            if not resolved.is_absolute():
-                resolved = workspace / file_path
-            try:
-                file_size = resolved.stat().st_size
-                if file_size > MAX_READ_FILE_BYTES:
-                    size_mb = file_size / (1024 * 1024)
-                    limit_mb = MAX_READ_FILE_BYTES / (1024 * 1024)
-                    logger.warning(
-                        "PreToolUse[Read]: blocked oversized file '%s' (%.1fMB > %.1fMB)",
-                        file_path, size_mb, limit_mb,
-                    )
-                    return {
-                        "sync": True,
-                        "continue_": True,
-                        "hookSpecificOutput": {
-                            "hookEventName": "PreToolUse",
-                            "decision": "reject",
-                            "reason": (
-                                f"File is {size_mb:.1f}MB. The maximum allowed size for reading "
-                                f"is {limit_mb:.0f}MB. Please use Bash commands like 'head' or "
-                                f"'split' to process the file in smaller chunks."
-                            ),
-                        },
-                    }
-            except OSError:
-                pass  # file doesn't exist yet — let CLI handle the error
-        return {"sync": True, "continue_": True}
-
-    hooks: dict[str, list[HookMatcher]] = {
-        "PreToolUse": [
-            HookMatcher(matcher="Write", hooks=[write_path_hook]),
-            HookMatcher(matcher="Bash", hooks=[bash_path_hook]),
-            HookMatcher(matcher="Read", hooks=[read_path_hook]),
-        ],
-    }
-
-    return ClaudeAgentOptions(
-        model=cfg["model"],
-        cwd=str(user_dir / "workspace"),
-        system_prompt={
-            "type": "preset",
-            "preset": "claude_code",
-            "append": cfg["system_prompt"],
-        },
-        allowed_tools=cfg["allowed_tools"],
-        disallowed_tools=cfg["disallowed_tools"],
-        max_turns=cfg["max_turns"],
-        permission_mode="acceptEdits",
-        mcp_servers=cfg["mcp_servers"],
-        can_use_tool=can_use_tool_callback,
-        hooks=hooks,
-        include_partial_messages=cfg["include_partial_messages"],
-        env=cfg["sdk_env"],
-        resume=resume_session_id,
-        max_buffer_size=cfg["max_buffer_size"],
-    )
-
-
 def message_to_dicts(msg: Any, model: str | None = None, tool_use_names: dict[str, str] | None = None) -> Iterator[dict[str, Any]]:
-    """Convert a Claude SDK Message dataclass to one or more serializable dicts.
+    """Convert SDK/container messages to serializable dicts (backward-compat wrapper).
 
-    An ``AssistantMessage`` may contain multiple content blocks (e.g. a
-    ``ToolUseBlock`` followed by a ``ToolResultBlock``).  Each block that
-    warrants its own message is yielded separately so that tool output
-    (e.g. Bash stdout) reaches the frontend instead of being silently dropped.
-
-    ``tool_use_names`` is a shared dict that accumulates tool_use_id → name
-    mappings across messages so ToolResultBlock (which appears in a later
-    UserMessage) can resolve the correct tool name.
+    Delegates to adapt_sdk_message (SDK dataclasses) or adapt_container_message
+    (container JSON dicts). Yields each InternalEvent converted via ``.to_dict()``.
     """
-    # ── Container WS JSON dict branch ──────────────────────────
     if isinstance(msg, dict):
-        msg_type = msg.get("type", "")
-        if msg_type == "assistant":
-            message = msg.get("message", {})
-            if message:
-                content_blocks = message.get("content", [])
-                emitted: list[dict[str, Any]] = []
-                def _emit(d: dict[str, Any]) -> None:
-                    emitted.append(d)
-                combined_text = process_content_blocks(content_blocks, _emit, tool_use_names)
-                for d in emitted:
-                    yield d
-                if combined_text:
-                    yield {"type": "assistant", "content": combined_text}
-            return
-        if msg_type == "user":
-            message = msg.get("message", {})
-            if message:
-                content_blocks = message.get("content", [])
-                emitted: list[dict[str, Any]] = []
-                def _emit(d: dict[str, Any]) -> None:
-                    emitted.append(d)
-                process_content_blocks(content_blocks, _emit, tool_use_names)
-                for d in emitted:
-                    yield d
-            return
-        if msg_type == "stream_event":
-            yield {
-                "type": "stream_event",
-                "event": msg.get("event", {}),
-            }
-            return
-        if msg_type == "result":
-            from src.agent_result import parse_agent_result  # noqa: PLC0415
-            yield parse_agent_result(msg, model=model)
-            return
-        # Unknown dict type — ignore
-        return
+        from src.agent.adapters.container_json import adapt_container_message  # noqa: PLC0415
 
-    if isinstance(msg, UserMessage):
-        content = msg.content
-        if isinstance(content, list):
-            emitted: list[dict[str, Any]] = []
-            def _emit(d: dict[str, Any]) -> None:
-                emitted.append(d)
-            combined_text = process_content_blocks(content, _emit, tool_use_names)
-            for d in emitted:
-                yield d
-            text = combined_text
-        else:
-            text = content
-        if text:
-            yield {"type": "user", "content": text}
-        return
-
-    if isinstance(msg, AssistantMessage):
-        # Collect emitted tool_use/tool_result messages
-        emitted: list[dict[str, Any]] = []
-
-        def _emit(d: dict[str, Any]) -> None:
-            emitted.append(d)
-
-        combined_text = process_content_blocks(msg.content, _emit, tool_use_names)
-
-        for d in emitted:
-            yield d
-        if combined_text:
-            yield {"type": "assistant", "content": combined_text}
-        return
-
-    if isinstance(msg, ResultMessage):
-        from src.agent_result import parse_agent_result
-
-        yield parse_agent_result(dataclasses.asdict(msg), model=model)
-        return
-
-    if isinstance(msg, TaskNotificationMessage):
-        result: dict[str, Any] = {
-            "type": "system",
-            "subtype": msg.subtype,
-            "status": msg.status,
-            "summary": msg.summary,
-        }
-        if msg.usage:
-            result["usage"] = dict(msg.usage)
-            if model:
-                result["usage"]["model"] = model
-        yield result
-        return
-
-    if isinstance(msg, TaskProgressMessage):
-        result: dict[str, Any] = {
-            "type": "system",
-            "subtype": "progress",
-        }
-        if msg.usage:
-            result["usage"] = dict(msg.usage)
-            if model:
-                result["usage"]["model"] = model
-        if msg.data:
-            result.update(msg.data)
-        yield result
-        return
-
-    if isinstance(msg, SystemMessage):
-        result: dict[str, Any] = {
-            "type": "system",
-            "subtype": msg.subtype,
-        }
-        if msg.data:
-            result.update(msg.data)
-        yield result
-        return
-
-    if isinstance(msg, StreamEvent):
-        result = {
-            "type": "stream_event",
-            "uuid": msg.uuid,
-            "event": msg.event,
-            "session_id": msg.session_id,
-        }
-        # Extract index from event if present (for content_block_delta)
-        if msg.event and "index" in msg.event:
-            result["index"] = msg.event["index"]
-        yield result
-        return
-
-    # Fallback: try to serialize as dict
-    if hasattr(msg, "__dict__"):
-        yield {"type": "unknown", "data": msg.__dict__}
+        for event in adapt_container_message(msg, model=model, tool_use_names=tool_use_names):
+            yield event.to_dict()
     else:
-        yield {"type": "unknown", "content": str(msg)}
+        from src.agent.adapters.sdk import adapt_sdk_message  # noqa: PLC0415
 
-
-async def _can_use_tool_for_session(
-    session_id: str,
-    tool_name: str,
-    tool_input: dict[str, Any],
-    context: ToolPermissionContext,
-    user_id: str,
-) -> PermissionResult:
-    """Intercept AskUserQuestion and route answer through WebSocket."""
-    if tool_name == "AskUserQuestion":
-        # Add the question to buffer so UI can display it
-        await buffer.add_message(
-            session_id,
-            {
-                "type": "tool_use",
-                "name": "AskUserQuestion",
-                "id": f"ask_{uuid.uuid4().hex[:8]}",
-                "input": tool_input,
-            },
-            user_id,
-        )
-
-        # Wait for user answer via WebSocket
-        answer_future: asyncio.Future = asyncio.get_event_loop().create_future()
-        pending_answers[session_id] = answer_future
-        try:
-            answer = await asyncio.wait_for(answer_future, timeout=300)
-            # Return the answer as the tool result — the bundled CLI expects
-            # the key "answers" (plural) to match the AskUserQuestion protocol.
-            return PermissionResultAllow(
-                behavior="allow",
-                updated_input={"answers": answer},
-            )
-        except TimeoutError:
-            return PermissionResultAllow(
-                behavior="allow",
-                updated_input={"answers": {"error": "timeout"}},
-            )
-        finally:
-            pending_answers.pop(session_id, None)
-
-    # All other tools: allow
-    return PermissionResultAllow(behavior="allow")
-
-
-MAX_CONTINUATION_WINDOW = int(os.getenv("MAX_CONTINUATION_WINDOW", "50"))
-MAX_PROMPT_LENGTH = int(os.getenv("MAX_PROMPT_LENGTH", "32000"))
-_TOOL_RESULT_MAX_CHARS = int(os.getenv("TOOL_RESULT_MAX_CHARS", "500"))
+        for event in adapt_sdk_message(msg, model=model, tool_use_names=tool_use_names):
+            yield event.to_dict()
 
 
 def _build_history_prompt(history: list[dict[str, Any]], user_message: str, language: str | None = None, session_id: str | None = None) -> str:
-    """Build a multi-turn conversation prompt from history + new message.
-
-    Controls:
-    - Window: only the last N messages are included (configurable, default 50)
-    - Truncation: tool_result content capped at TOOL_RESULT_MAX_CHARS; tool_use
-      records name + brief input; assistant text included
-    - Length: total prompt capped at MAX_PROMPT_LENGTH chars; oldest messages dropped first
-    - System messages and empty content are skipped
-    - The final user message is always preserved
-    - When *language* is set, the assistant turn is primed in that language
-      and Chinese assistant responses are flagged when in English mode.
-    """
-    parts: list[str] = []
-    lang_name = "中文" if language == "zh" else "English"
-    _HAS_CJK = re.compile(r"[一-鿿㐀-䶿]")
-
-    for msg in history:
-        msg_type = msg.get("type")
-        content = msg.get("content", "")
-        subtype = msg.get("subtype")
-
-        # Skip system/stream messages that add no conversational value
-        if msg_type == "system" and subtype != "session_state_changed":
-            continue
-        if msg_type in ("stream_event", "hook_started", "hook_response"):
-            continue
-
-        if msg_type == "assistant":
-            if not content or not content.strip():
-                continue
-            # Include assistant text responses (skip thinking blocks)
-            if content.startswith("[thinking]") and content.endswith("[/thinking]"):
-                continue
-            # When in English mode, flag Chinese assistant responses so the
-            # model knows to ignore them instead of copying the pattern.
-            if language == "en" and _HAS_CJK.search(content):
-                parts.append(
-                    f"Assistant (previous response was in Chinese — "
-                    f"IGNORE this language, you must respond in English): {content}"
-                )
-            elif language == "zh" and not _HAS_CJK.search(content):
-                parts.append(
-                    f"Assistant (previous response was in English — "
-                    f"IGNORE this language, you must respond in Chinese): {content}"
-                )
-            else:
-                parts.append(f"Assistant: {content}")
-        elif msg_type == "user" and (not content or not content.strip()):
-            continue
-        elif msg_type == "tool_use":
-            name = msg.get("name", "?")
-            input_data = msg.get("input")
-            if input_data and isinstance(input_data, dict):
-                brief = ", ".join(f"{k}={str(v)[:50]}" for k, v in list(input_data.items())[:3])
-                parts.append(f"[Tool Use: {name}({brief})]")
-            else:
-                parts.append(f"[Tool Use: {name}]")
-        elif msg_type == "tool_result":
-            if not content or not content.strip():
-                continue
-            truncated = content[:_TOOL_RESULT_MAX_CHARS]
-            if len(content) > _TOOL_RESULT_MAX_CHARS:
-                truncated += "..."
-            parts.append(f"[Tool Result] {truncated}")
-        elif msg_type == "user":
-            line = f"User: {content}"
-            attached = msg.get("data")
-            if attached and isinstance(attached, list):
-                paths = [f"uploads/{session_id}/{f.get('filename', '?')}" for f in attached if isinstance(f, dict)]
-                if paths:
-                    line += f"\n(Attached files: {', '.join(paths)})"
-            parts.append(line)
-
-    # Sliding window — keep only the last N parts
-    if len(parts) > MAX_CONTINUATION_WINDOW:
-        parts = parts[-MAX_CONTINUATION_WINDOW:]
-
-    # Add preamble explaining this is a continuation, then the new message
-    preamble = (
-        "The following is a transcript of our prior conversation in this session. "
-        "Please reference this history when responding to the new message below.\n"
-    )
-    if language:
-        preamble += (
-            f"CRITICAL: You MUST respond in {lang_name}, including ALL thinking blocks, reasoning, and replies. "
-            f"Any thinking or reasoning content must be in {lang_name}. "
-            f"Do not copy the language of any previous assistant responses or thinking "
-            f"if they are in the wrong language.\n"
-        )
-    preamble += "---\n"
-    if session_id:
-        preamble += (
-            f"Your working directory is the user's workspace. "
-            f"All generated files must be written to: outputs/{session_id}/\n"
-        )
-    # Avoid duplicating the user message — it may already be in history
-    # if the sync-persist in handle_ws completed before we queried SQLite.
-    last_part = parts[-1] if parts else ""
-    expected = f"User: {user_message}"
-    if last_part != expected:
-        parts.append(expected)
-    # Prime the assistant turn in the target language so the model starts
-    # generating in the correct language from the first token.
-    if language:
-        parts.append(f"Assistant (respond and think in {lang_name} only):")
-    else:
-        parts.append("Assistant:")
-
-    # Enforce total length limit by dropping from the start
-    prompt = preamble + "\n\n".join(parts)
-    while len(prompt) > MAX_PROMPT_LENGTH and len(parts) > 2:
-        parts = parts[1:]
-        prompt = "\n\n".join(parts)
-
-    return prompt
+    """Build a multi-turn conversation prompt from history + new message (backward-compat wrapper)."""
+    return build_history_prompt(history, user_message, language=language, session_id=session_id)
 
 
 def _format_first_message_prompt(
@@ -2076,37 +1484,8 @@ def _format_first_message_prompt(
     language: str | None = None,
     session_id: str | None = None,
 ) -> str:
-    """Build the first-message prompt, including file paths if files were uploaded.
-
-    When *language* is set, a [REMINDER] tag is prepended so the model
-    follows the language directive even when the user message is in
-    another language. This is critical for Chinese-native models like Qwen.
-    """
-    lang_name = "中文" if language == "zh" else "English"
-    # Natural language priming activates the target language's generation
-    # pathway more effectively than a bracketed metadata tag.
-    if language == "zh":
-        prefix = "请用中文回复，包括所有思考内容、推理过程和最终答复。\n\n"
-    elif language == "en":
-        prefix = "Please respond in English, including all thinking blocks, reasoning, and final replies.\n\n"
-    else:
-        prefix = ""
-
-    session_guidance = ""
-    if session_id:
-        session_guidance = (
-            f"Your working directory is the user's workspace. "
-            f"All generated files must be written to: outputs/{session_id}/\n\n"
-        )
-
-    if not attached_files:
-        return prefix + session_guidance + user_message
-    paths = ", ".join(
-        f if f.startswith("uploads/") or f.startswith("outputs/") else f"uploads/{session_id}/{f}" for f in attached_files
-    ) if session_id else ", ".join(
-        f if f.startswith("uploads/") or f.startswith("outputs/") else f"uploads/{f}" for f in attached_files
-    )
-    return f"{prefix}{session_guidance}{user_message}\n\n(Attached files: {paths})"
+    """Build the first-message prompt (backward-compat wrapper)."""
+    return format_first_message_prompt(user_message, attached_files, language=language, session_id=session_id)
 
 
 def _build_conversation_summary_text(history: list[dict[str, Any]]) -> str:
@@ -2273,660 +1652,6 @@ async def _emit_file_result(
         )
 
 
-# ── Agent task (local mode) ──────────────────────────────────────
-
-
-async def run_agent_task(
-    user_id: str,
-    session_id: str,
-    user_message: str,
-    is_continuation: bool = False,
-    attached_files: list[str] | None = None,
-    language: str | None = None,
-) -> None:
-    """Run the agent using ClaudeSDKClient for bidirectional interaction.
-
-    When *is_continuation* is True, historical messages are replayed to the
-    Claude CLI so the agent has full conversation context.
-    When *attached_files* is provided, file names are mentioned in the prompt
-    so the agent knows which files the user uploaded.
-    """
-    from src.agent_logger import AgentLogger
-
-    logger.info(
-        "[AGENT_TASK] Starting task: session=%s, user=%s, continuation=%s, message=%s",
-        session_id,
-        user_id,
-        is_continuation,
-        user_message[:50],
-    )
-
-    agent_log = AgentLogger(user_id=user_id)
-    agent_log.start_session(session_id, user_message=user_message)
-    start_time = time.time()
-
-    # Resolve workspace path — needed for both tool permission check and file snapshot
-    workspace = user_workspace_dir(user_id)
-    user_dir = user_data_dir(user_id)
-
-    # Build options
-    async def can_use_tool_cb(
-        tool_name: str,
-        tool_input: dict[str, Any],
-        ctx: ToolPermissionContext,
-    ) -> PermissionResult:
-        # Rate-limit tool calls per session (30/min sliding window)
-        if not tool_call_rate_limiter.allow(session_id):
-            return PermissionResultDeny(
-                message="Tool call rate limit exceeded. Please wait before making more tool calls.",
-            )
-
-        # Block disabled tools — MCP fetch servers handle web content
-        if tool_name in DISABLED_TOOLS:
-            return PermissionResultDeny(
-                message=f"{tool_name} is disabled. Use MCP fetch tools instead.",
-            )
-
-        # Block file writes outside user directory
-        if tool_name == "Write":
-            file_path = str(tool_input.get("file_path", ""))
-            if file_path and not is_path_within_user_dir(file_path, user_id):
-                return PermissionResultDeny(
-                    message=f"File path '{file_path}' is outside the user directory. "
-                    f"All files must be saved within the workspace or user data directory.",
-                )
-
-        # Block Bash commands that write to paths outside workspace
-        if tool_name == "Bash":
-            cmd = str(tool_input.get("command", ""))
-            error = check_bash_command_for_external_writes(cmd, workspace, user_dir)
-            if error:
-                return PermissionResultDeny(message=error)
-            allowed, reason = BashCommandFilter.check(cmd)
-            if not allowed:
-                return PermissionResultDeny(message=reason)
-
-        # Block file reads of sensitive files
-        if tool_name == "Read":
-            file_path = str(tool_input.get("file_path", ""))
-            if file_path:
-                allowed, reason = FileAccessFilter.check(file_path)
-                if not allowed:
-                    return PermissionResultDeny(message=reason)
-
-        agent_log.tool_call(tool_name, tool_input, session_id=session_id)
-        result = await _can_use_tool_for_session(session_id, tool_name, tool_input, ctx, user_id)
-        agent_log.tool_result(tool_name, str(result), session_id=session_id)
-        return result
-
-    # ── CLI subprocess reuse ──────────────────────────────────────────
-    # Check for an existing per-session agent state. When found, skip
-    # ClaudeSDKClient() + connect() (saves 300ms-2s per subsequent message).
-    agent_state = session_agents.get(session_id)
-    client = agent_state["client"] if agent_state else None
-
-    if client is not None:
-        # Reuse existing client — skills and system prompt are cached
-        logger.info("[AGENT_TASK] Reusing existing CLI for session %s", session_id)
-        cached_skills = agent_state.get("skills", {})
-        cached_sp = agent_state.get("system_prompt", "")
-        options = await build_sdk_options(
-            user_id,
-            can_use_tool_callback=can_use_tool_cb,
-            resume_session_id=None,
-            language=language,
-            skills_override=cached_skills,
-            system_prompt_override=cached_sp,
-        )
-    else:
-        # First message in session — full setup
-        options = await build_sdk_options(
-            user_id,
-            can_use_tool_callback=can_use_tool_cb,
-            resume_session_id=None,
-            language=language,
-        )
-        client = ClaudeSDKClient(options)
-
-    try:
-        if client is not None and agent_state is not None:
-            # Reusing existing client — send query directly (skip connect)
-            if is_continuation:
-                if session_store is not None:
-                    history = await session_store.get_session_history(user_id, session_id, after_index=0)
-                else:
-                    history = await buffer.get_history(session_id, after_index=0, user_id=user_id)
-                full_prompt = _build_history_prompt(history, user_message, language=language, session_id=session_id)
-                if language:
-                    lang_name = "中文" if language == "zh" else "English"
-                    full_prompt = (
-                        f"IMPORTANT: Your reply below, including all thinking blocks, must be in {lang_name}. "
-                        f"Do not use {'英文' if language == 'zh' else 'Chinese'} in any part of your response.\n\n"
-                        + full_prompt
-                    )
-                logger.info(
-                    "[AGENT_TASK] Continuation (reuse) %s: prompt length=%d chars, history=%d msgs",
-                    session_id, len(full_prompt), len(history),
-                )
-            else:
-                full_prompt = _format_first_message_prompt(user_message, attached_files, language, session_id)
-                logger.info("[AGENT_TASK] New message (reuse) %s: prompt=%s", session_id, full_prompt[:100])
-            try:
-                await client.query(full_prompt)
-            except CLIConnectionError:
-                logger.warning(
-                    "[AGENT_TASK] Reused CLI dead for session %s, retrying with fresh client",
-                    session_id,
-                )
-                await cleanup_session_client(session_id)
-                agent_state = None
-                # Rebuild options (skills/system-prompt cache is stale
-                # since we lost the old client).
-                options = await build_sdk_options(
-                    user_id,
-                    can_use_tool_callback=can_use_tool_cb,
-                    resume_session_id=None,
-                    language=language,
-                )
-                client = ClaudeSDKClient(options)
-                if is_continuation:
-                    async def _retry_prompt_stream():
-                        yield {
-                            "type": "user",
-                            "message": {"role": "user", "content": full_prompt},
-                            "parent_tool_use_id": None,
-                            "session_id": "default",
-                        }
-                    await client.connect(prompt=_retry_prompt_stream())
-                else:
-                    await client.connect()
-                    await client.query(full_prompt)
-            logger.info("[AGENT_TASK] Query sent (reuse), starting receive_response")
-        elif is_continuation:
-            # Fresh client + continuation — connect with history prompt
-            if session_store is not None:
-                history = await session_store.get_session_history(user_id, session_id, after_index=0)
-            else:
-                history = await buffer.get_history(session_id, after_index=0, user_id=user_id)
-            full_prompt = _build_history_prompt(history, user_message, language=language, session_id=session_id)
-            if language:
-                lang_name = "中文" if language == "zh" else "English"
-                full_prompt = (
-                    f"IMPORTANT: Your reply below, including all thinking blocks, must be in {lang_name}. "
-                    f"Do not use {'英文' if language == 'zh' else 'Chinese'} in any part of your response.\n\n"
-                    + full_prompt
-                )
-
-            async def prompt_stream():
-                yield {
-                    "type": "user",
-                    "message": {"role": "user", "content": full_prompt},
-                    "parent_tool_use_id": None,
-                    "session_id": "default",
-                }
-
-            logger.info(
-                "[AGENT_TASK] Continuation (fresh) %s: prompt length=%d chars, history=%d msgs",
-                session_id, len(full_prompt), len(history),
-            )
-            logger.debug("[AGENT_TASK] Full prompt (session=%s, len=%d): %s", session_id, len(full_prompt), full_prompt)
-            await client.connect(prompt=prompt_stream())
-            logger.info("[AGENT_TASK] Client connected (continuation), starting receive_response")
-        else:
-            # Fresh client + first message
-            logger.info("[AGENT_TASK] Connecting client (first message)")
-            await client.connect()
-            prompt = _format_first_message_prompt(user_message, attached_files, language, session_id)
-            logger.info("[AGENT_TASK] Sending query: prompt=%s", prompt[:100])
-            await client.query(prompt)
-            logger.info("[AGENT_TASK] Query sent, starting receive_response")
-
-        # ── Cache skills + system prompt for reuse ──────────────────
-        if agent_state is None:
-            skills = await _get_cached_skills(user_id, session_id)
-            resolved_lang = await _resolve_user_language(user_id, language)
-            instinct_ctx = await _load_instinct_context(user_message, _db)
-            _get_cached_system_prompt(user_id, skills, workspace, resolved_lang, session_id, instinct_context=instinct_ctx)
-            if session_id not in session_agents:
-                session_agents[session_id] = {}
-            session_agents[session_id]["client"] = client
-            session_agents[session_id]["last_used"] = time.time()
-        else:
-            session_agents[session_id]["last_used"] = time.time()
-
-        # Receive messages until result
-        msg_count = 0
-        generated_files: list[dict[str, Any]] = []
-        buffered_result: dict[str, Any] | None = None  # SDK result for reordering
-        tool_observer = ToolObserver(_obs_store, session_id, user_id)
-        # Snapshot pre-existing output files so we only emit new ones
-        pre_scan_snapshot = _snapshot_output_files(workspace, session_id)
-        logger.debug("[AGENT_TASK] Starting receive_response loop")
-        tool_use_names: dict[str, str] = {}
-
-        from src.event_pipeline import EventContext, process_event
-
-        ctx = EventContext(
-            user_id=user_id,
-            session_id=session_id,
-            buffer=buffer,
-            observer=tool_observer,
-            skill_manager=_skill_manager,
-            generated_files=generated_files,
-        )
-
-        async for msg in client.receive_response():
-            msg_count += 1
-            logger.debug("[AGENT_TASK] Received message #%d: type=%s", msg_count, type(msg).__name__)
-            for event in message_to_dicts(msg, model=options.model, tool_use_names=tool_use_names):
-                # Buffer the SDK result message so file_result can be emitted
-                # first, ensuring file cards appear before "Session completed".
-                if event.get("type") == "result":
-                    buffered_result = event
-                    continue
-                await process_event(ctx, event)
-
-        from src.event_pipeline import _finish_task
-
-        await _finish_task(
-            session_id=session_id,
-            user_id=user_id,
-            buffer=buffer,
-            workspace=workspace,
-            session_store=session_store,
-            skill_manager=_skill_manager,
-            obs_store=_obs_store,
-            agent_log=agent_log,
-            pre_scan_snapshot=pre_scan_snapshot or set(),
-            result_event=buffered_result,
-            language=language,
-        )
-
-    except TimeoutError:
-        # Clean up the stuck CLI subprocess
-        await cleanup_session_client(session_id)
-        await buffer.add_message(
-            session_id,
-            {
-                "type": "system",
-                "subtype": "session_timeout",
-                "message": "Agent task timed out. The agent may be stuck processing a file.",
-            },
-            user_id,
-        )
-        await buffer.add_message(
-            session_id,
-            {
-                "type": "system",
-                "subtype": "session_state_changed",
-                "state": "error",
-            },
-            user_id,
-        )
-        await buffer.mark_done(session_id)
-        agent_log.end_session(session_id, status="timeout")
-        if _obs_store:
-            await _obs_store.record(
-                session_id=session_id, user_id=user_id,
-                event_type="session_error",
-                success=False,
-                error_message="timeout",
-            )
-    except asyncio.CancelledError:
-        await buffer.add_message(
-            session_id,
-            {
-                "type": "system",
-                "subtype": "session_cancelled",
-                "message": "Session cancelled by user.",
-            },
-            user_id,
-        )
-        # Add state change BEFORE mark_done() for the same reason.
-        await buffer.add_message(
-            session_id,
-            {
-                "type": "system",
-                "subtype": "session_state_changed",
-                "state": "cancelled",
-            },
-            user_id,
-        )
-        await buffer.mark_done(session_id)
-        agent_log.end_session(session_id, status="cancelled")
-        if _obs_store:
-            await _obs_store.record(
-                session_id=session_id, user_id=user_id,
-                event_type="user_interrupt",
-                success=False,
-            )
-    except Exception as e:
-        error_msg = str(e)
-        # Detect SDK JSON buffer overflow and provide a clear message
-        if "JSON message exceeded maximum buffer size" in error_msg:
-            logger.warning(
-                "Agent task %s: SDK JSON buffer overflow — tool output too large, truncated",
-                session_id,
-            )
-            error_msg = (
-                "A tool produced too much output and was truncated to avoid "
-                "overwhelming the system. Try narrowing your request or "
-                "processing the data in smaller steps."
-            )
-        else:
-            logger.exception("Agent task failed for session %s", session_id)
-        # Clean up the crashed CLI subprocess so the next message starts fresh
-        await cleanup_session_client(session_id)
-        await buffer.add_message(
-            session_id,
-            {
-                "type": "error",
-                "message": error_msg,
-            },
-            user_id,
-        )
-        # Add state change BEFORE mark_done() so the error is delivered.
-        await buffer.add_message(
-            session_id,
-            {
-                "type": "system",
-                "subtype": "session_state_changed",
-                "state": "error",
-            },
-            user_id,
-        )
-        await buffer.mark_done(session_id)
-        agent_log.end_session(session_id, status="error")
-        if _obs_store:
-            await _obs_store.record(
-                session_id=session_id, user_id=user_id,
-                event_type="session_error",
-                success=False,
-                error_message=str(e)[:500],
-            )
-    # Note: do NOT disconnect on success or cancel — client is kept alive for follow-ups
-
-
-async def run_agent_task_container(
-    user_id: str,
-    session_id: str,
-    user_message: str,
-    is_continuation: bool = False,
-    attached_files: list[str] | None = None,
-    language: str | None = None,
-) -> None:
-    """Run an agent task inside the user's Docker container via WebSocket bridge.
-
-    Called instead of ``run_agent_task`` when ``CONTAINER_MODE=true``.
-    The system prompt is built on the host (including wiki, pattern, and
-    semantic context), serialized into the options dict, and sent to the
-    container's agent_server WebSocket. Stream events are forwarded to the
-    buffer. After the bridge completes, generated files are scanned from
-    the mounted workspace volume.
-    """
-    cm = _get_container_manager()
-    bridge = None
-    agent_log = None
-
-    try:
-        t_start = time.monotonic()
-        container_url = cm.ensure_container(user_id)
-        t_container = time.monotonic()
-        logger.info(
-            "Container task: user=%s session=%s url=%s continuation=%s",
-            user_id,
-            session_id,
-            container_url,
-            is_continuation,
-        )
-
-        # ── Skills + system prompt caching (same pattern as local mode) ──
-        agent_state = session_agents.get(session_id)
-        if agent_state is not None:
-            cached_skills = agent_state.get("skills", {})
-            cached_sp = agent_state.get("system_prompt", "")
-            options_dict = await build_container_options_dict(
-                user_id,
-                resume_session_id=None,
-                language=language,
-                skills_override=cached_skills,
-                system_prompt_override=cached_sp,
-            )
-            session_agents[session_id]["last_used"] = time.time()
-        else:
-            options_dict = await build_container_options_dict(
-                user_id,
-                resume_session_id=None,
-                language=language,
-            )
-            # Populate cache for subsequent messages in this session
-            skills = await _get_cached_skills(user_id, session_id)
-            resolved_lang = await _resolve_user_language(user_id, language)
-            instinct_ctx = await _load_instinct_context(user_message, _db)
-            _get_cached_system_prompt(user_id, skills, user_workspace_dir(user_id), resolved_lang, session_id, instinct_context=instinct_ctx)
-            if session_id not in session_agents:
-                session_agents[session_id] = {}
-            session_agents[session_id]["last_used"] = time.time()
-
-        from src.agent_logger import AgentLogger
-
-        agent_log = AgentLogger(user_id=user_id)
-        agent_log.start_session(session_id, user_message=user_message)
-
-        from src.event_pipeline import EventContext
-
-        tool_observer = ToolObserver(_obs_store, session_id, user_id)
-        generated_files: list[dict[str, Any]] = []
-        tool_use_names: dict[str, str] = {}
-
-        ctx = EventContext(
-            user_id=user_id,
-            session_id=session_id,
-            buffer=buffer,
-            observer=tool_observer,
-            skill_manager=_skill_manager,
-            generated_files=generated_files,
-        )
-
-        # ── Bridge: cache in session_agents for connection reuse ──
-        bridge_reused = False
-        agent_state = session_agents.get(session_id, {})
-        bridge = agent_state.get("bridge")
-        if bridge is not None:
-            bridge_reused = True
-            logger.info("Reusing container bridge for session %s", session_id)
-            bridge.container_url = container_url
-        else:
-            bridge = ContainerBridge(
-                container_url=container_url,
-                session_id=session_id,
-                user_id=user_id,
-                buffer=buffer,
-                session_store=session_store,
-                skill_manager=_skill_manager,
-                ctx=ctx,
-                model=options_dict.get("model"),
-                tool_use_names=tool_use_names,
-            )
-            await bridge.connect()
-
-        t_bridge_ready = time.monotonic()
-        logger.info(
-            "[LATENCY] session=%s ensure_container=%.0fms bridge_setup=%.0fms (reused=%s)",
-            session_id,
-            (t_container - t_start) * 1000,
-            (t_bridge_ready - t_container) * 1000,
-            bridge_reused,
-        )
-
-        start_time = time.time()
-        workspace = user_workspace_dir(user_id)
-        # Snapshot pre-existing output files so we only emit new ones
-        pre_scan_snapshot = _snapshot_output_files(workspace, session_id)
-        # Build the prompt - for continuations, include history
-        if is_continuation:
-            if session_store is not None:
-                history = await session_store.get_session_history(user_id, session_id, after_index=0)
-            else:
-                history = await buffer.get_history(session_id, after_index=0, user_id=user_id)
-            prompt = _build_history_prompt(history, user_message, language=language, session_id=session_id)
-        else:
-            prompt = _format_first_message_prompt(user_message, attached_files, language, session_id)
-
-        # Log the full prompt for debugging
-        logger.debug("Prompt start (session=%s, len=%d): %s", session_id, len(prompt), prompt)
-
-        t_prompt_built = time.monotonic()
-        logger.info(
-            "[LATENCY] session=%s prompt_built=%.0fms total_prep=%.0fms",
-            session_id,
-            (t_prompt_built - t_bridge_ready) * 1000,
-            (t_prompt_built - t_start) * 1000,
-        )
-
-        try:
-            await bridge.run_and_stream(prompt, options_dict)
-        except ConnectionError:
-            logger.warning(
-                "Container bridge connection dead for session %s, reconnecting...",
-                session_id,
-            )
-            await bridge.disconnect()
-            await bridge.connect()
-            await bridge.run_and_stream(prompt, options_dict)
-
-        t_run_done = time.monotonic()
-        logger.info(
-            "[LATENCY] session=%s run_and_stream=%.0fms total_elapsed=%.0fms",
-            session_id,
-            (t_run_done - t_prompt_built) * 1000,
-            (t_run_done - t_start) * 1000,
-        )
-
-        logger.info(
-            "Container bridge completed normally: session=%s elapsed=%.1fs",
-            session_id,
-            time.time() - start_time,
-        )
-
-        # Cache bridge for subsequent messages in this session
-        session_agents[session_id]["bridge"] = bridge
-
-        from src.event_pipeline import _finish_task
-
-        await _finish_task(
-            session_id=session_id,
-            user_id=user_id,
-            buffer=buffer,
-            workspace=workspace,
-            session_store=session_store,
-            skill_manager=_skill_manager,
-            obs_store=_obs_store,
-            agent_log=agent_log,
-            pre_scan_snapshot=pre_scan_snapshot or set(),
-            result_event=bridge._result if bridge else None,
-            language=language,
-        )
-
-    except TimeoutError:
-        logger.error("Container task %s: timeout", session_id)
-        await buffer.add_message(
-            session_id,
-            {
-                "type": "error",
-                "subtype": "session_timeout",
-                "message": "Session timed out. The operation took too long.",
-            },
-            user_id,
-        )
-        await buffer.add_message(
-            session_id,
-            {
-                "type": "system",
-                "subtype": "session_state_changed",
-                "state": "error",
-            },
-            user_id,
-        )
-        await buffer.mark_done(session_id)
-        if agent_log is not None:
-            agent_log.end_session(session_id, status="error")
-        if _obs_store:
-            await _obs_store.record(
-                session_id=session_id, user_id=user_id,
-                event_type="session_error",
-                success=False,
-                error_message="timeout",
-            )
-
-    except asyncio.CancelledError:
-        logger.info("Container task %s: cancelled", session_id)
-        if bridge is not None:
-            try:
-                await bridge.send_cancel()
-            except Exception:
-                pass
-        await buffer.add_message(
-            session_id,
-            {
-                "type": "system",
-                "subtype": "session_cancelled",
-                "message": "Session cancelled.",
-            },
-            user_id,
-        )
-        await buffer.add_message(
-            session_id,
-            {
-                "type": "system",
-                "subtype": "session_state_changed",
-                "state": "cancelled",
-            },
-            user_id,
-        )
-        await buffer.mark_done(session_id)
-        if agent_log is not None:
-            agent_log.end_session(session_id, status="cancelled")
-        if _obs_store:
-            await _obs_store.record(
-                session_id=session_id, user_id=user_id,
-                event_type="user_interrupt",
-                success=False,
-            )
-
-    except Exception as exc:
-        logger.exception(
-            "Container task %s: unexpected error type=%s: %s",
-            session_id,
-            type(exc).__name__,
-            exc,
-        )
-        await buffer.add_message(
-            session_id,
-            {
-                "type": "error",
-                "message": f"{type(exc).__name__}: {exc}" if str(exc) else f"Unexpected error: {type(exc).__name__}",
-            },
-            user_id,
-        )
-        await buffer.add_message(
-            session_id,
-            {
-                "type": "system",
-                "subtype": "session_state_changed",
-                "state": "error",
-            },
-            user_id,
-        )
-        await buffer.mark_done(session_id)
-        if agent_log is not None:
-            agent_log.end_session(session_id, status="error")
-        if _obs_store:
-            await _obs_store.record(
-                session_id=session_id, user_id=user_id,
-                event_type="session_error",
-                error_message=str(exc)[:500],
-            )
 
 
 # ── WebSocket endpoint ───────────────────────────────────────────
@@ -2947,13 +1672,13 @@ async def _safe_ws_send(websocket: WebSocket, data: dict) -> bool:
     # Layer 3: Filter sensitive content before sending to user.
     msg_type = data.get("type", "")
     if msg_type in ("assistant", "tool_result") and data.get("content"):
-        from src.security_filter import OutputFilter
+        from src.security.filters import OutputFilter
 
         data = {**data, "content": OutputFilter.scan(data["content"])}
     elif msg_type == "stream_event":
         # stream_event messages contain content_block_delta with raw text
         # deltas that could leak sensitive info. Filter text-type deltas.
-        from src.security_filter import OutputFilter
+        from src.security.filters import OutputFilter
 
         data = _filter_stream_event(data, OutputFilter)
 
@@ -3411,13 +2136,47 @@ async def handle_ws(websocket: WebSocket) -> None:
                             await _insert_upload_file(user_id, session_id, fname, size)
 
                     # Route to container or direct SDK based on mode
-                    target_func = run_agent_task_container if CONTAINER_MODE else run_agent_task
+                    if CONTAINER_MODE:
+                        executor = ContainerAgentExecutor(
+                            user_id=user_id,
+                            session_agents=session_agents,
+                            buffer=buffer,
+                            session_store=session_store,
+                            skill_manager=_skill_manager,
+                            obs_store=_obs_store,
+                            db=_db,
+                            container_manager=_get_container_manager(),
+                            user_workspace_dir_fn=user_workspace_dir,
+                            snapshot_output_files_fn=_snapshot_output_files,
+                            get_cached_skills_fn=_get_cached_skills,
+                            get_cached_system_prompt_fn=_get_cached_system_prompt,
+                            resolve_user_language_fn=_resolve_user_language,
+                            load_instinct_context_fn=_load_instinct_context,
+                        )
+                    else:
+                        executor = LocalAgentExecutor(
+                            user_id=user_id,
+                            session_agents=session_agents,
+                            buffer=buffer,
+                            session_store=session_store,
+                            skill_manager=_skill_manager,
+                            obs_store=_obs_store,
+                            db=_db,
+                            pending_answers=pending_answers,
+                            user_workspace_dir_fn=user_workspace_dir,
+                            user_data_dir_fn=user_data_dir,
+                            snapshot_output_files_fn=_snapshot_output_files,
+                            get_cached_skills_fn=_get_cached_skills,
+                            get_cached_system_prompt_fn=_get_cached_system_prompt,
+                            resolve_user_language_fn=_resolve_user_language,
+                            load_instinct_context_fn=_load_instinct_context,
+                            cleanup_fn=cleanup_session_client,
+                        )
                     task = asyncio.create_task(
                         asyncio.wait_for(
-                            target_func(
-                                user_id,
-                                session_id,
-                                user_message,
+                            executor.run(
+                                prompt=user_message,
+                                session_id=session_id,
                                 is_continuation=is_continuation,
                                 attached_files=attached_files,
                                 language=ws_language,
@@ -3945,7 +2704,7 @@ async def delete_session(
     buffer.remove_session(session_id)
 
     # Disconnect the active Claude SDK client for this session
-    await cleanup_session_client(session_id)
+    await cleanup_session_client(session_id, session_agents)
     return {"status": "ok"}
 
 
@@ -6886,7 +5645,7 @@ async def shutdown() -> None:
     """Clean up all agent subprocesses and containers on graceful exit."""
     # Disconnect all cached session clients
     for sid in list(session_agents.keys()):
-        await cleanup_session_client(sid)
+        await cleanup_session_client(sid, session_agents)
     if CONTAINER_MODE:
         _cm = _get_container_manager()
         if _cm:
@@ -6907,7 +5666,7 @@ async def _cleanup_loop() -> None:
         ]
         for sid in idle_sids:
             logger.info("Cleaning up idle session agent: %s", sid)
-            await cleanup_session_client(sid)
+            await cleanup_session_client(sid, session_agents)
         # Log retention cleanup
         from src.log_cleanup import cleanup_old_logs
 

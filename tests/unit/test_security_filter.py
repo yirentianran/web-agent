@@ -2,7 +2,7 @@
 
 import time
 
-from src.security_filter import BashCommandFilter, FileAccessFilter, OutputFilter
+from src.security.filters import BashCommandFilter, FileAccessFilter, OutputFilter
 
 
 class TestOutputFilter:

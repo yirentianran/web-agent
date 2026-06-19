@@ -7,6 +7,8 @@ Multi-user web agent built with FastAPI (backend) and React (frontend). Each use
 ## Architecture
 
 - **Backend** (`main_server.py`, `agent_server.py`, `src/`) — FastAPI REST + WebSocket server
+- **Agent layer** (`src/agent/`) — Typed InternalEvent protocol, SDK/container adapters, per-mode executors
+- **Security layer** (`src/security/`) — Shared enforcer, command/file filters, rate limiter
 - **Frontend** (`frontend/src/`) — React SPA with Vite, communicating via REST + WebSocket
 - **Data** (`data/`) — Per-user session files, message buffers, uploads, outputs (never committed)
 
@@ -41,11 +43,21 @@ Key rendering pipeline: `MessageBubble` → `ToolResultContent` (content-type de
 | `src/cost.py` | Model name resolution (`MODEL` / `FLASH_MODEL` env vars) |
 | `src/observation.py` | ToolObserver — tool-call event recording |
 | `src/instinct_extractor.py` | Automatic pattern discovery from observations |
+| `src/agent/protocol.py` | Typed InternalEvent protocol — frozen dataclass union for all event types |
+| `src/agent/adapters/sdk.py` | Adapter: Claude Agent SDK dataclass → InternalEvent |
+| `src/agent/adapters/container_json.py` | Adapter: container WebSocket JSON dict → InternalEvent |
+| `src/agent/local.py` | LocalAgentExecutor — runs agent via ClaudeSDKClient in-process |
+| `src/agent/container.py` | ContainerAgentExecutor — runs agent in per-user Docker container |
+| `src/agent/options.py` | Unified AgentOptions builder for both local and container modes |
+| `src/agent/prompt.py` | Prompt builders: history compilation, language directives, attachments |
+| `src/event_pipeline.py` | Shared event pipeline: process_event, _finish_task, handle_task_error |
+| `src/security/enforcer.py` | SecurityEnforcer — shared pre-execution security checks |
+| `src/security/filters.py` | OutputFilter, BashCommandFilter, FileAccessFilter |
+| `src/security/rate_limiter.py` | Per-session sliding-window tool call rate limiter |
 | `src/container_bridge.py` | WebSocket bridge to per-user Docker containers |
 | `src/container_manager.py` | Per-user Docker container lifecycle |
 | `src/mcp_store.py` | MCP server registry with credential encryption |
 | `src/skill_manager.py` | Skill upload, download, promote, filesystem migration |
-| `src/security_filter.py` | Bash command and file access filtering |
 | `src/agent_logger.py` | L3 agent execution logging |
 | `src/semantic_search.py` | FTS5 search over sessions and wiki pages |
 | `frontend/src/App.tsx` | Main React app: session state, routing, auth |
@@ -73,7 +85,7 @@ uv sync
 uv run pytest
 
 # Lint + format
-uv run ruff format && uv run ruff check src/ main_server.py
+uv run ruff format && uv run ruff check src/ main_server.py agent_server.py
 
 # Type check
 uv run mypy src/
