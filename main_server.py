@@ -210,9 +210,11 @@ async def _emit_synthetic_state_change_if_missing(
     websocket: WebSocket,
     session_id: str,
     last_seen: int,
+    send_fn=None,
 ) -> tuple[int, bool]:
     """Emit a synthetic session_state_changed if buffer is in a terminal
     state but the buffer contains no such message. Returns (updated last_seen, success)."""
+    _send_ws = send_fn if send_fn else _safe_ws_send
     buf_state = await buffer.get_session_state(session_id)
     if buf_state["state"] in ("completed", "error", "cancelled"):
         all_buffer_msgs = await buffer.get_history(session_id)
@@ -220,7 +222,7 @@ async def _emit_synthetic_state_change_if_missing(
             m.get("type") == "system" and m.get("subtype") == "session_state_changed" for m in all_buffer_msgs
         )
         if not has_state_change:
-            if not await _safe_ws_send(
+            if not await _send_ws(
                 websocket,
                 {
                     "type": "system",
@@ -240,6 +242,7 @@ async def _handle_orphaned_running(
     websocket: WebSocket,
     session_id: str,
     last_seen: int,
+    send_fn=None,
 ) -> tuple[int, bool]:
     """Detect and resolve orphaned "running" sessions.
 
@@ -248,6 +251,7 @@ async def _handle_orphaned_running(
     truly dead. Emit a synthetic terminal state change so the frontend
     doesn't spin forever. Returns (updated last_seen, ws_ok).
     """
+    _send_ws = send_fn if send_fn else _safe_ws_send
     task_key = f"task_{session_id}"
     buf_state = await buffer.get_state(session_id)
     task_exists = task_key in active_tasks and not active_tasks[task_key].done()
@@ -257,7 +261,7 @@ async def _handle_orphaned_running(
             "Orphaned running session %s: buffer state=running but no active task. Emitting synthetic error.",
             session_id,
         )
-        if not await _safe_ws_send(
+        if not await _send_ws(
             websocket,
             {
                 "type": "system",
@@ -2049,7 +2053,7 @@ async def handle_ws(websocket: WebSocket) -> None:
                                 final_sent += 1
                             last_seen += final_sent
 
-                        last_seen, ok = await _emit_synthetic_state_change_if_missing(websocket, session_id, last_seen)
+                        last_seen, ok = await _emit_synthetic_state_change_if_missing(websocket, session_id, last_seen, send_fn=_send)
                         if not ok:
                             break
 
@@ -2057,7 +2061,7 @@ async def handle_ws(websocket: WebSocket) -> None:
                         # "running" sessions (server restart while agent
                         # was active). Emit terminal error so the frontend
                         # doesn't spin forever.
-                        last_seen, ok = await _handle_orphaned_running(websocket, session_id, last_seen)
+                        last_seen, ok = await _handle_orphaned_running(websocket, session_id, last_seen, send_fn=_send)
                         if not ok:
                             break
 
@@ -2067,6 +2071,7 @@ async def handle_ws(websocket: WebSocket) -> None:
                     last_hb_time, hb_ok = await _maybe_send_heartbeat(
                         last_hb_time, session_id, last_seen,
                         active_tasks, buffer, websocket,
+                        send_fn=_send,
                     )
                     if not hb_ok:
                         break
@@ -2079,6 +2084,7 @@ async def handle_ws(websocket: WebSocket) -> None:
                     last_hb_time, hb_ok = await _maybe_send_heartbeat(
                         0.0, session_id, last_seen,
                         active_tasks, buffer, websocket,
+                        send_fn=_send,
                     )
                     if not hb_ok:
                         break
@@ -2498,7 +2504,7 @@ async def handle_ws(websocket: WebSocket) -> None:
                             final_sent += 1
                         last_seen += final_sent
 
-                        last_seen, ok = await _emit_synthetic_state_change_if_missing(websocket, session_id, last_seen)
+                        last_seen, ok = await _emit_synthetic_state_change_if_missing(websocket, session_id, last_seen, send_fn=_send)
                         if not ok:
                             break
 
@@ -2506,7 +2512,7 @@ async def handle_ws(websocket: WebSocket) -> None:
                         # "running" sessions (server restart while agent
                         # was active). Emit terminal error so the frontend
                         # doesn't spin forever.
-                        last_seen, ok = await _handle_orphaned_running(websocket, session_id, last_seen)
+                        last_seen, ok = await _handle_orphaned_running(websocket, session_id, last_seen, send_fn=_send)
                         if not ok:
                             break
                         break
@@ -2517,6 +2523,7 @@ async def handle_ws(websocket: WebSocket) -> None:
                     last_hb_time, hb_ok = await _maybe_send_heartbeat(
                         last_hb_time, session_id, last_seen,
                         active_tasks, buffer, websocket,
+                        send_fn=_send,
                     )
                     if not hb_ok:
                         break
@@ -2529,6 +2536,7 @@ async def handle_ws(websocket: WebSocket) -> None:
                     last_hb_time, hb_ok = await _maybe_send_heartbeat(
                         0.0, session_id, last_seen,
                         active_tasks, buffer, websocket,
+                        send_fn=_send,
                     )
                     if not hb_ok:
                         break
@@ -2583,6 +2591,7 @@ async def _maybe_send_heartbeat(
     buffer: MessageBuffer,
     websocket: WebSocket,
     interval: float = HEARTBEAT_INTERVAL,
+    send_fn=None,
 ) -> tuple[float, bool]:
     """Send a heartbeat if enough time has elapsed since the last one.
 
@@ -2594,6 +2603,7 @@ async def _maybe_send_heartbeat(
     Returns (updated_last_hb_time, ok).  ``ok`` is ``False`` when the
     WebSocket send failed — the caller should break out of its loop.
     """
+    _send_ws = send_fn if send_fn else _safe_ws_send
     now = time.monotonic()
     if now - last_hb_time < interval:
         return last_hb_time, True
@@ -2608,7 +2618,7 @@ async def _maybe_send_heartbeat(
         agent_alive = task_key in active_tasks and not active_tasks[task_key].done()
 
     hb = make_heartbeat(agent_alive=agent_alive)
-    ok = await _safe_ws_send(
+    ok = await _send_ws(
         websocket,
         {
             **hb,
